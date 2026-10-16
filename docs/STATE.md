@@ -3,17 +3,25 @@
 Repository set up from Concept of Love (JSRF): launcher, game-file picker,
 XISO reader, XBE identification, mixer, renderer and vertex-program runner
 (the last two not built yet), crash report, xboxrecomp patches 0001-0008
-plus 0009-0011 (Orta needed them). First recompile builds; see
+plus 0009-0012 (Orta needed them). First recompile builds; see
 `docs/orta-facts.md`.
+
+**Boot (cloud, with the boot files the player uploaded):** the title starts
+its main thread, initialises D3D, reads its font, sprite, dragon-texture and
+shader files, then hangs in `sub_002B30B0` (JSRF's D3D_BlockOnTime by call
+graph) under `sub_002ADC30` (D3DDevice_Release): it waits for a GPU that
+does not run. Next step is replacing D3D, as Concept of Love did. Copies
+into the HDD cache (`Partition5\...\*.tmp`) fail: non-fatal, as in JSRF.
 
 ## Facts
 
 - Input: Panzer Dragoon Orta (USA) `default.xbe`, 53450007, **XDK 4928**
   (JSRF: 4134). One dump known.
-- `tools/recomp.py` (~4 min): 16,643 functions, ~1.78M lines of C in 67
+- `tools/recomp.py` (~4 min): 16,647 functions, ~1.78M lines of C in 67
   files; APPDATA excluded as data. xboxrecomp v0.13.1 (193e299) + 11
   patches (0009 `mov` from debug registers, 0010 `--exclude-sections`,
-  0011 `lahf` declares CF: send upstream), SDL 3.4.16.
+  0011 `lahf` declares CF, 0012 stmxcsr/ldmxcsr as guest state: send
+  upstream), SDL 3.4.16. 10 observed seeds in `tools/pdo_seeds.json`.
 
 ## Shared with JSRF (`tools/xbe_match.py`, JSRF USA dump)
 
@@ -34,8 +42,10 @@ plus 0009-0011 (Orta needed them). First recompile builds; see
 
 ## Next
 
-1. Port overrides in Concept of Love's order, starting with those matched
-   exactly; re-derive render-state indices from Orta's setters.
+1. Port overrides in Concept of Love's order (vblank/Swap, device, clear,
+   draws first), starting with those matched exactly; re-derive
+   render-state indices from Orta's setters. BlockOnTime and Release are
+   confirmed by the hang above.
 2. Identify what JSRF cannot name: Cxbx-Reloaded's XbSymbolDatabase from a
    local clone (has 4928 signatures), or the D3D setters by structure.
 3. Boot to the kernel (`--boot`), collect `[ICALL] Failed to resolve VA`

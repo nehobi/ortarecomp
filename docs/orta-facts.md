@@ -28,9 +28,10 @@ virtual addresses in the USA `default.xbe`.
 | DOLBY | 0x0050F4E0 | 29,056 | Dolby Digital encoder microcode |
 | $$XTIMAGE | 0x00516660 | 10,240 | title image |
 
-## Recompilation (xboxrecomp v0.13.1 + patches 0001-0011)
+## Recompilation (xboxrecomp v0.13.1 + patches 0001-0012)
 
-- 16,643 functions, all translated; ~1.78M lines of C in 67 files; 382
+- The CRT saves MXCSR with `stmxcsr` at boot (0x00269711): patch 0012.
+- 16,647 functions, all translated; ~1.78M lines of C in 67 files; 382
   call targets not detected as functions (stubbed).
 - APPDATA is data but flagged executable: swept as code it gave 129 junk
   "functions" (no prologues, calling only each other), one of which did not
