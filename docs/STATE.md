@@ -15,13 +15,27 @@ plus 0009-0011 (Orta needed them). First recompile builds; see
   patches (0009 `mov` from debug registers, 0010 `--exclude-sections`,
   0011 `lahf` declares CF: send upstream), SDL 3.4.16.
 
+## Shared with JSRF (`tools/xbe_match.py`, JSRF USA dump)
+
+- 2,206 of 16,628 Orta functions matched (1,919 byte-identical after
+  address masking). By section: XPP 152/187, DSOUND 307/518, D3D 151/287,
+  MMATRIX 37/66, XGRPH 16/24, .text 1,542/15,359 (CRT, CRI, maybe more).
+  WMADEC and PSGSFD (Sofdec?) have no JSRF counterpart.
+- 115 of Concept of Love's 167 overrides/hooks have an Orta counterpart.
+  CRI is shared: both `cri_hle.c` overrides match exactly, and so does the
+  data address they use. D3D: 3 of the 4 tables `d3d_hle.c` uses are paired
+  (one by 33 identical uses). XInput: only XGetDevices exact and
+  XInputPoll similar; the rest changed in 4928.
+- "callgraph" pairs (position in a matched caller) are the weakest; several
+  D3D ones (Swap, SetPixelShader, CopyRects) have low similarity because
+  4928 rewrote them. Check each when porting its override. Whole library
+  objects are linked in another order than in 4134.
+- JSRF's four runtime seeds have no Orta match (game code).
+
 ## Next
 
-1. **Match against JSRF** (needs the player's JSRF `default.xbe`):
-   `tools/xbe_match.py` with `--col` (and `--jsrf-listing` if available).
-   Tells which XDK/CRI functions are byte-identical despite 4134 vs 4928,
-   which of Concept of Love's overrides carry over, and the Orta addresses
-   of the tables they use. Then `recomp.py --names build/match/names.json`.
+1. Port overrides in Concept of Love's order, starting with those matched
+   exactly; re-derive render-state indices from Orta's setters.
 2. Identify what JSRF cannot name: Cxbx-Reloaded's XbSymbolDatabase from a
    local clone (has 4928 signatures), or the D3D setters by structure.
 3. Boot to the kernel (`--boot`), collect `[ICALL] Failed to resolve VA`

@@ -15,10 +15,12 @@ build/match/). Each function is fingerprinted from its instructions with
 image addresses masked out (calls and jumps leaving the function, data
 addresses), kernel imports kept by ordinal. Then:
 
-  exact      same fingerprint, unique in both: the same code.
+  exact      same fingerprint, unique in both (alone, or together with the
+             fingerprints of its callees): the same code.
   exact-order  same fingerprint, several copies in both, paired in address
-             order (weaker: the copies are interchangeable code anyway).
-  callgraph  called from the same place in two matched functions.
+             order (weaker).
+  callgraph  called from the same place in two solid pairs, size within
+             1.5x; shown with its 3-gram similarity. Weakest: check it.
   similar    not identical (another XDK build, a small change), but most
              instruction 3-grams shared; only tried where it matters: XDK
              sections, and JSRF functions Concept of Love overrides.
@@ -129,7 +131,7 @@ class Image:
 # ── Fingerprints ────────────────────────────────────────────────────────
 
 class Func:
-    __slots__ = ("va", "size", "section", "tokens", "hash", "calls", "refs", "grams")
+    __slots__ = ("va", "size", "section", "tokens", "hash", "hash2", "calls", "refs", "grams")
 
 
 def fingerprint(img, md, va, size, section):
@@ -180,8 +182,15 @@ def fingerprint(img, md, va, size, section):
 def fingerprint_all(img):
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
-    return {va: fingerprint(img, md, va, size, sec)
-            for va, (size, sec) in img.functions.items()}
+    funcs = {va: fingerprint(img, md, va, size, sec)
+             for va, (size, sec) in img.functions.items()}
+    # A second fingerprint that includes what each function calls. Masking
+    # call targets makes thin wrappers (push args, call the implementation)
+    # all look alike; their callees tell them apart.
+    for f in funcs.values():
+        callees = [funcs[c].hash if c in funcs else "?" for c in f.calls]
+        f.hash2 = hashlib.sha1((f.hash + "".join(callees)).encode()).hexdigest()
+    return funcs
 
 
 def grams(f):
@@ -263,15 +272,13 @@ def load_listing(path):
 
 # ── Matching ────────────────────────────────────────────────────────────
 
+def similarity(a, b):
+    ga, gb = grams(a), grams(b)
+    return len(ga & gb) / len(ga | gb)
+
+
 def match(pf, jf, interesting):
     """{orta va: (jsrf va, how)}"""
-    by_hash_p = collections.defaultdict(list)
-    by_hash_j = collections.defaultdict(list)
-    for f in pf.values():
-        by_hash_p[f.hash].append(f.va)
-    for f in jf.values():
-        by_hash_j[f.hash].append(f.va)
-
     pairs, used_j = {}, set()
 
     def add(p, j, how):
@@ -281,58 +288,83 @@ def match(pf, jf, interesting):
         used_j.add(j)
         return True
 
-    for h, ps in by_hash_p.items():
-        js = by_hash_j.get(h)
-        if js and len(ps) == 1 and len(js) == 1:
-            add(ps[0], js[0], "exact")
+    def groups(key):
+        gp, gj = collections.defaultdict(list), collections.defaultdict(list)
+        for f in pf.values():
+            if f.va not in pairs:
+                gp[getattr(f, key)].append(f.va)
+        for f in jf.values():
+            if f.va not in used_j:
+                gj[getattr(f, key)].append(f.va)
+        return gp, gj
 
-    # Call-graph propagation: matched functions with the same number of
-    # direct calls call corresponding functions, in order.
-    queue = list(pairs)
-    while queue:
-        p = queue.pop()
-        j, _ = pairs[p]
-        cp, cj = pf[p].calls, jf[j].calls
-        if len(cp) != len(cj):
-            continue
-        for a, b in zip(cp, cj):
-            if a in pf and b in jf and pf[a].hash == jf[b].hash:
-                how = "exact"
-            else:
-                how = "callgraph"
-            if add(a, b, how):
-                queue.append(a)
+    # Identical code, unique on both sides; then identical code calling
+    # identical code, which separates look-alike wrappers.
+    for key in ("hash", "hash2"):
+        gp, gj = groups(key)
+        for h, ps in gp.items():
+            js = gj.get(h)
+            if js and len(ps) == 1 and len(js) == 1:
+                add(ps[0], js[0], "exact")
 
-    # Identical functions that occur more than once (small helpers, template
-    # copies) and that no caller placed: pair them in address order when both
-    # sides have the same number left. Linkers keep library order.
-    for h, ps in by_hash_p.items():
-        js = by_hash_j.get(h, [])
-        ps = sorted(x for x in ps if x not in pairs)
-        js = sorted(x for x in js if x not in used_j)
-        if ps and len(ps) == len(js):
-            for a, b in zip(ps, js):
+    # Call-graph propagation: two identical (or near-identical) functions
+    # call corresponding functions, in order. Only solid pairs propagate:
+    # a guess made from a guess is not evidence. A callee pair whose sizes
+    # differ wildly is no pair at all.
+    def solid(how):
+        return how == "exact" or (how.startswith("similar") and float(how.split()[1]) >= 0.9)
+
+    def propagate():
+        queue = [p for p, (_, how) in pairs.items() if solid(how)]
+        while queue:
+            p = queue.pop()
+            j, _ = pairs[p]
+            cp, cj = pf[p].calls, jf[j].calls
+            if len(cp) != len(cj):
+                continue
+            for a, b in zip(cp, cj):
+                if a not in pf or b not in jf:
+                    continue
+                if pf[a].hash == jf[b].hash:
+                    if add(a, b, "exact"):
+                        queue.append(a)
+                elif 0.67 <= jf[b].size / pf[a].size <= 1.5:
+                    add(a, b, f"callgraph {similarity(pf[a], jf[b]):.2f}")
+
+    propagate()
+
+    # Identical functions that occur more than once and that no caller
+    # placed: pair them in address order when both sides have the same
+    # number left. Linkers keep library order, but this is weaker evidence.
+    gp, gj = groups("hash2")
+    for h, ps in gp.items():
+        js = gj.get(h, [])
+        if len(ps) == len(js):
+            for a, b in zip(sorted(ps), sorted(js)):
                 add(a, b, "exact-order")
 
-    # Similar: by 3-gram overlap, only for code worth the time.
+    # Similar: by 3-gram overlap, only for code worth the time and long
+    # enough for the overlap to mean something.
     cand = collections.defaultdict(list)
     for j in jf.values():
-        if j.va not in used_j and (j.section != ".text" or j.va in interesting):
+        if (j.va not in used_j and len(j.tokens) >= 12
+                and (j.section != ".text" or j.va in interesting)):
             cand[j.section if j.section != ".text" else "*"].append(j)
     for p in sorted(pf.values(), key=lambda f: f.va):
-        if p.va in pairs:
+        if p.va in pairs or len(p.tokens) < 12:
             continue
         pool = cand.get(p.section, []) + cand.get("*", [])
         best, best_s = None, 0.0
         for j in pool:
             if j.va in used_j or not (0.75 <= j.size / p.size <= 1.33):
                 continue
-            gp, gj = grams(p), grams(j)
-            s = len(gp & gj) / len(gp | gj)
+            s = similarity(p, j)
             if s > best_s:
                 best, best_s = j, s
         if best and best_s >= SIMILAR_MIN:
             add(p.va, best.va, f"similar {best_s:.2f}")
+
+    propagate()
     return pairs
 
 
