@@ -1,0 +1,17 @@
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index 4bcc526..3d25b76 100644
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -1782,6 +1782,12 @@ class Lifter:
+     def _lift_mov(self, insn, ops):
+         if nops := len(ops) < 2:
+             return [f"/* mov: bad operands */"]
++        # Control and debug registers (mov eax, dr0 / mov cr3, eax): ring-0
++        # only, so a title never runs one; a linear sweep over data decodes
++        # them. Emitted as is they name a C variable that does not exist and
++        # the generated file does not compile.
++        if any(o.type == "reg" and o.reg[:2] in ("cr", "dr") for o in ops[:2]):
++            return self._unimplemented(insn, "mov", " (control/debug register)")
+         src = _fmt_operand_read(ops[1])
+         out = [_fmt_operand_write(ops[0], src)]
+         # `mov ebp, esp` establishes this function's frame. Publish it, because

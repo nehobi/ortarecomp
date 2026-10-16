@@ -1,0 +1,46 @@
+# Panzer Dragoon Orta: facts
+
+Facts about the game's executable that the port depends on. Addresses are
+virtual addresses in the USA `default.xbe`.
+
+## The executable
+
+- Panzer Dragoon ORTA (USA), title ID 53450007 (SE-007), North America,
+  retail build, version 1. One dump known (hash in `src/xbe.c`).
+- Entry 0x00231E6C, kernel thunk table 0x0030C8A0 (start of `.rdata`).
+- **XDK 4928** (QFE 1) for every library: XAPILIB, D3D8, D3DX8, DSOUND,
+  XGRAPHC, LIBCMT, LIBCPMT, XBOXKRNL. JSRF is 4134, so D3D render-state and
+  texture-stage-state numbering must be re-derived from Orta's setters.
+
+| Section | VA | Size | Notes |
+|---|---|---|---|
+| .text | 0x00011000 | 2,732,144 | game code, CRT, likely CRI |
+| MMATRIX | 0x002AC080 | 6,432 | XDK matrix library |
+| D3D | 0x002AD9A0 | 78,224 | Direct3D 8 |
+| D3DX | 0x002C0B40 | 1,520 | |
+| DSOUND | 0x002C1140 | 126,684 | DirectSound |
+| WMADEC | 0x002E0020 | 102,624 | WMA decoder (not in JSRF) |
+| PSGSFD00, _I, _B, _P | 0x002F9100.. | ~17,900 | probably CRI Sofdec (SFD movies): to confirm |
+| XGRPH | 0x002FD740 | 36,960 | XGraphics (swizzling) |
+| XPP | 0x003067A0 | 24,821 | XAPI input (XInput) |
+| .rdata | 0x0030C8A0 | 213,060 | |
+| APPDATA | 0x00340900 | 1,895,388 | writable data (no `.data` section); flagged executable, excluded from disassembly |
+| DOLBY | 0x0050F4E0 | 29,056 | Dolby Digital encoder microcode |
+| $$XTIMAGE | 0x00516660 | 10,240 | title image |
+
+## Recompilation (xboxrecomp v0.13.1 + patches 0001-0011)
+
+- 16,643 functions, all translated; ~1.78M lines of C in 67 files; 382
+  call targets not detected as functions (stubbed).
+- APPDATA is data but flagged executable: swept as code it gave 129 junk
+  "functions" (no prologues, calling only each other), one of which did not
+  compile (`lahf` after `add`, patch 0011). `recomp.py` excludes it (patch
+  0010, `--exclude-sections`); its vtables then add ~660 real functions.
+- `mov eax, dr0` twice in .text near 0x00211199 (data decoded as code) broke
+  the build: patch 0009. Untranslated-instruction sites (`out`, `in`,
+  `lcall`, `aas`...) are linear-sweep reads over data, as in JSRF.
+
+## Compared with JSRF (player notes)
+
+- Not cel-shaded: no inverted-hull outlines to get right.
+- Runs well on xemu: use it for reference screenshots and audio.

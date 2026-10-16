@@ -1,0 +1,69 @@
+# ── Game data: never commit anything from the game ──────────────────────
+# Executables, disc images and extracted files
+*.xbe
+*.iso
+*.xiso
+*.cso
+*.cci
+*.7z
+*.zip
+*.rar
+game/
+Media/
+media/
+# Anything derived from the game executable
+gen/
+build/
+*.tsv
+listing_seeds.json
+# Reference captures (screenshots/audio from the game) used for testing
+captures/
+# F12 / CLV_CAPTURE and CLV_PS_DEBUG write these into the working directory
+capture_*.bmp
+ps_tex_*.bmp
+*.bmp
+reference/
+# Save data
+saves/
+UDATA/
+TDATA/
+
+# Logs (they contain local paths and game output)
+*.log
+opened_files.txt
+
+# ── Settings written by the app ──────────────────────────────────────────
+ortarecomp.ini
+portable.txt
+
+# ── Build output ─────────────────────────────────────────────────────────
+build*/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.apk
+*.aab
+
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+
+# ── Editors and OS ───────────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

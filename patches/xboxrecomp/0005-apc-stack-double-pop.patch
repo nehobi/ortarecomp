@@ -1,0 +1,18 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index c65ba43..59e6664 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -3175,8 +3175,12 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
+         g_esp -= 4; BRIDGE_MEM32(g_esp) = iostatus;
+         g_esp -= 4; BRIDGE_MEM32(g_esp) = apc_context;
+         g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;   /* dummy return address */
++        /* An APC routine is NTAPI (stdcall): it pops its own return address
++         * and three arguments, and so does kernel_thunk_dispatch for a kernel
++         * export (4 + its argument bytes). Popping the arguments again here
++         * left the guest stack 12 bytes high after every completion; a caller
++         * that restores esp with `leave` (XAPI's ReadFileEx) hid it. */
+         fn();
+-        g_esp += 12;
+     } else {
+         uint32_t ord = 0;
+         if (apc_routine >= KERNEL_VA_BASE && apc_routine < KERNEL_VA_END) {

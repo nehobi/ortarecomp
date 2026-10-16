@@ -1,0 +1,134 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index 59e6664..96d55bf 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -1545,6 +1545,22 @@ static void bridge_KeSetEvent(void)
+         g_eax = 0;
+ }
+ 
++/* Queued file I/O completion APCs; see bridge_complete_file_io. */
++#define APC_RING 64
++static RECOMP_TLS struct { uint32_t routine, context, iostatus; } t_apc[APC_RING];
++static RECOMP_TLS unsigned t_apc_head, t_apc_count;
++static unsigned bridge_deliver_queued_apcs(void);
++
++/* At the top of an alertable wait: if queued APCs ran, the wait ends there
++ * with STATUS_USER_APC, without blocking. */
++#define ALERTABLE_WAIT_DELIVERS_APCS(alertable)                           \
++    do {                                                                  \
++        if ((alertable) && t_apc_count && bridge_deliver_queued_apcs()) { \
++            g_eax = 0x000000C0u;              /* STATUS_USER_APC */       \
++            return;                                                       \
++        }                                                                 \
++    } while (0)
++
+ /* ── KeWaitForSingleObject (ordinal 159) ─────────────────── */
+ static void bridge_KeWaitForSingleObject(void)
+ {
+@@ -1552,6 +1568,7 @@ static void bridge_KeWaitForSingleObject(void)
+     uint32_t wait_reason = STACK_ARG(1);
+     uint32_t wait_mode = STACK_ARG(2);
+     uint32_t alertable = STACK_ARG(3);
++    ALERTABLE_WAIT_DELIVERS_APCS(alertable);
+     uint32_t timeout_ptr = STACK_ARG(4);
+     HANDLE h;
+ 
+@@ -1599,6 +1616,7 @@ static void bridge_NtWaitForSingleObject(void)
+ {
+     HANDLE   handle      = bridge_resolve_handle(STACK_ARG(0));
+     uint32_t alertable   = STACK_ARG(1);
++    ALERTABLE_WAIT_DELIVERS_APCS(alertable);
+     uint32_t timeout_ptr = STACK_ARG(2);
+ 
+     g_eax = (uint32_t)xbox_NtWaitForSingleObject(
+@@ -1653,6 +1671,7 @@ static void bridge_NtWaitForSingleObjectEx(void)
+     HANDLE   handle      = bridge_resolve_handle(STACK_ARG(0));
+     uint32_t wait_mode   = STACK_ARG(1);
+     uint32_t alertable   = STACK_ARG(2);
++    ALERTABLE_WAIT_DELIVERS_APCS(alertable);
+     uint32_t timeout_ptr = STACK_ARG(3);
+ 
+     static int logged = 0;
+@@ -1710,6 +1729,7 @@ static void bridge_NtWaitForMultipleObjectsEx(void)
+     uint32_t wait_type   = STACK_ARG(2);
+     uint32_t wait_mode   = STACK_ARG(3);   /* KernelMode / UserMode */
+     uint32_t alertable   = STACK_ARG(4);
++    ALERTABLE_WAIT_DELIVERS_APCS(alertable);
+     uint32_t timeout_ptr = STACK_ARG(5);
+ 
+     (void)wait_mode;
+@@ -1807,6 +1827,7 @@ static void bridge_KeDelayExecutionThread(void)
+ {
+     uint32_t wait_mode    = STACK_ARG(0);
+     uint32_t alertable    = STACK_ARG(1);
++    ALERTABLE_WAIT_DELIVERS_APCS(alertable);
+     uint32_t interval_ptr = STACK_ARG(2);
+ 
+ 
+@@ -3193,7 +3214,16 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
+ }
+ 
+ /* Per-thread pending-APC ring. An APC is delivered on the thread that issued
+- * the request, which is also the thread that waits, so thread-local is right. */
++ * the request, which is also the thread that waits, so thread-local is right.
++ *
++ * A completion APC runs at the issuing thread's next alertable wait, as on
++ * NT, not inside the read. Running it inline breaks code that marks a request
++ * busy, issues it, checks the request is still busy and only then waits for
++ * the APC: JSRF's CRI ADX file server does exactly that (issue, `busy == 1`
++ * check, SleepEx(0, TRUE), then "done"). With the APC already run, the check
++ * failed, the request was never marked done and the music stream stalled
++ * after its first read. */
++
+ static void bridge_complete_file_io(uint32_t event_token, uint32_t apc_routine,
+                                     uint32_t apc_context, uint32_t iostatus)
+ {
+@@ -3202,10 +3232,39 @@ static void bridge_complete_file_io(uint32_t event_token, uint32_t apc_routine,
+         if (ev) SetEvent(ev);
+     }
+     if (apc_routine) {
+-        deliver_one_apc(apc_routine, apc_context, iostatus);
++        if (t_apc_count == APC_RING) {
++            static int warned;
++            if (!warned++)
++                fprintf(stderr, "  [KERNEL] file I/O APC queue full; "
++                                "delivering inline\n");
++            deliver_one_apc(apc_routine, apc_context, iostatus);
++            return;
++        }
++        unsigned i = (t_apc_head + t_apc_count++) % APC_RING;
++        t_apc[i].routine = apc_routine;
++        t_apc[i].context = apc_context;
++        t_apc[i].iostatus = iostatus;
+     }
+ }
+ 
++/* Deliver this thread's queued APCs, as an alertable wait does before it
++ * blocks. Only those queued on entry: one that queues another read gets its
++ * completion at the next wait. Returns how many ran. */
++static unsigned bridge_deliver_queued_apcs(void)
++{
++    unsigned n = t_apc_count, done = 0;
++    while (done < n && t_apc_count) {
++        unsigned i = t_apc_head;
++        uint32_t r = t_apc[i].routine, c = t_apc[i].context, io = t_apc[i].iostatus;
++        t_apc_head = (t_apc_head + 1) % APC_RING;
++        t_apc_count--;
++        deliver_one_apc(r, c, io);
++        done++;
++    }
++    return done;
++}
++
++
+ /* -- XeLoadSection / XeUnloadSection (ordinals 327/328, 1 arg = 4 bytes) --
+  *
+  * NTSTATUS XeLoadSection(PXBE_SECTION_HEADER Section);
+@@ -4466,6 +4525,7 @@ static void bridge_KeWaitForMultipleObjects(void)
+     uint32_t objects_va = STACK_ARG(1);
+     uint32_t wait_type  = STACK_ARG(2);
+     uint32_t alertable  = STACK_ARG(5);   /* 3=WaitReason, 4=WaitMode */
++    ALERTABLE_WAIT_DELIVERS_APCS(alertable);
+     uint32_t timeout_va = STACK_ARG(6);
+     HANDLE handles[BRIDGE_MAXIMUM_WAIT_OBJECTS];
+     uint32_t i;
