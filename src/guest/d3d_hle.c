@@ -212,6 +212,15 @@ void sub_002BAFC0(void)
         exit(0);
     }
     n = pdo_gfx_frame_count();
+    {
+        /* PDO_STALL=FRAME:MS stalls the game thread once, for testing how the
+         * title copes with the host pausing it (window moves, disk). */
+        const char *st = getenv("PDO_STALL");
+        if (st && (Uint64)strtoull(st, NULL, 10) == n && strchr(st, ':')) {
+            SDL_Log("d3d: stalling %s ms at frame %llu", strchr(st, ':') + 1, (unsigned long long)n);
+            SDL_Delay((Uint32)atoi(strchr(st, ':') + 1));
+        }
+    }
     if (n <= 3)
         SDL_Log("d3d: Swap, frame %llu", (unsigned long long)n);
     {
