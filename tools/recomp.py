@@ -144,9 +144,13 @@ def missed_targets(disasm_dir, xbe):
     import bisect
     lo = [a for a, _ in spans]
 
-    def inside(va):
+    def owner(va):
+        """Start of the function whose span holds va, or None."""
         i = bisect.bisect_right(lo, va) - 1
-        return i >= 0 and va < spans[i][1]
+        return spans[i][0] if i >= 0 and va < spans[i][1] else None
+
+    def inside(va):
+        return owner(va) is not None
 
     def byte_at(va):
         for sec in info["sections"]:
@@ -200,7 +204,13 @@ def missed_targets(disasm_dir, xbe):
         src, dst = int(x["from"], 16), int(x["to"], 16)
         if dst in starts or not inside(src) or not any(a <= dst < b for a, b in code):
             continue
-        if x["type"] != "call" and inside(dst):
+        # A jump into another function's span is a tail call into code the
+        # sweep folded into the function before it, when it lands where a
+        # function would start (Sofdec's 0x00244600, after 0x00244590's ret
+        # and padding: its stub returned non-zero and stopped the movie's
+        # stream callbacks). A jump within a function is an ordinary branch.
+        if x["type"] != "call" and inside(dst) and not (
+                owner(dst) != owner(src) and taken_address(dst)):
             continue
         missed.add(dst)
     return sorted(missed)

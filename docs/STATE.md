@@ -9,7 +9,8 @@ patches 0001-0008 plus 0009-0014 (Orta needed them). See
 **Boot (cloud, with the files the player uploaded):** the SEGA, Smilebit
 and Sofdec splash screens and the title screen ("PLEASE PRESS START TO
 BEGIN") draw, ~15 fps on lavapipe. Wrong so far: text boxes have grey
-backgrounds, the title logo looks incomplete. No sound heard yet. The title
+backgrounds, the title logo looks incomplete. The attract movie
+(Sofdec) plays with sound. The title
 makes its HDD cache folders (`Partition5`) on first boot, for the folders
 on the disc: after adding files to a partial copy, delete `saves/Cache`.
 Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
