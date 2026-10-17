@@ -10,7 +10,9 @@ patches 0001-0008 plus 0009-0015 (Orta needed them). See
 and Sofdec splash screens and the title screen ("PLEASE PRESS START TO
 BEGIN") draw, ~15 fps on lavapipe. Wrong so far: text boxes have grey
 backgrounds, the title logo looks incomplete. The attract movie
-(Sofdec) plays with sound. The title
+(Sofdec) plays with sound and returns to the title. **Windows (player's
+PC, full disc):** builds and runs from PowerShell; logos, intro movie and
+title loop with no hang. The title
 makes its HDD cache folders (`Partition5`) on first boot, for the folders
 on the disc: after adding files to a partial copy, delete `saves/Cache`.
 Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
