@@ -1,0 +1,52 @@
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -841,6 +841,24 @@
+     }
+ }
+ 
++/* NT tells a missing file (STATUS_OBJECT_NAME_NOT_FOUND) from a missing
++ * directory on the way to it (STATUS_OBJECT_PATH_NOT_FOUND, which XAPI turns
++ * into ERROR_PATH_NOT_FOUND). */
++static NTSTATUS path_errno_to_status(int e, const char *path)
++{
++    char parent[MAX_PATH];
++    const char *slash = strrchr(path, '/');
++    struct stat st;
++
++    if (e == ENOENT && slash && slash != path && (size_t)(slash - path) < sizeof parent) {
++        memcpy(parent, path, (size_t)(slash - path));
++        parent[slash - path] = '\0';
++        if (stat(parent, &st) != 0 || !S_ISDIR(st.st_mode))
++            return STATUS_OBJECT_PATH_NOT_FOUND;
++    }
++    return errno_to_status(e);
++}
++
+ NTSTATUS __stdcall xbox_NtCreateFile(
+     PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
+     PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
+@@ -871,11 +889,12 @@
+     if (fd < 0) {
+         int e = errno;
+         XBOX_TRACE(XBOX_LOG_FILE, "NtCreateFile FAILED: %s (errno=%d)", host_path, e);
++        NTSTATUS status = path_errno_to_status(e, host_path);
+         if (IoStatusBlock) {
+-            IoStatusBlock->Status = STATUS_OBJECT_NAME_NOT_FOUND;
++            IoStatusBlock->Status = status;
+             IoStatusBlock->Information = 0;
+         }
+-        return errno_to_status(e);
++        return status;
+     }
+ 
+     *FileHandle = w32_open_handle(fd, host_path);
+@@ -1307,7 +1326,7 @@
+     if (!ReplaceIfExists && stat(to, &st) == 0)
+         return (NTSTATUS)0xC0000035L;   /* STATUS_OBJECT_NAME_COLLISION */
+     if (rename(from, to) != 0)
+-        return errno_to_status(errno);
++        return path_errno_to_status(errno, to);
+     w32_set_handle_path(FileHandle, to);
+     return STATUS_SUCCESS;
+ }

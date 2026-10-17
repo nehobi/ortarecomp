@@ -166,6 +166,27 @@ void sub_002B53F0(void)
     g_esp += 4 + 24;
 }
 
+/* PDO_PEEK=VA:N[,VA:N...] (hex VA, dword count) logs guest memory with the
+ * frame-rate line, for bring-up. */
+static void peek_guest(void)
+{
+    const char *e = getenv("PDO_PEEK");
+    while (e && *e) {
+        char *end;
+        uint32_t va = (uint32_t)strtoul(e, &end, 16), n = 1;
+        if (*end == ':')
+            n = (uint32_t)strtoul(end + 1, &end, 0);
+        for (uint32_t i = 0; i < n; i += 8) {
+            char line[128];
+            int len = SDL_snprintf(line, sizeof line, "peek %08X:", va + i * 4);
+            for (uint32_t j = i; j < n && j < i + 8; j++)
+                len += SDL_snprintf(line + len, sizeof line - len, " %08X", MEM32(va + j * 4));
+            SDL_Log("%s", line);
+        }
+        e = *end == ',' ? end + 1 : NULL;
+    }
+}
+
 /* D3DDevice_Swap(Flags): the end of a frame. Like the console, it shows the
  * frame at a vblank, waiting for as many as the presentation interval asks
  * since the previous one. */
@@ -200,6 +221,7 @@ void sub_002BAFC0(void)
                     SDL_SetAtomicInt(&draws_called, 0), SDL_SetAtomicInt(&draws_drawn, 0),
                     SDL_SetAtomicInt(&draws_dropped, 0));
             t0 = now, f0 = n, v0 = current_vblank();
+            peek_guest();
         }
     }
     g_eax = 0;

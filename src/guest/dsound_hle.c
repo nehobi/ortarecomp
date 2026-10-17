@@ -366,6 +366,7 @@ void sub_002C2652(void)
         n = size;
     n1 = size - off < n ? size - off : n;
     n2 = n - n1;
+    TRACE("Lock 0x%08x offset %u, %u bytes, flags 0x%x", b, off, n, flags);
     if (ARG(3)) MEM32(ARG(3)) = data + off;
     if (ARG(4)) MEM32(ARG(4)) = n1;
     if (ARG(5)) MEM32(ARG(5)) = n2 ? data : 0;
@@ -405,6 +406,7 @@ void sub_002C25FA(void)
     bool looping = false, playing = id && pdo_voice_playing(id, &looping);
     if (ARG(1))
         MEM32(ARG(1)) = (playing ? 1u : 0u) | (playing && looping ? 4u : 0u);
+    TRACE("GetStatus 0x%08x -> %s", ARG(0), playing ? "playing" : "stopped");
     RETURN(8, id ? DS_OK : DSERR_INVALIDCALL);
 }
 
@@ -413,6 +415,7 @@ void sub_002C2616(void)
 {
     int id = voice_of(ARG(0));
     uint32_t pos = id ? pdo_voice_position(id) : 0;
+    TRACE("GetCurrentPosition 0x%08x -> %u", ARG(0), pos);
     if (ARG(1)) MEM32(ARG(1)) = pos;
     if (ARG(2)) MEM32(ARG(2)) = pos;
     RETURN(12, id ? DS_OK : DSERR_INVALIDCALL);
