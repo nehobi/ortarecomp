@@ -8,5 +8,6 @@
   {"start": "0x002A9CD0", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
   {"start": "0x002AB630", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
   {"start": "0x002AB860", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
-  {"start": "0x002ABA90", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"}
+  {"start": "0x002ABA90", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
+  {"start": "0x00307525", "observed": true, "note": "XAPI input init, called through a table from 0x003069DB; follows a ret 4 with no padding"}
 ]

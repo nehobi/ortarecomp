@@ -52,8 +52,12 @@ comment just above the function: `tools/xbe_match.py` reads it from there.
 
 Its `src/guest/d3d_hle.c`, `dsound_hle.c`, `input_hle.c`, `cri_hle.c` are
 tied to JSRF addresses (XDK 4134). Orta is XDK 4928: re-find every function
-and table (`tools/xbe_match.py` pairs what both share), and re-derive
-render-state indices from Orta's own setters, never from a 4134 table.
+and table, and re-derive render-state indices from Orta's own setters or
+tables, never from a 4134 table. Sources of names, all read locally:
+`tools/xbe_match.py` (what Orta shares with JSRF), Cxbx-Reloaded's
+XbSymbolDatabase CLI built from a local clone (XDK symbols), disassembly.
+Before replacing a function, check its `ret N` and argument use in Orta's
+own code.
 
 ## Layout
 

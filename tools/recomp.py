@@ -97,6 +97,55 @@ def identify(data):
     return desc, x["image_sha256"]
 
 
+# ── Missed functions ───────────────────────────────────────────────────
+
+def missed_targets(disasm_dir, xbe):
+    """Code addresses that real code calls (or tail-jumps to) but that are
+    not function starts.
+
+    The recompiler stubs every such target with an empty function that pops
+    nothing, so each caller's stack ends up off by the callee's arguments.
+    Orta's XInitDevices (0x003068D4, reached through a jmp thunk) was one:
+    its caller then read a neighbouring stack slot as a COM object.
+
+    Calls count from anywhere a function was detected, to anywhere in a code
+    section; a jump counts only when it lands outside every function (inside
+    one it is an ordinary branch). The disassembler's own seed guard rejects
+    a target that falls mid-instruction in an existing function, which is
+    what calls decoded from data mostly do.
+    """
+    with open(os.path.join(disasm_dir, "functions.json")) as f:
+        funcs = json.load(f)
+    with open(os.path.join(disasm_dir, "xrefs.json")) as f:
+        xrefs = json.load(f)
+    with open(xbe, "rb") as f:
+        info = xbe_info.parse(f.read())
+    code = [(s["va"], s["va"] + s["rsize"]) for s in info["sections"]
+            if s["flags"] & xbe_info.SECT_EXECUTABLE and s["name"] not in DATA_SECTIONS.split(",")
+            and s["name"] not in (".rdata", ".data", "DOLBY", "$$XTIMAGE")]
+    starts = {int(e["start"], 16) for e in funcs}
+    spans = sorted((int(e["start"], 16), int(e["start"], 16) + e["size"]) for e in funcs)
+
+    import bisect
+    lo = [a for a, _ in spans]
+
+    def inside(va):
+        i = bisect.bisect_right(lo, va) - 1
+        return i >= 0 and va < spans[i][1]
+
+    missed = set()
+    for x in xrefs:
+        if x["type"] not in ("call", "jump"):
+            continue
+        src, dst = int(x["from"], 16), int(x["to"], 16)
+        if dst in starts or not inside(src) or not any(a <= dst < b for a, b in code):
+            continue
+        if x["type"] == "jump" and inside(dst):
+            continue
+        missed.add(dst)
+    return sorted(missed)
+
+
 # ── Names carried over from JSRF ────────────────────────────────────────
 
 def apply_names(names_json, functions_json):
@@ -195,6 +244,19 @@ def main():
                    # Function entries seen at runtime that the static sweep misses.
                    "--seed-functions", os.path.join(ROOT, "tools", "pdo_seeds.json")]
     run_tool("disasm", *disasm_args)
+
+    # Direct calls (and tail jumps) to code the sweep did not turn into a
+    # function: seed them and disassemble again until none are left.
+    seeded = set()
+    for _ in range(3):
+        missed = set(missed_targets(d("disasm"), xbe)) - seeded
+        if not missed:
+            break
+        print(f"\n{len(missed)} call/jump targets are not functions yet; seeding them")
+        seeded |= missed
+        with open(d("missed_seeds.json"), "w") as f:
+            json.dump([{"start": f"0x{a:08X}", "note": "direct call target"} for a in sorted(seeded)], f)
+        run_tool("disasm", *disasm_args, "--seed-functions", d("missed_seeds.json"), "--force")
 
     if args.names:
         n = apply_names(args.names, d("disasm/functions.json"))

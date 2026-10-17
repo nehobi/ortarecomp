@@ -6,6 +6,8 @@
  * (MIT, Copyright (c) 2026 sp00nz; see licenses/xboxrecomp-MIT.txt).
  */
 
+#include "recomp_types.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,10 +93,12 @@ void recomp_icall_not_code_log(uint32_t va)
         if (n != 1)
             return;
     }
+    /* The call pushed its guest return address before the check: that
+     * names the caller, which the target alone (usually 0) cannot. */
     fprintf(stderr, "[ICALL] target 0x%08X is not code -- skipped %llu time(s) "
-                    "(null or wild function pointer, at call #%llu)\n",
+                    "(null or wild function pointer, at call #%llu, returning to 0x%08X)\n",
             va, (unsigned long long)hits[i],
-            (unsigned long long)g_icall_count);
+            (unsigned long long)g_icall_count, MEM32(g_esp));
     fflush(stderr);
 }
 
