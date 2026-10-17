@@ -1,4 +1,7 @@
 [
+  {"start": "0x00011B90", "observed": true, "note": "called through a pointer after sound init"},
+  {"start": "0x0026BAC0", "observed": true, "note": "called through a pointer during sound init; the sweep folded it into 0x0026BA80"},
+  {"start": "0x0026F460", "observed": true, "note": "called through a pointer during sound init"},
   {"start": "0x002A71E0", "observed": true, "note": "indirect call target at boot after the Sprite files; not found by the static sweep"},
   {"start": "0x002A7490", "observed": true, "note": "indirect call target at boot after the Sprite files; not found by the static sweep"},
   {"start": "0x002A7850", "observed": true, "note": "indirect call target at boot after the Sprite files; not found by the static sweep"},

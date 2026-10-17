@@ -93,6 +93,7 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         src/guest/video_hooks.c
         src/guest/crash_report.c
         src/guest/d3d_hle.c
+        src/guest/dsound_hle.c
         src/audio/mixer.c
         src/gfx/renderer.c
         src/gfx/xtex.c)

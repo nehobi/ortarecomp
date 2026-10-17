@@ -113,13 +113,21 @@ def missed_targets(disasm_dir, xbe):
     one it is an ordinary branch). The disassembler's own seed guard rejects
     a target that falls mid-instruction in an existing function, which is
     what calls decoded from data mostly do.
+
+    So do pointers in data sections (vtables, callback tables) that land
+    inside a detected function on a 16-byte boundary right after a ret or
+    padding: the sweep folded that function into the one before it, and a
+    call through the table then fails, popping no arguments either. Orta's
+    sound objects had several. Switch jump tables, the other pointers into a
+    function, sit in .text after their function, not in a data section.
     """
     with open(os.path.join(disasm_dir, "functions.json")) as f:
         funcs = json.load(f)
     with open(os.path.join(disasm_dir, "xrefs.json")) as f:
         xrefs = json.load(f)
     with open(xbe, "rb") as f:
-        info = xbe_info.parse(f.read())
+        image = f.read()
+    info = xbe_info.parse(image)
     code = [(s["va"], s["va"] + s["rsize"]) for s in info["sections"]
             if s["flags"] & xbe_info.SECT_EXECUTABLE and s["name"] not in DATA_SECTIONS.split(",")
             and s["name"] not in (".rdata", ".data", "DOLBY", "$$XTIMAGE")]
@@ -133,7 +141,25 @@ def missed_targets(disasm_dir, xbe):
         i = bisect.bisect_right(lo, va) - 1
         return i >= 0 and va < spans[i][1]
 
+    def byte_at(va):
+        for sec in info["sections"]:
+            if sec["va"] <= va < sec["va"] + sec["rsize"]:
+                return image[sec["raw"] + va - sec["va"]]
+        return None
+
     missed = set()
+    data_secs = [".rdata"] + DATA_SECTIONS.split(",")
+    for sec in info["sections"]:
+        if sec["name"] not in data_secs:
+            continue
+        raw = image[sec["raw"]:sec["raw"] + sec["rsize"]]
+        for off in range(0, len(raw) - 3, 4):
+            va = int.from_bytes(raw[off:off + 4], "little")
+            if va % 16 or va in starts or not inside(va) or not any(a <= va < b for a, b in code):
+                continue
+            if byte_at(va - 1) in (0xCC, 0x90, 0xC3) or byte_at(va - 3) == 0xC2:
+                missed.add(va)
+
     for x in xrefs:
         if x["type"] not in ("call", "jump"):
             continue

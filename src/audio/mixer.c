@@ -18,6 +18,11 @@
 #define MAX_VOICES     512
 #define BLOCK_FRAMES   256
 #define XADPCM_BLOCK   36      /* bytes per channel per block */
+#define MAX_PACKETS    64
+
+typedef struct packet {
+    uint32_t addr, bytes, tag;
+} packet;
 
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -33,6 +38,12 @@ typedef struct voice {
     /* ADPCM: the last decoded block, both channels */
     int32_t        cached_block;
     int16_t        cache[2][72];
+    /* Packet queue (streams): the head packet is desc.data/desc.bytes. */
+    bool           queued;
+    packet         q[MAX_PACKETS];
+    int            q_head, q_count;
+    pdo_packet_done_fn done;
+    void          *done_user;
 } voice;
 
 static voice voices[MAX_VOICES];
@@ -202,6 +213,64 @@ static float sample_at(voice *v, int ch, uint32_t frame)
 
 /* ── Mixing ───────────────────────────────────────────────────────────── */
 
+/* Make the head of the queue the voice's data (or none). */
+static void load_head(voice *v)
+{
+    if (v->q_count) {
+        v->desc.data = v->q[v->q_head].addr;
+        v->desc.bytes = v->q[v->q_head].bytes;
+    } else {
+        v->desc.data = 0;
+        v->desc.bytes = 0;
+    }
+    v->cached_block = -1;
+}
+
+static void pop_head(voice *v, bool flushed)
+{
+    packet p = v->q[v->q_head];
+
+    v->q_head = (v->q_head + 1) % MAX_PACKETS;
+    v->q_count--;
+    load_head(v);
+    if (v->done)
+        v->done(v->done_user, p.tag, flushed);
+}
+
+/* A packet-queue voice: play the head packet, moving to the next one at its
+ * end without a gap (the fraction of a frame carries over). Interpolation
+ * does not look across a packet boundary. */
+static void mix_queue(voice *v, float bins[][PDO_BIN_SPEAKERS], int frames)
+{
+    float g = v->volume * v->headroom;
+
+    for (int i = 0; i < frames; i++) {
+        uint32_t total, f0, f1;
+        float t;
+
+        while (v->q_count && v->pos >= (total = total_frames(v))) {
+            v->pos -= total;
+            pop_head(v, false);
+        }
+        if (!v->q_count) {
+            v->pos = 0;
+            return;
+        }
+        total = total_frames(v);
+        f0 = (uint32_t)v->pos;
+        f1 = f0 + 1 < total ? f0 + 1 : f0;
+        t = (float)(v->pos - f0);
+        for (int ch = 0; ch < v->desc.channels; ch++) {
+            float s = sample_at(v, ch, f0);
+            s += (sample_at(v, ch, f1) - s) * t;
+            s *= g;
+            for (int b = 0; b < PDO_BIN_SPEAKERS; b++)
+                bins[i][b] += s * v->gain[ch][b];
+        }
+        v->pos += v->step;
+    }
+}
+
 static void mix_voice(voice *v, float bins[][PDO_BIN_SPEAKERS], int frames)
 {
     uint32_t total = total_frames(v);
@@ -278,8 +347,12 @@ static void mix_block(float *out, int frames)
     memset(bins, 0, sizeof(bins[0]) * (size_t)frames);
     SDL_LockMutex(lock);
     for (int i = 0; i < MAX_VOICES; i++)
-        if (voices[i].used && voices[i].playing)
-            mix_voice(&voices[i], bins, frames);
+        if (voices[i].used && voices[i].playing) {
+            if (voices[i].queued)
+                mix_queue(&voices[i], bins, frames);
+            else
+                mix_voice(&voices[i], bins, frames);
+        }
     SDL_UnlockMutex(lock);
 
     /* Fold the speaker bins to stereo. LFE is not folded in, as a stereo
@@ -506,4 +579,43 @@ uint32_t pdo_voice_block_align(int id)
     WITH_VOICE(id, a = v->desc.format == PDO_FMT_XADPCM
                    ? XADPCM_BLOCK * (uint32_t)v->desc.channels : frame_bytes(v));
     return a;
+}
+
+void pdo_voice_set_packet_done(int id, pdo_packet_done_fn done, void *user)
+{
+    WITH_VOICE(id, v->done = done; v->done_user = user);
+}
+
+bool pdo_voice_queue(int id, uint32_t addr, uint32_t bytes, uint32_t tag)
+{
+    bool ok = false;
+    voice *v;
+
+    SDL_LockMutex(lock);
+    if ((v = get(id)) != NULL && v->q_count < MAX_PACKETS) {
+        packet *p = &v->q[(v->q_head + v->q_count) % MAX_PACKETS];
+        p->addr = addr;
+        p->bytes = bytes;
+        p->tag = tag;
+        v->queued = true;
+        if (v->q_count++ == 0) {
+            v->pos = 0;
+            load_head(v);
+        }
+        ok = true;
+    }
+    SDL_UnlockMutex(lock);
+    return ok;
+}
+
+int pdo_voice_queued(int id)
+{
+    int n = 0;
+    WITH_VOICE(id, n = v->q_count);
+    return n;
+}
+
+void pdo_voice_flush(int id)
+{
+    WITH_VOICE(id, while (v->q_count) pop_head(v, true); v->pos = 0);
 }

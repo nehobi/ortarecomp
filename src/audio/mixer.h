@@ -74,4 +74,18 @@ void pdo_voice_set_bins(int id, const pdo_voice_bin *bins, int count);
 
 uint32_t pdo_voice_block_align(int id);
 
+/* ── Packet queues (DirectSound streams) ─────────────────────────────────
+ * A voice can instead play a queue of packets back to back, as an
+ * IDirectSoundStream does: each is a span of guest memory in the voice's
+ * format. When one has been played (or flushed), done() is called with its
+ * tag, on the mixer thread with the mixer locked: it must not call back
+ * into the mixer. A voice with an empty queue plays silence and picks up
+ * the next packet as soon as it is queued. */
+typedef void (*pdo_packet_done_fn)(void *user, uint32_t tag, bool flushed);
+
+void pdo_voice_set_packet_done(int id, pdo_packet_done_fn done, void *user);
+bool pdo_voice_queue(int id, uint32_t guest_addr, uint32_t bytes, uint32_t tag);
+int  pdo_voice_queued(int id);          /* packets queued, the playing one included */
+void pdo_voice_flush(int id);           /* drop every queued packet, reporting each */
+
 #endif
