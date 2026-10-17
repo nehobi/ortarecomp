@@ -173,6 +173,13 @@ def missed_targets(disasm_dir, xbe):
                 and decodes(va))
 
     missed = set()
+    # A code section starts with a function. Orta's Sofdec decoder sections
+    # (PSGSFD_I, PSGSFD_P) are reached only through pointers set up at run
+    # time, and the start of a section follows no padding of its own.
+    for a, _ in code:
+        if a not in starts and not inside(a) and decodes(a):
+            missed.add(a)
+
     data_secs = [".rdata"] + DATA_SECTIONS.split(",")
     for sec in info["sections"]:
         if sec["name"] not in data_secs:
