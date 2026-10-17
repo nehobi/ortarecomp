@@ -1,0 +1,106 @@
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -115,6 +115,53 @@
+ }
+ 
+ /* Translate an Xbox OBJECT_ATTRIBUTES path to a Win32 wide path */
++/* The host path of each open directory handle, for NtQueryDirectoryFile, kept
++ * from the open rather than asked of the handle (GetFinalPathNameByHandleW can
++ * fail, depending on the volume). On a player's Windows PC Panzer Dragoon
++ * Orta's first listing of its disc root came back empty with no trace: its
++ * first-boot walk then created no folders in its HDD cache, and it retried
++ * copying into them forever. A listing that fails is now logged. */
++#define MAX_DIR_PATHS 64
++static struct { HANDLE handle; WCHAR path[MAX_PATH]; } s_dir_paths[MAX_DIR_PATHS];
++static CRITICAL_SECTION s_dir_paths_cs;
++static INIT_ONCE s_dir_paths_once = INIT_ONCE_STATIC_INIT;
++
++static BOOL CALLBACK dir_paths_init(PINIT_ONCE once, PVOID param, PVOID *ctx)
++{
++    (void)once; (void)param; (void)ctx;
++    InitializeCriticalSection(&s_dir_paths_cs);
++    return TRUE;
++}
++
++static void dir_path_set(HANDLE handle, const WCHAR *path)
++{
++    InitOnceExecuteOnce(&s_dir_paths_once, dir_paths_init, NULL, NULL);
++    EnterCriticalSection(&s_dir_paths_cs);
++    for (int i = 0; i < MAX_DIR_PATHS; i++)
++        if (s_dir_paths[i].handle == handle || (path && !s_dir_paths[i].handle)) {
++            s_dir_paths[i].handle = path ? handle : NULL;
++            if (path)
++                wcsncpy_s(s_dir_paths[i].path, MAX_PATH, path, _TRUNCATE);
++            break;
++        }
++    LeaveCriticalSection(&s_dir_paths_cs);
++}
++
++static BOOL dir_path_get(HANDLE handle, WCHAR *out, DWORD n)
++{
++    BOOL found = FALSE;
++    InitOnceExecuteOnce(&s_dir_paths_once, dir_paths_init, NULL, NULL);
++    EnterCriticalSection(&s_dir_paths_cs);
++    for (int i = 0; i < MAX_DIR_PATHS; i++)
++        if (s_dir_paths[i].handle == handle) {
++            wcsncpy_s(out, n, s_dir_paths[i].path, _TRUNCATE);
++            found = TRUE;
++            break;
++        }
++    LeaveCriticalSection(&s_dir_paths_cs);
++    return found;
++}
++
+ static BOOL translate_obj_path(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes,
+                                WCHAR* win_path, DWORD buf_size)
+ {
+@@ -225,6 +272,8 @@
+     }
+ 
+     *FileHandle = h;
++    if (CreateOptions & XBOX_FILE_DIRECTORY_FILE)
++        dir_path_set(h, win_path);
+     if (IoStatusBlock) {
+         IoStatusBlock->Status = STATUS_SUCCESS;
+         IoStatusBlock->Information = (CreateDisposition == XBOX_FILE_CREATE) ? 2 : 1;
+@@ -625,6 +674,7 @@
+  * value: its first answer was the old search's next entry. */
+ void xbox_dir_context_drop(HANDLE FileHandle)
+ {
++    dir_path_set(FileHandle, NULL);
+     if (!s_dir_cs_init)
+         return;
+     EnterCriticalSection(&s_dir_cs);
+@@ -670,11 +720,16 @@
+         }
+         WCHAR search_path[MAX_PATH];
+         WCHAR dir_path[MAX_PATH];
+-        DWORD path_len = GetFinalPathNameByHandleW(FileHandle, dir_path, MAX_PATH,
+-                                                   FILE_NAME_NORMALIZED);
+-        if (path_len == 0 || path_len >= MAX_PATH) {
+-            IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
+-            return STATUS_UNSUCCESSFUL;
++        if (!dir_path_get(FileHandle, dir_path, MAX_PATH)) {
++            DWORD path_len = GetFinalPathNameByHandleW(FileHandle, dir_path, MAX_PATH,
++                                                       FILE_NAME_NORMALIZED);
++            if (path_len == 0 || path_len >= MAX_PATH) {
++                xbox_log(XBOX_LOG_WARN, XBOX_LOG_FILE,
++                         "NtQueryDirectoryFile: no path for handle %p (err=%u)",
++                         FileHandle, (unsigned)GetLastError());
++                IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
++                return STATUS_UNSUCCESSFUL;
++            }
+         }
+         WCHAR* clean_path = dir_path;
+         if (wcsncmp(clean_path, L"\\\\?\\", 4) == 0)
+@@ -690,6 +745,9 @@
+         }
+         ctx->find_handle = FindFirstFileW(search_path, &ctx->find_data);
+         if (ctx->find_handle == INVALID_HANDLE_VALUE) {
++            if (GetLastError() != ERROR_FILE_NOT_FOUND)
++                xbox_log(XBOX_LOG_WARN, XBOX_LOG_FILE, "NtQueryDirectoryFile: %S (err=%u)",
++                         search_path, (unsigned)GetLastError());
+             ctx->find_handle = NULL;
+             IoStatusBlock->Status = STATUS_NO_MORE_FILES;
+             return STATUS_NO_MORE_FILES;
