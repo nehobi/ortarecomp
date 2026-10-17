@@ -3,7 +3,7 @@
 Repository set up from Concept of Love (JSRF): launcher, game-file picker,
 XISO reader, XBE identification, mixer, renderer (built; draws not wired
 yet), vertex-program runner (not built yet), crash report, xboxrecomp
-patches 0001-0008 plus 0009-0015 (Orta needed them). See
+patches 0001-0008 plus 0009-0016 (Orta needed them). See
 `docs/orta-facts.md` for facts about the game.
 
 **Boot (cloud, with the files the player uploaded):** the SEGA, Smilebit
@@ -59,7 +59,8 @@ Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
   from debug registers, 0010 `--exclude-sections`, 0011 `lahf` declares
   CF, 0012 stmxcsr/ldmxcsr as guest state, 0013 file rename, 0014 missing
   parent is PATH_NOT_FOUND, 0015 thread objects from
-  ObReferenceObjectByHandle: send upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
+  ObReferenceObjectByHandle, 0016 Windows: a partition's root is a
+  directory: send upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
 - **Names:** Cxbx-Reloaded's XbSymbolDatabase (MIT) CLI, built from a local
   clone, names 446 XDK symbols in Orta (functions, and D3D tables such as
   each render state's address). Facts only; nothing from it is committed.
