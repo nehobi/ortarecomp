@@ -3,15 +3,17 @@
 Repository set up from Concept of Love (JSRF): launcher, game-file picker,
 XISO reader, XBE identification, mixer, renderer (built; draws not wired
 yet), vertex-program runner (not built yet), crash report, xboxrecomp
-patches 0001-0008 plus 0009-0012 (Orta needed them). See
+patches 0001-0008 plus 0009-0015 (Orta needed them). See
 `docs/orta-facts.md` for facts about the game.
 
-**Boot (cloud, with the boot files the player uploaded):** the title gets
-through D3D, input and sound init and runs its main loop (~39 fps on
-lavapipe, frames black: draws are not replaced yet). It then asks for
-`Sprite\pdbox_main_menu.spr` and `st01\s01_bgm1.wav`, which the cloud
-copy does not have. Copies into the HDD cache (`Partition5\...\*.tmp`)
-fail: non-fatal, as in JSRF.
+**Boot (cloud, with the files the player uploaded):** init, CRI threads
+(60 passes/s), DirectSound, D3D and the main loop run; the HDD cache
+(`Partition5`, copy to `*.tmp` then rename) fills on first boot. The title
+then asks for `st11\st11.clr` (stage 11, not in the cloud copy) and keeps
+presenting frames with no draws yet. Earlier it reached the attract movie
+(`Movie\tgs_demover.sfd`, Sofdec) and waited for it to start: check that
+again once st11 is there. A cache made before patch 0014 lacks
+`Sprite/PandoraBox`: delete `saves/Cache` to rebuild it.
 
 - D3D (`src/guest/d3d_hle.c`): all of Concept of Love's replacements at
   Orta's addresses (vblank clock, device, clear, swap, draws, immediate
@@ -38,9 +40,10 @@ fail: non-fatal, as in JSRF.
   files; APPDATA excluded as data; a second disassembly pass seeds every
   direct call target in code and every data-table pointer that lands in a
   function right after a ret or padding (318 functions). xboxrecomp
-  v0.13.1 (193e299) + 12 patches (0009 `mov` from debug registers, 0010 `--exclude-sections`,
-  0011 `lahf` declares CF, 0012 stmxcsr/ldmxcsr as guest state: send
-  upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
+  v0.13.1 (193e299) + 15 patches (0009 `mov` from debug registers, 0010
+  `--exclude-sections`, 0011 `lahf` declares CF, 0012 stmxcsr/ldmxcsr as
+  guest state, 0013 file rename, 0014 case resolver and "dir/", 0015
+  missing parent is PATH_NOT_FOUND: send upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
 - **Names:** Cxbx-Reloaded's XbSymbolDatabase (MIT) CLI, built from a local
   clone, names 446 XDK symbols in Orta (functions, and D3D tables such as
   each render state's address). Facts only; nothing from it is committed.
@@ -60,8 +63,9 @@ fail: non-fatal, as in JSRF.
 
 ## Next
 
-1. More boot files from the player (main menu sprites, stage 1 music),
-   then check the warning and title screens draw, and music plays
+1. `st11\` from the player (4.4 MB), then the attract movie (Sofdec: the
+   handle status at +1 must reach 2; `PDO_PEEK` helps), then check the
+   warning and title screens draw, and music plays
    (PDO_AUDIO_DUMP or PDO_AUDIO_STATS).
 2. Then Concept of Love's order: XInput, vertex programs, pixel shaders,
    culling, render targets, FF lighting, stencil, fog. Debug switches (F11
