@@ -72,6 +72,15 @@ The executable is `build/OrtaRecomp` (`OrtaRecomp.exe` on Windows).
 Without step 3, this builds the launcher on its own, which is enough to test
 the game-file setup.
 
+If configure stops with "Could not apply ... to external/xboxrecomp" (a
+patch changed since it was applied), reset the checkout and configure again;
+every file the reset removes came from those patches:
+
+```bash
+git -C external/xboxrecomp checkout -- .
+git -C external/xboxrecomp clean -fd
+```
+
 ## 5. Run
 
 ```
