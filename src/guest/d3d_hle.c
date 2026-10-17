@@ -118,6 +118,12 @@ void sub_002ADCB0(void)
         if (index <= 3 || index % 600 == 0)
             SDL_Log("d3d: vblank %llu", (unsigned long long)index);
     }
+    /* Loading screens and movies wait here for seconds without a Swap: keep
+     * the window answering (Windows marks it "Not Responding" otherwise). */
+    if (!pdo_gfx_pump_events()) {
+        SDL_Log("d3d: window closed");
+        exit(0);
+    }
     g_esp += 4;
 }
 

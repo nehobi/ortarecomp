@@ -22,6 +22,7 @@ extern void pdo_dump_threads(void);   /* src/guest/crash_report.c: F11 */
 
 static SDL_GPUDevice *dev;
 static SDL_Window *window;
+static SDL_ThreadID window_thread;
 static bool have_swapchain;
 static SDL_GPUTexture *frame_color, *frame_depth, *white;
 static SDL_GPUTextureFormat depth_format;
@@ -744,6 +745,7 @@ bool pdo_gfx_init(int width, int height)
     }
     SDL_Log("gfx: GPU driver %s", SDL_GetGPUDeviceDriver(dev));
 
+    window_thread = SDL_GetCurrentThreadID();
     window = SDL_CreateWindow(WINDOW_TITLE, width * 2, height * 2, SDL_WINDOW_RESIZABLE);
     if (window && SDL_ClaimWindowForGPUDevice(dev, window))
         have_swapchain = true;
@@ -1290,12 +1292,15 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
     SDL_ReleaseGPUTransferBuffer(dev, tb);
 }
 
-bool pdo_gfx_present(void)
+/* Handles window and key events. Only the thread that made the window may
+ * (Windows sends its messages there); elsewhere this does nothing. */
+bool pdo_gfx_pump_events(void)
 {
-    SDL_GPUCommandBuffer *cmd;
     SDL_Event ev;
     bool keep_going = true;
 
+    if (window_thread && SDL_GetCurrentThreadID() != window_thread)
+        return true;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_EVENT_QUIT)
             keep_going = false;
@@ -1306,6 +1311,14 @@ bool pdo_gfx_present(void)
             SDL_Log("capture: frame %llu", (unsigned long long)capture_frame);
         }
     }
+    return keep_going;
+}
+
+bool pdo_gfx_present(void)
+{
+    SDL_GPUCommandBuffer *cmd;
+    bool keep_going = pdo_gfx_pump_events();
+
     frames++;
     if (!dev)
         return keep_going;

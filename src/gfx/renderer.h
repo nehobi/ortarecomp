@@ -131,6 +131,9 @@ void pdo_gfx_set_gamma(const uint8_t ramp[768]);
 /* Replay the recorded frame and show it. Returns false if the player closed
  * the window. */
 bool pdo_gfx_present(void);
+/* Window events between frames (loading, movies): false when the window was
+ * closed. */
+bool pdo_gfx_pump_events(void);
 
 uint64_t pdo_gfx_frame_count(void);
 void pdo_gfx_target_size(int *w, int *h);
