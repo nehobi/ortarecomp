@@ -1,0 +1,168 @@
+diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
+index cd357fe..b2587a7 100644
+--- a/src/kernel/kernel.h
++++ b/src/kernel/kernel.h
+@@ -564,6 +564,11 @@ const wchar_t *xbox_LastHostPath(void);
+ 
+ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size);
+ 
++/* NtSetInformationFile(FileRenameInformation): rename the open file to
++ * NewName (an Xbox path, absolute or relative to its RootDirectory). The
++ * bridge decodes the guest FILE_RENAME_INFORMATION into these arguments. */
++NTSTATUS xbox_RenameFile(HANDLE FileHandle, PXBOX_OBJECT_ATTRIBUTES NewName, BOOLEAN ReplaceIfExists);
++
+ /* Optional: a project sets this to see the guest paths the kernel translates
+  * (for example to print who opened a file). NULL by default; called before the
+  * path is translated, on the calling guest thread. Only paths a drive or
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index cbcce27..411959d 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -3613,6 +3613,36 @@ static void bridge_NtSetInformationFile(void)
+         g_eax = 0xC0000005u;                 /* STATUS_ACCESS_VIOLATION */
+         return;
+     }
++    if (infoclass == XboxFileRenameInformation && length >= 16) {
++        /* FILE_RENAME_INFORMATION as the guest lays it out: BOOLEAN
++         * ReplaceIfExists (padded to 4), HANDLE RootDirectory, then an
++         * OBJECT_STRING { USHORT Length, MaximumLength; PCHAR Buffer } whose
++         * buffer is a guest address. Decode it here, where guest addresses
++         * are understood, into the native form xbox_RenameFile takes. */
++        uint32_t root = BRIDGE_MEM32(info_va + 4);
++        uint32_t len  = BRIDGE_MEM32(info_va + 8) & 0xFFFFu;
++        uint32_t buf  = BRIDGE_MEM32(info_va + 12);
++        char path[MAX_PATH];
++        XBOX_ANSI_STRING name;
++        XBOX_OBJECT_ATTRIBUTES oa;
++
++        if (!buf || len >= sizeof(path) || !bridge_buf_ok(buf, len, "NtSetInformationFile")) {
++            bridge_write_iostatus(ios_va, (NTSTATUS)0xC000000D, 0);
++            g_eax = 0xC000000Du;             /* STATUS_INVALID_PARAMETER */
++            return;
++        }
++        memcpy(path, XBOX_TO_NATIVE(buf), len);
++        path[len] = '\0';
++        name.Buffer = path;
++        name.Length = (USHORT)len;
++        name.MaximumLength = (USHORT)(len + 1);
++        oa.RootDirectory = root && root != 0xFFFFFFFDu ? bridge_resolve_handle(root) : NULL;
++        oa.ObjectName = &name;
++        oa.Attributes = 0;
++        g_eax = (uint32_t)xbox_RenameFile(handle, &oa, BRIDGE_MEM8(info_va) != 0);
++        bridge_write_iostatus(ios_va, (NTSTATUS)g_eax, 0);
++        return;
++    }
+     g_eax = (uint32_t)xbox_NtSetInformationFile(handle, &ios,
+                 XBOX_TO_NATIVE(info_va), length,
+                 (XBOX_FILE_INFORMATION_CLASS)infoclass);
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+index 42135e0..e6fdfbd 100644
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -744,6 +744,42 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
+ }
+ 
+ /* ======================================================================== */
++/* Rename an open file (NtSetInformationFile, FileRenameInformation).
++ *
++ * Titles that cache disc files on the hard disk write a temporary copy and
++ * rename it into place once it is complete; Panzer Dragoon Orta copies to
++ * Z:\\<name>.tmp and renames. Unhandled, the rename failed, the cache never
++ * held the file, and the title copied it again on every load -- over and
++ * over for a file in a cache subfolder, which kept it in its loader. */
++NTSTATUS xbox_RenameFile(HANDLE FileHandle, PXBOX_OBJECT_ATTRIBUTES NewName, BOOLEAN ReplaceIfExists)
++{
++    WCHAR to[MAX_PATH];
++    BYTE buf[sizeof(FILE_RENAME_INFO) + MAX_PATH * sizeof(WCHAR)];
++    FILE_RENAME_INFO *ri = (FILE_RENAME_INFO *)buf;
++    size_t n;
++
++    if (!translate_obj_path(NewName, to, MAX_PATH))
++        return STATUS_OBJECT_PATH_NOT_FOUND;
++    n = wcslen(to);
++    memset(buf, 0, sizeof(buf));
++    ri->ReplaceIfExists = ReplaceIfExists ? TRUE : FALSE;
++    ri->FileNameLength = (DWORD)(n * sizeof(WCHAR));
++    memcpy(ri->FileName, to, (n + 1) * sizeof(WCHAR));
++    if (SetFileInformationByHandle(FileHandle, FileRenameInfo, ri, (DWORD)sizeof(buf)))
++        return STATUS_SUCCESS;
++    {   /* A handle opened without DELETE access cannot rename itself. */
++        WCHAR from[MAX_PATH];
++        DWORD used = GetFinalPathNameByHandleW(FileHandle, from, MAX_PATH,
++                                               FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
++        if (used && used < MAX_PATH &&
++            MoveFileExW(from, to, ReplaceIfExists ? MOVEFILE_REPLACE_EXISTING : 0))
++            return STATUS_SUCCESS;
++    }
++    return GetLastError() == ERROR_ALREADY_EXISTS || GetLastError() == ERROR_FILE_EXISTS
++         ? (NTSTATUS)0xC0000035L      /* STATUS_OBJECT_NAME_COLLISION */
++         : STATUS_UNSUCCESSFUL;
++}
++
+ #else /* !_WIN32 */
+ /* ====================  POSIX backend  =================================== */
+ /* ======================================================================== */
+@@ -1251,6 +1287,31 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
+     return STATUS_SUCCESS;
+ }
+ 
++/* Rename an open file; see the _WIN32 version above for why. */
++NTSTATUS xbox_RenameFile(HANDLE FileHandle, PXBOX_OBJECT_ATTRIBUTES NewName, BOOLEAN ReplaceIfExists)
++{
++    char to[MAX_PATH];
++    const char *from = w32_handle_path(FileHandle);
++    const char *xbox_path = get_xbox_path(NewName);
++    struct stat st;
++
++    if (!from || !xbox_path)
++        return STATUS_INVALID_PARAMETER;
++    if (NewName->RootDirectory && xbox_path[0] != '\\' && !(xbox_path[0] && xbox_path[1] == ':')) {
++        const char *dir = w32_handle_path(NewName->RootDirectory);
++        if (!dir || (size_t)snprintf(to, sizeof to, "%s/%s", dir, xbox_path) >= sizeof to)
++            return STATUS_OBJECT_PATH_NOT_FOUND;
++    } else if (!xbox_translate_path(xbox_path, to, MAX_PATH)) {
++        return STATUS_OBJECT_PATH_NOT_FOUND;
++    }
++    if (!ReplaceIfExists && stat(to, &st) == 0)
++        return (NTSTATUS)0xC0000035L;   /* STATUS_OBJECT_NAME_COLLISION */
++    if (rename(from, to) != 0)
++        return errno_to_status(errno);
++    w32_set_handle_path(FileHandle, to);
++    return STATUS_SUCCESS;
++}
++
+ #endif /* _WIN32 */
+ 
+ /* ======================================================================== */
+diff --git a/src/platform/win32_compat.c b/src/platform/win32_compat.c
+index ae0895e..63db76e 100644
+--- a/src/platform/win32_compat.c
++++ b/src/platform/win32_compat.c
+@@ -377,6 +377,15 @@ const char *w32_handle_path(HANDLE h)
+     return (o && o->kind == K_FILE) ? o->file_path : NULL;
+ }
+ 
++void w32_set_handle_path(HANDLE h, const char *host_path)
++{
++    w32_object *o = (w32_object *)h;
++    if (o && o->kind == K_FILE) {
++        free(o->file_path);
++        o->file_path = host_path ? strdup(host_path) : NULL;
++    }
++}
++
+ BOOL CloseHandle(HANDLE h)
+ {
+     if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS ||
+diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
+index 22762ee..4643517 100644
+--- a/src/platform/win32_compat.h
++++ b/src/platform/win32_compat.h
+@@ -127,6 +127,7 @@ BOOL  DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc,
+ HANDLE      w32_open_handle(int fd, const char *host_path);
+ int         w32_handle_fd(HANDLE h);
+ const char *w32_handle_path(HANDLE h);
++void        w32_set_handle_path(HANDLE h, const char *host_path);  /* after a rename */
+ 
+ /* ---- Events ----------------------------------------------------------- */
+ HANDLE CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialState, LPCSTR name);

@@ -42,6 +42,10 @@ static int swap_interval = 1;      /* vblanks per Swap; 0 = immediate */
 
 static void note_backbuffers(void);
 
+/* Draw calls since the last fps line: made, drawn, and dropped (no vertex
+ * data, an unhandled FVF or a program never created). */
+static SDL_AtomicInt draws_called, draws_drawn, draws_dropped;
+
 /* Call a guest __cdecl function taking one pointer argument. */
 static void call_guest_cdecl1(uint32_t fn_va, uint32_t arg)
 {
@@ -191,8 +195,10 @@ void sub_002BAFC0(void)
             t0 = now, f0 = n, v0 = current_vblank();
         else if (now - t0 >= 5 * SDL_NS_PER_SECOND) {
             double fps = (double)(n - f0) * SDL_NS_PER_SECOND / (double)(now - t0);
-            SDL_Log("d3d: %.2f fps (%.2f vblanks per frame), frame %llu", fps,
-                    (double)(current_vblank() - v0) / (double)(n - f0), (unsigned long long)n);
+            SDL_Log("d3d: %.2f fps (%.2f vblanks per frame), frame %llu; draws %d, drawn %d, dropped %d", fps,
+                    (double)(current_vblank() - v0) / (double)(n - f0), (unsigned long long)n,
+                    SDL_SetAtomicInt(&draws_called, 0), SDL_SetAtomicInt(&draws_drawn, 0),
+                    SDL_SetAtomicInt(&draws_dropped, 0));
             t0 = now, f0 = n, v0 = current_vblank();
         }
     }
@@ -1245,6 +1251,7 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
             static int warned;
             if (!warned++)
                 SDL_Log("d3d: vertex shader 0x%08x was never created through CreateVertexShader", st.vshader);
+            SDL_AddAtomicInt(&draws_dropped, 1);
             return;
         }
         fetch_vsh(p, base, stride, first, count, vbuf);
@@ -1264,6 +1271,7 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
         static int warned;
         if (!warned++)
             SDL_Log("d3d: FVF 0x%x not handled", st.vshader);
+        SDL_AddAtomicInt(&draws_dropped, 1);
         return;
     }
     fill_draw_state(&d, pre);
@@ -1316,6 +1324,7 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
     }
     ni = build_indices(type, order, n, ibuf, &d.ps.topology);
     pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
+    SDL_AddAtomicInt(&draws_drawn, 1);
 }
 
 static uint32_t *sequential(uint32_t n)
@@ -1339,6 +1348,7 @@ static uint32_t vb_data(void)
 /* D3DDevice_DrawVertices(PrimitiveType, StartVertex, VertexCount) */
 void sub_002AF2B0(void)
 {
+    SDL_AddAtomicInt(&draws_called, 1);
     uint32_t type = MEM32(g_esp + 4), start = MEM32(g_esp + 8), n = MEM32(g_esp + 12);
     if (vb_data() && n)
         submit(type, vb_data(), st.stride, start, n, sequential(n), n);
@@ -1349,6 +1359,7 @@ void sub_002AF2B0(void)
  * 16-bit indices, offset by SetIndices' BaseVertexIndex. */
 void sub_002AF350(void)
 {
+    SDL_AddAtomicInt(&draws_called, 1);
     uint32_t type = MEM32(g_esp + 4), n = MEM32(g_esp + 8), pidx = MEM32(g_esp + 12);
     static uint32_t *order, cap;
     uint32_t lo = 0xFFFFFFFFu, hi = 0;
@@ -1375,6 +1386,7 @@ void sub_002AF350(void)
  * VertexStreamZeroStride) */
 void sub_002AF010(void)
 {
+    SDL_AddAtomicInt(&draws_called, 1);
     uint32_t type = MEM32(g_esp + 4), n = MEM32(g_esp + 8), data = MEM32(g_esp + 12), stride = MEM32(g_esp + 16);
     if (data && n)
         submit(type, data, stride, 0, n, sequential(n), n);
@@ -1385,6 +1397,7 @@ void sub_002AF010(void)
  * pVertexStreamZeroData, VertexStreamZeroStride) */
 void sub_002AF170(void)
 {
+    SDL_AddAtomicInt(&draws_called, 1);
     uint32_t type = MEM32(g_esp + 4), n = MEM32(g_esp + 8), pidx = MEM32(g_esp + 12);
     uint32_t data = MEM32(g_esp + 16), stride = MEM32(g_esp + 20);
     static uint32_t *order, cap;
@@ -1514,6 +1527,7 @@ void sub_002AF600(void)
 /* D3DDevice_End() */
 void sub_002AF6A0(void)
 {
+    SDL_AddAtomicInt(&draws_called, 1);
     if (imm.active && imm.n) {
         static uint32_t *ibuf, icap;
         pdo_draw d;
