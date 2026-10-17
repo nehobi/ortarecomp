@@ -41,6 +41,22 @@ virtual addresses in the USA `default.xbe`.
   the build: patch 0009. Untranslated-instruction sites (`out`, `in`,
   `lcall`, `aas`...) are linear-sweep reads over data, as in JSRF.
 
+## Bring-up findings
+
+- Missed functions are dangerous, not just missing: the recompiler stubs a
+  direct-call target it did not detect with an empty function that pops no
+  arguments. XInitDevices (0x003068D4, at the start of XPP, reached through
+  a jmp thunk at 0x003075AF) was one; its caller's stack shifted 8 bytes
+  and a COM call five frames later read a wrong slot as its object.
+  `recomp.py` now seeds every direct call target in code sections and
+  disassembles again (154 more functions). The 245 stubs left are calls
+  decoded from data.
+- Game init (0x00011820) creates DirectSound through 0x0021E1E0 (same code
+  as JSRF's 0x001680D0) and downloads `dsstdfx.bin` through 0x0021DE70
+  (JSRF's 0x00168130); a failure sends it back to the dashboard.
+- D3D device fields moved by 0x124 from 4134 (vblank event +0x2554, vblank
+  callback +0x2550).
+
 ## Compared with JSRF (player notes)
 
 - Not cel-shaded: no inverted-hull outlines to get right.
