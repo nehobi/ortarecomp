@@ -3,18 +3,24 @@
 Repository set up from Concept of Love (JSRF): launcher, game-file picker,
 XISO reader, XBE identification, mixer, renderer (built; draws not wired
 yet), vertex-program runner (not built yet), crash report, xboxrecomp
-patches 0001-0008 plus 0009-0015 (Orta needed them). See
+patches 0001-0008 plus 0009-0014 (Orta needed them). See
 `docs/orta-facts.md` for facts about the game.
 
-**Boot (cloud, with the files the player uploaded):** init, CRI threads
-(60 passes/s), DirectSound, D3D and the main loop run; the HDD cache
-(`Partition5`, copy to `*.tmp` then rename) fills on first boot. The title
-then asks for `st11\st11.clr` (stage 11, not in the cloud copy) and keeps
-presenting frames with no draws yet. Earlier it reached the attract movie
-(`Movie\tgs_demover.sfd`, Sofdec) and waited for it to start: check that
-again once st11 is there. A cache made before patch 0014 lacks
-`Sprite/PandoraBox`: delete `saves/Cache` to rebuild it.
+**Boot (cloud, with the files the player uploaded):** the SEGA, Smilebit
+and Sofdec splash screens and the title screen ("PLEASE PRESS START TO
+BEGIN") draw, ~15 fps on lavapipe. Wrong so far: text boxes have grey
+backgrounds, the title logo looks incomplete. No sound heard yet. The title
+makes its HDD cache folders (`Partition5`) on first boot, for the folders
+on the disc: after adding files to a partial copy, delete `saves/Cache`.
+Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
+`Movie\tgs_demover.sfd`.
 
+- **Most geometry bypasses D3D's draw calls:** the game's renderer object
+  writes vertices inline into the push buffer (Begin 0x00279D30, GetSpace
+  0x00279E10, End 0x00279E50). `d3d_hle.c` wraps Begin and End and draws
+  the inline vertices like DrawVerticesUP. `PDO_D3D_TRACE=first-last`
+  logs every D3D call (hooks from `tools/gen_d3d_calltrace.py`, names from
+  a local XbSymbolDatabase run).
 - D3D (`src/guest/d3d_hle.c`): all of Concept of Love's replacements at
   Orta's addresses (vblank clock, device, clear, swap, draws, immediate
   mode, textures, render targets, lighting, vertex programs on the CPU,
@@ -40,10 +46,10 @@ again once st11 is there. A cache made before patch 0014 lacks
   files; APPDATA excluded as data; a second disassembly pass seeds every
   direct call target in code and every data-table pointer that lands in a
   function right after a ret or padding (318 functions). xboxrecomp
-  v0.13.1 (193e299) + 15 patches (0009 `mov` from debug registers, 0010
-  `--exclude-sections`, 0011 `lahf` declares CF, 0012 stmxcsr/ldmxcsr as
-  guest state, 0013 file rename, 0014 case resolver and "dir/", 0015
-  missing parent is PATH_NOT_FOUND: send upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
+  v0.13.1 (193e299) + 14 patches (0001 includes the case resolver's "dir/" fix; 0009 `mov`
+  from debug registers, 0010 `--exclude-sections`, 0011 `lahf` declares
+  CF, 0012 stmxcsr/ldmxcsr as guest state, 0013 file rename, 0014 missing
+  parent is PATH_NOT_FOUND: send upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
 - **Names:** Cxbx-Reloaded's XbSymbolDatabase (MIT) CLI, built from a local
   clone, names 446 XDK symbols in Orta (functions, and D3D tables such as
   each render state's address). Facts only; nothing from it is committed.
@@ -63,10 +69,9 @@ again once st11 is there. A cache made before patch 0014 lacks
 
 ## Next
 
-1. `st11\` from the player (4.4 MB), then the attract movie (Sofdec: the
-   handle status at +1 must reach 2; `PDO_PEEK` helps), then check the
-   warning and title screens draw, and music plays
-   (PDO_AUDIO_DUMP or PDO_AUDIO_STATS).
+1. Fix what the title screen shows wrong (blending of the text boxes, the
+   logo), check the attract movie plays (Sofdec, `PDO_PEEK` helps) and
+   music plays (PDO_AUDIO_DUMP or PDO_AUDIO_STATS).
 2. Then Concept of Love's order: XInput, vertex programs, pixel shaders,
    culling, render targets, FF lighting, stencil, fog. Debug switches (F11
    thread dump, scripted input) with the first of them.

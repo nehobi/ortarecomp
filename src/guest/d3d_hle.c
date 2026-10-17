@@ -1415,6 +1415,55 @@ void sub_002AF010(void)
     g_esp += 4 + 16;
 }
 
+/* The game's renderer object draws most of its geometry without D3D's draw
+ * calls: Begin (0x00279D30) reserves push-buffer space with BeginPush and
+ * writes NV2A SET_BEGIN_END(type), each GetSpace (0x00279E10) puts an
+ * INLINE_ARRAY header (method 0x1818) before room for N vertices that the
+ * caller fills, and End (0x00279E50) writes SET_BEGIN_END(0) and calls
+ * EndPush. The cursor is at 0x004EB1EC; the vertex stride is the object's
+ * +0x6C. Nothing executes our push buffer, so End draws what was written:
+ * the vertex runs, packed together over their headers, through the same path
+ * as DrawVerticesUP with the vertex format the game set. */
+#define INLINE_CURSOR 0x004EB1ECu
+
+static uint32_t inline_type, inline_start, inline_stride;
+
+extern void sub_00279D30_gen(void);
+void sub_00279D30(void)
+{
+    uint32_t self = MEM32(g_esp + 4), type = MEM32(g_esp + 8);
+
+    sub_00279D30_gen();
+    inline_start = g_eax == 0 ? MEM32(INLINE_CURSOR) : 0;
+    inline_type = type;
+    inline_stride = MEM32(self + 0x6C);
+}
+
+extern void sub_00279E50_gen(void);
+void sub_00279E50(void)
+{
+    uint32_t p = inline_start, end = MEM32(INLINE_CURSOR), out = inline_start;
+
+    SDL_AddAtomicInt(&draws_called, 1);
+    while (p && p < end) {
+        uint32_t head = MEM32(p), n = (head >> 18) & 0x7FF;
+        if ((head & 0xE003FFFFu) != 0x40001818u || p + 4 + n * 4 > end) {
+            SDL_Log("d3d: inline vertices: unexpected word 0x%08X", head);
+            out = inline_start;
+            break;
+        }
+        SDL_memmove((void *)XBOX_PTR(out), (void *)XBOX_PTR(p + 4), n * 4);
+        out += n * 4;
+        p += 4 + n * 4;
+    }
+    if (inline_stride && out > inline_start) {
+        uint32_t n = (out - inline_start) / inline_stride;
+        submit(inline_type, inline_start, inline_stride, 0, n, sequential(n), n);
+    }
+    inline_start = 0;
+    sub_00279E50_gen();
+}
+
 /* D3DDevice_DrawIndexedVerticesUP(PrimitiveType, VertexCount, pIndexData,
  * pVertexStreamZeroData, VertexStreamZeroStride) */
 void sub_002AF170(void)

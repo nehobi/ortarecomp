@@ -96,6 +96,7 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         src/guest/dsound_hle.c
         src/guest/cri_hle.c
         src/guest/vsh.c
+        src/guest/d3d_calltrace.c
         src/audio/mixer.c
         src/gfx/renderer.c
         src/gfx/xtex.c)

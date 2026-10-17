@@ -41,12 +41,3 @@ diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
      }
  
      *FileHandle = w32_open_handle(fd, host_path);
-@@ -1307,7 +1326,7 @@
-     if (!ReplaceIfExists && stat(to, &st) == 0)
-         return (NTSTATUS)0xC0000035L;   /* STATUS_OBJECT_NAME_COLLISION */
-     if (rename(from, to) != 0)
--        return errno_to_status(errno);
-+        return path_errno_to_status(errno, to);
-     w32_set_handle_path(FileHandle, to);
-     return STATUS_SUCCESS;
- }

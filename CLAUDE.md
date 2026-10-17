@@ -19,6 +19,9 @@ one function by address or name instead.
 - **Never edit generated C.** Fix the lifter (patch in `patches/xboxrecomp/`,
   to send upstream), the inputs to `tools/recomp.py`, or override a function
   in `src/guest/`. Regeneration must stay deterministic.
+- **xboxrecomp patches must not overlap.** `recomp.py` and CMake decide a
+  patch is applied with `git apply --reverse --check`, one patch at a time.
+  To change lines an earlier patch added, edit that patch instead.
 - **Third-party projects** (Cxbx-Reloaded, xemu, the JSRF Decompilation,
   other ports): facts only, no code. Symbol databases and listings are read
   from a local clone at run time, never committed. Our own GPL code from
