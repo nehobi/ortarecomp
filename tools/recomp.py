@@ -118,12 +118,15 @@ def missed_targets(disasm_dir, xbe):
     a target that falls mid-instruction in an existing function, which is
     what calls decoded from data mostly do.
 
-    So do pointers in data sections (vtables, callback tables) that land
-    inside a detected function on a 16-byte boundary right after a ret or
-    padding: the sweep folded that function into the one before it, and a
-    call through the table then fails, popping no arguments either. Orta's
-    sound objects had several. Switch jump tables, the other pointers into a
-    function, sit in .text after their function, not in a data section.
+    So do function addresses taken as data: pointers in data sections
+    (vtables, callback tables) and immediates in code (a callback being
+    registered), when they land on a 16-byte boundary right after a ret or
+    padding, inside a detected function (the sweep folded it into the one
+    before) or in a gap no function covers. A call through such a pointer
+    fails and pops no arguments either. Orta's sound objects had several;
+    0x0003E080, registered with `push offset`, was another. Switch jump
+    tables, the other pointers into a function, sit in .text after their
+    function, and are reached by an indexed jump, not an immediate.
     """
     with open(os.path.join(disasm_dir, "functions.json")) as f:
         funcs = json.load(f)
@@ -151,6 +154,24 @@ def missed_targets(disasm_dir, xbe):
                 return image[sec["raw"] + va - sec["va"]]
         return None
 
+    import capstone
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+
+    def decodes(va):
+        """The first few instructions at va decode: not data that a stray
+        pointer happens to name (0x00201E40 in Orta was a table)."""
+        for sec in info["sections"]:
+            if sec["va"] <= va < sec["va"] + sec["rsize"]:
+                o = sec["raw"] + va - sec["va"]
+                return len(list(md.disasm(image[o:o + 32], va, 4))) == 4
+        return False
+
+    def taken_address(va):
+        """A function start that only a pointer leads to."""
+        return (va % 16 == 0 and va not in starts and any(a <= va < b for a, b in code)
+                and (byte_at(va - 1) in (0xCC, 0x90, 0xC3) or byte_at(va - 3) == 0xC2)
+                and decodes(va))
+
     missed = set()
     data_secs = [".rdata"] + DATA_SECTIONS.split(",")
     for sec in info["sections"]:
@@ -159,12 +180,14 @@ def missed_targets(disasm_dir, xbe):
         raw = image[sec["raw"]:sec["raw"] + sec["rsize"]]
         for off in range(0, len(raw) - 3, 4):
             va = int.from_bytes(raw[off:off + 4], "little")
-            if va % 16 or va in starts or not inside(va) or not any(a <= va < b for a, b in code):
-                continue
-            if byte_at(va - 1) in (0xCC, 0x90, 0xC3) or byte_at(va - 3) == 0xC2:
+            if taken_address(va):
                 missed.add(va)
 
     for x in xrefs:
+        if x["type"] == "data_imm":
+            if inside(int(x["from"], 16)) and taken_address(int(x["to"], 16)):
+                missed.add(int(x["to"], 16))
+            continue
         if x["type"] not in ("call", "jump", "cond_jump"):
             continue
         src, dst = int(x["from"], 16), int(x["to"], 16)
