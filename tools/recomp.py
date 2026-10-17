@@ -109,8 +109,12 @@ def missed_targets(disasm_dir, xbe):
     its caller then read a neighbouring stack slot as a COM object.
 
     Calls count from anywhere a function was detected, to anywhere in a code
-    section; a jump counts only when it lands outside every function (inside
-    one it is an ordinary branch). The disassembler's own seed guard rejects
+    section; a jump, conditional or not, counts only when it lands outside
+    every function (inside one it is an ordinary branch). The lifter turns
+    such a jump into a tail call, so an undetected target is a stub that
+    pops 4 bytes, the caller's return address: 0x0026E940 (a file object's
+    GetName-like method) was cut after its first `ret 0xc`, and its `je` to
+    the shared error exit at 0x0026E96E went into such a stub. The disassembler's own seed guard rejects
     a target that falls mid-instruction in an existing function, which is
     what calls decoded from data mostly do.
 
@@ -161,12 +165,12 @@ def missed_targets(disasm_dir, xbe):
                 missed.add(va)
 
     for x in xrefs:
-        if x["type"] not in ("call", "jump"):
+        if x["type"] not in ("call", "jump", "cond_jump"):
             continue
         src, dst = int(x["from"], 16), int(x["to"], 16)
         if dst in starts or not inside(src) or not any(a <= dst < b for a, b in code):
             continue
-        if x["type"] == "jump" and inside(dst):
+        if x["type"] != "call" and inside(dst):
             continue
         missed.add(dst)
     return sorted(missed)
