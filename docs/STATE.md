@@ -12,7 +12,13 @@ BEGIN") draw, ~15 fps on lavapipe. Wrong so far: text boxes have grey
 backgrounds, the title logo looks incomplete. The attract movie
 (Sofdec) plays with sound and returns to the title. **Windows (player's
 PC, full disc):** builds and runs from PowerShell; logos, intro movie and
-title loop with no hang. The title
+title loop with no hang.
+- **Input** (`src/guest/input_hle.c`, from Concept of Love): XAPI's
+  XGetDevices/XInputOpen/GetState/SetState/Poll/GetCapabilities replaced,
+  fed from SDL gamepads and keyboard (Enter is Start, Space is A, arrows
+  the d-pad). Start on the title opens the main menu.
+  `PDO_INPUT_SCRIPT=frame:button:frames,...` presses buttons headless.
+  Menu graphics stay drawn over later screens (not cleared). The title
 makes its HDD cache folders (`Partition5`) on first boot, for the folders
 on the disc: after adding files to a partial copy, delete `saves/Cache`.
 Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
