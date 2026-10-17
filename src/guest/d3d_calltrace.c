@@ -24,7 +24,6 @@ void sub_002AEED0_enter(void) { d3d_trace_call(0x002AEED0u, "D3DDevice_SetStippl
 void sub_002AEF50_enter(void) { d3d_trace_call(0x002AEF50u, "D3D_AllocContiguousMemory", 2); }
 void sub_002AEF70_enter(void) { d3d_trace_call(0x002AEF70u, "?", 0); }
 void sub_002AF6E0_enter(void) { d3d_trace_call(0x002AF6E0u, "D3DDevice_SetRenderState_PSTextureModes", 1); }
-void sub_002AF710_enter(void) { d3d_trace_call(0x002AF710u, "D3DDevice_SetRenderState_Simple", 0); }
 void sub_002AFA10_enter(void) { d3d_trace_call(0x002AFA10u, "D3DDevice_SetRenderState_EdgeAntiAlias", 1); }
 void sub_002AFA50_enter(void) { d3d_trace_call(0x002AFA50u, "D3DDevice_SetRenderState_ShadowFunc", 1); }
 void sub_002AFA90_enter(void) { d3d_trace_call(0x002AFA90u, "D3DDevice_SetRenderState_FogColor", 1); }

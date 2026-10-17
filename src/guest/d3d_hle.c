@@ -322,6 +322,33 @@ enum {
     RS_ZENABLE = 143, RS_STENCILENABLE = 144, RS_STENCILFAIL = 145, RS_CULLMODE = 147,
     RS_TEXTUREFACTOR = 148,
 };
+/* D3DDevice_SetRenderState_Simple(method in ecx, value in edx): writes one
+ * NV2A method to the push buffer. The XDK's inline SetRenderState stores the
+ * value in D3D__RenderState before calling it, but Orta's renderer object calls
+ * it directly (0x00279C70 sets COLORWRITEENABLE this way, others blending and
+ * the depth test), so the table we read at draw time never saw those states:
+ * blending stayed off and text boxes came out opaque. Record the value under
+ * the state whose method it is, from the XDK's own encode table (states 57-83;
+ * the values of simple states are the NV2A ones). */
+#define RS_ENCODE 0x00310BFCu
+void sub_002AF710_enter(void)
+{
+    static uint32_t method[83 + 1];
+    static bool ready;
+
+    d3d_trace_call(0x002AF710u, "D3DDevice_SetRenderState_Simple", 0);
+    if (!ready) {
+        for (int i = 57; i <= 83; i++)
+            method[i] = MEM32(RS_ENCODE + 4u * (uint32_t)(i - 57));
+        ready = true;
+    }
+    for (int i = 57; i <= 83; i++)
+        if (method[i] == g_ecx) {
+            RS(i) = g_edx;
+            return;
+        }
+}
+
 /* D3DTEXTURESTAGESTATETYPE: as in 4134 (SetTextureState_TexCoordIndex,
  * 0x002AFF70, writes index 28). */
 enum {

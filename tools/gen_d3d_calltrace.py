@@ -44,10 +44,13 @@ def main():
         for m in re.finditer(r"^void (\w+_([0-9A-F]{8}))\(void\)\n\{(.*?)^\}", text, re.S | re.M):
             src[int(m.group(2), 16)] = m.group(3)
 
-    # Replaced outright in src/guest/: an entry hook would never run.
+    # Replaced outright in src/guest/: an entry hook would never run. Hooked
+    # by hand already: that hook does the tracing (one per address).
     replaced = set()
     for p in glob.glob(os.path.join(ROOT, "src/**/*.c"), recursive=True):
-        for m in re.finditer(r"^void sub_([0-9A-F]{8})\(void\)", open(p).read(), re.M):
+        if os.path.basename(p) == "d3d_calltrace.c":
+            continue
+        for m in re.finditer(r"^void sub_([0-9A-F]{8})(?:_enter)?\(void\)", open(p).read(), re.M):
             replaced.add(int(m.group(1), 16))
 
     out = [
