@@ -1,0 +1,18 @@
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -179,8 +179,12 @@
+     }
+ 
+     if (CreateOptions & XBOX_FILE_DIRECTORY_FILE) {
+-        if (CreateDisposition == XBOX_FILE_CREATE || CreateDisposition == XBOX_FILE_OPEN_IF)
+-            CreateDirectoryW(win_path, NULL);
++        if ((CreateDisposition == XBOX_FILE_CREATE || CreateDisposition == XBOX_FILE_OPEN_IF)
++                && !CreateDirectoryW(win_path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
++            /* Logged: the open below then fails with a path error that
++             * hides why the directory is missing. */
++            xbox_log(XBOX_LOG_WARN, XBOX_LOG_FILE, "CreateDirectory FAILED: %S (err=%u)",
++                     win_path, (unsigned)GetLastError());
+         h = CreateFileW(win_path, xbox_access_to_win32(DesiredAccess),
+             xbox_share_to_win32(ShareAccess), NULL, OPEN_EXISTING,
+             FILE_FLAG_BACKUP_SEMANTICS, NULL);
