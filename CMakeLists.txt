@@ -94,10 +94,10 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         src/guest/crash_report.c
         src/guest/d3d_hle.c
         src/guest/dsound_hle.c
+        src/guest/vsh.c
         src/audio/mixer.c
         src/gfx/renderer.c
         src/gfx/xtex.c)
-    # Not built until vertex programs are wired up: src/guest/vsh.c.
     target_include_directories(pdo_recomp PUBLIC "${PDO_GEN_DIR}" src)
     target_link_libraries(pdo_recomp PUBLIC xbox_kernel SDL3::SDL3-static)
     if(WIN32)

@@ -13,8 +13,15 @@ lavapipe, frames black: draws are not replaced yet). It then asks for
 copy does not have. Copies into the HDD cache (`Partition5\...\*.tmp`)
 fail: non-fatal, as in JSRF.
 
-- D3D (`src/guest/d3d_hle.c`): vblank clock, CreateDevice, Clear, Swap,
-  BlockOnTime. Lavapipe works in the cloud (`mesa-vulkan-drivers`).
+- D3D (`src/guest/d3d_hle.c`): all of Concept of Love's replacements at
+  Orta's addresses (vblank clock, device, clear, swap, draws, immediate
+  mode, textures, render targets, lighting, vertex programs on the CPU,
+  pixel shaders, gamma). Not seen drawing yet: the cloud copy stops at the
+  missing main menu sprite. 4928 differences: render-state indices
+  (deferred +10, complex +19, see the enum), back buffers in the device at
+  +0x21C0 (GetBackBuffer2 returns one), vertex constants read at draw time
+  from the library's shadow at 0x002BEB08. Lavapipe works in the cloud
+  (`mesa-vulkan-drivers`).
 - DirectSound (`src/guest/dsound_hle.c`): Concept of Love's 50 entry
   points at Orta's addresses, plus GetSpeakerConfig, SetMixBinVolumes,
   buffer Pause and streams (DirectSoundCreateStream, the
@@ -54,11 +61,10 @@ fail: non-fatal, as in JSRF.
 ## Next
 
 1. More boot files from the player (main menu sprites, stage 1 music),
-   then check music plays (PDO_AUDIO_DUMP or the mixer stats).
-2. D3D draws, textures, shaders: port the rest of `d3d_hle.c` with
-   XbSymbolDatabase names; render-state indices from its D3DRS_* addresses.
-3. Then Concept of Love's order: XInput, vertex programs, pixel shaders,
+   then check the warning and title screens draw, and music plays
+   (PDO_AUDIO_DUMP or PDO_AUDIO_STATS).
+2. Then Concept of Love's order: XInput, vertex programs, pixel shaders,
    culling, render targets, FF lighting, stencil, fog. Debug switches (F11
    thread dump, scripted input) with the first of them.
-4. What PSGSFD* (probably Sofdec) and WMADEC are used for: FMVs and music
+3. What PSGSFD* (probably Sofdec) and WMADEC are used for: FMVs and music
    need a plan.
