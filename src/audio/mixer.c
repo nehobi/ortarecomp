@@ -29,7 +29,7 @@ extern ptrdiff_t g_xbox_mem_offset;
 typedef struct voice {
     bool           used;
     pdo_voice_desc desc;
-    bool           playing, looping;
+    bool           playing, looping, paused;
     double         pos;                 /* in frames */
     uint32_t       loop_start, loop_len;/* frames; len 0 = whole buffer */
     float          volume, headroom;    /* linear */
@@ -518,12 +518,19 @@ void pdo_voice_set_data(int id, uint32_t addr, uint32_t bytes)
 
 void pdo_voice_play(int id, bool looping)
 {
-    WITH_VOICE(id, v->playing = true; v->looping = looping);
+    WITH_VOICE(id, v->playing = true; v->looping = looping; v->paused = false);
 }
 
 void pdo_voice_stop(int id)
 {
-    WITH_VOICE(id, v->playing = false);
+    WITH_VOICE(id, v->playing = false; v->paused = false);
+}
+
+void pdo_voice_pause(int id, bool pause)
+{
+    WITH_VOICE(id,
+        if (pause && v->playing) { v->playing = false; v->paused = true; }
+        else if (!pause && v->paused) { v->playing = true; v->paused = false; });
 }
 
 bool pdo_voice_playing(int id, bool *looping)

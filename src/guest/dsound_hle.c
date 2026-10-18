@@ -537,18 +537,14 @@ void sub_002C2566(void)
 }
 
 /* IDirectSoundBuffer_Pause(pBuf, dwPause): DSBPAUSE_RESUME 0, DSBPAUSE_PAUSE
- * 1, DSBPAUSE_SYNCHPAUSE 2. Pausing keeps the position. */
+ * 1, DSBPAUSE_SYNCHPAUSE 2. Pausing keeps the position; resuming restarts
+ * only a paused buffer. Restarting any stopped one brought back looping
+ * gunshots the game had stopped, every time its sound code resumed its
+ * buffers, until they piled up. */
 static void pause_voice(int id, uint32_t how)
 {
-    bool looping = false;
-
-    if (!id)
-        return;
-    pdo_voice_playing(id, &looping);
-    if (how == 0)
-        pdo_voice_play(id, looping);
-    else
-        pdo_voice_stop(id);
+    if (id)
+        pdo_voice_pause(id, how != 0);
 }
 
 void sub_002C25BE(void)

@@ -63,6 +63,9 @@ void pdo_voice_destroy(int id);
 void pdo_voice_set_data(int id, uint32_t guest_addr, uint32_t bytes);
 void pdo_voice_play(int id, bool looping);
 void pdo_voice_stop(int id);
+/* Pause keeps the position; resume restarts only a voice paused this way
+ * (a stopped or finished one stays stopped). */
+void pdo_voice_pause(int id, bool pause);
 bool pdo_voice_playing(int id, bool *looping);
 void pdo_voice_set_position(int id, uint32_t byte_offset);
 uint32_t pdo_voice_position(int id);
