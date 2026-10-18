@@ -3,7 +3,7 @@
 Repository set up from Concept of Love (JSRF): launcher, game-file picker,
 XISO reader, XBE identification, mixer, renderer (built; draws not wired
 yet), vertex-program runner (not built yet), crash report, xboxrecomp
-patches 0001-0008 plus 0009-0018 (Orta needed them). See
+patches 0001-0008 plus 0009-0019 (Orta needed them). See
 `docs/orta-facts.md` for facts about the game.
 
 **Boot (cloud, with the files the player uploaded):** the SEGA, Smilebit
@@ -18,7 +18,9 @@ title loop with no hang.
   fed from SDL gamepads and keyboard (Enter is Start, Space is A, arrows
   the d-pad). Start on the title opens the main menu.
   `PDO_INPUT_SCRIPT=frame:button:frames,...` presses buttons headless.
-  Menu graphics stay drawn over later screens (not cleared). The title
+  NEW GAME -> difficulty menu -> the prologue text (cloud). Menu graphics
+  stay drawn over later screens (not cleared).
+  `tools/recomp.py --trace-functions all` emits entry hooks for bring-up. The title
 makes its HDD cache folders (`Partition5`) on first boot, for the folders
 on the disc: after adding files to a partial copy, delete `saves/Cache`.
 Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
@@ -61,7 +63,9 @@ Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
   parent is PATH_NOT_FOUND, 0015 thread objects from
   ObReferenceObjectByHandle, 0016 Windows: a partition's root is a
   directory, 0017-0018 Windows directory create/listing (logged; listing
-  path kept from the open): send upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
+  path kept from the open; zero-length pattern is "*"), 0019 no
+  immediate-reference function start where code falls through: send
+  upstream), SDL 3.4.16. 14 observed seeds in `tools/pdo_seeds.json`.
 - **Names:** Cxbx-Reloaded's XbSymbolDatabase (MIT) CLI, built from a local
   clone, names 446 XDK symbols in Orta (functions, and D3D tables such as
   each render state's address). Facts only; nothing from it is committed.
