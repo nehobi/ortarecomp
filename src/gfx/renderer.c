@@ -1096,6 +1096,12 @@ static void copy_rect(SDL_GPUCommandBuffer *cmd, const command *c)
     SDL_EndGPUCopyPass(copy);
 }
 
+/* PDO_CAPTURE_STEP=n: at the capture frame, also save the target being
+ * drawn to after every n commands (capture_<frame>_<count>.bmp), to find the
+ * draw that goes wrong. The frame is replayed once per image. */
+static uint32_t replay_limit = UINT32_MAX;
+static bool replay_keep;
+
 static void replay(SDL_GPUCommandBuffer *cmd)
 {
     static uint8_t *staging;
@@ -1171,7 +1177,9 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         SDL_GPUTextureSamplerBinding tsb[4];
         SDL_GPUViewport vp;
 
-        if (frames == capture_frame)
+        if (i >= replay_limit)
+            break;
+        if (frames == capture_frame && replay_limit == UINT32_MAX)
             log_command(i, c, cmd_tex + i * 4);
 
         if (c->kind == CMD_CLEAR) {
@@ -1240,11 +1248,12 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     if (pass)
         SDL_EndGPURenderPass(pass);
 
-    nverts = nindices = ncmds = 0;
+    if (!replay_keep)
+        nverts = nindices = ncmds = 0;
 }
 
 /* Read the frame target back and write it as a BMP. Slow; debugging only. */
-static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const char *name)
+static void save_texture(SDL_GPUCommandBuffer **cmdp, SDL_GPUTexture *tex, int w, int h, const char *path)
 {
     SDL_GPUTransferBufferCreateInfo tbi;
     SDL_GPUTransferBuffer *tb;
@@ -1253,19 +1262,18 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
     SDL_GPUCopyPass *copy;
     SDL_GPUFence *fence;
     void *pixels;
-    char path[1024];
 
     SDL_zero(tbi);
     tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-    tbi.size = (Uint32)(frame_w * frame_h * 4);
+    tbi.size = (Uint32)(w * h * 4);
     tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
     if (!tb)
         return;
     copy = SDL_BeginGPUCopyPass(*cmdp);
     SDL_zero(src);
-    src.texture = output;
-    src.w = (Uint32)frame_w;
-    src.h = (Uint32)frame_h;
+    src.texture = tex;
+    src.w = (Uint32)w;
+    src.h = (Uint32)h;
     src.d = 1;
     SDL_zero(dst);
     dst.transfer_buffer = tb;
@@ -1280,9 +1288,7 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
     }
     pixels = SDL_MapGPUTransferBuffer(dev, tb, false);
     if (pixels) {
-        SDL_Surface *s = SDL_CreateSurfaceFrom(frame_w, frame_h, SDL_PIXELFORMAT_ABGR8888,
-                                               pixels, frame_w * 4);
-        snprintf(path, sizeof path, "%s/%s_%05llu.bmp", dir, name, (unsigned long long)frames);
+        SDL_Surface *s = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_ABGR8888, pixels, w * 4);
         if (s) {
             SDL_SaveBMP(s, path);
             SDL_DestroySurface(s);
@@ -1290,6 +1296,41 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
         SDL_UnmapGPUTransferBuffer(dev, tb);
     }
     SDL_ReleaseGPUTransferBuffer(dev, tb);
+}
+
+static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const char *name)
+{
+    char path[1024];
+
+    snprintf(path, sizeof path, "%s/%s_%05llu.bmp", dir, name, (unsigned long long)frames);
+    save_texture(cmdp, output, frame_w, frame_h, path);
+}
+
+static void capture_steps(void)
+{
+    const char *e = getenv("PDO_CAPTURE_STEP");
+    uint32_t step = e ? (uint32_t)atol(e) : 0, total = ncmds;
+
+    if (!step)
+        return;
+    replay_keep = true;
+    for (uint32_t lim = step; lim < total; lim += step) {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+        char path[64];
+        Uint32 w, h;
+
+        if (!cmd)
+            break;
+        replay_limit = lim;
+        replay(cmd);
+        cur_size(&w, &h);
+        snprintf(path, sizeof path, "capture_%05llu_%04u.bmp", (unsigned long long)frames, lim);
+        save_texture(&cmd, cur_color(), (int)w, (int)h, path);
+        if (cmd)
+            SDL_SubmitGPUCommandBuffer(cmd);
+    }
+    replay_limit = UINT32_MAX;
+    replay_keep = false;
 }
 
 /* Handles window and key events. Only the thread that made the window may
@@ -1323,6 +1364,8 @@ bool pdo_gfx_present(void)
     if (!dev)
         return keep_going;
 
+    if (frames == capture_frame)
+        capture_steps();
     cmd = SDL_AcquireGPUCommandBuffer(dev);
     if (!cmd)
         return keep_going;
