@@ -436,6 +436,27 @@ static void clear_texture(SDL_GPUTexture *t)
 }
 
 /* The GPU target for a guest surface, created on first use. */
+/* A colour surface without memory (data 0, with a format and size): the
+ * game draws depth only into it, e.g. a shadow map whose depth buffer is a
+ * texture. Its colour goes to a scratch target of that size, not the frame
+ * (data 0 with no format is the back buffer). */
+#define NO_COLOUR_DATA 0x7FFFF000u
+
+static rtarget *target_for_surface(const pdo_surface *s);
+
+static rtarget *target_of(const pdo_surface *s)
+{
+    pdo_surface scratch;
+
+    if (s->data)
+        return target_for_surface(s);
+    if (!s->format_word)
+        return NULL;
+    scratch = *s;
+    scratch.data = NO_COLOUR_DATA;
+    return target_for_surface(&scratch);
+}
+
 static rtarget *target_for_surface(const pdo_surface *s)
 {
     SDL_GPUTextureCreateInfo ti;
@@ -499,8 +520,7 @@ void pdo_gfx_set_target(const pdo_surface *color)
     command *c = new_command();
     c->kind = CMD_TARGET;
     c->surf = *color;
-    if (color->data)
-        target_for_surface(color);
+    target_of(color);
 }
 
 void pdo_gfx_copy_rect(const pdo_surface *src, const pdo_surface *dst,
@@ -540,6 +560,18 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
         rtarget *r = find_target(t->data, info.width, info.height);
         if (r)
             return r->color;
+    }
+    if (info.format >= 0x2A && info.format <= 0x31) {
+        /* Depth textures (D24S8, F24S8, D16, F16, swizzled and linear): a
+         * shadow map, sampled with a depth compare. Shadow maps are not
+         * drawn yet, so read it as fully lit rather than as black texels. */
+        static bool noted;
+        if (!noted) {
+            noted = true;
+            SDL_Log("gfx: depth texture (format 0x%02x) sampled: shadow maps not implemented, drawn lit",
+                    info.format);
+        }
+        return white;
     }
     if (!info.known) {
         static uint32_t warned[256];
@@ -1192,7 +1224,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             if (pass)
                 SDL_EndGPURenderPass(pass);
             pass = NULL;
-            cur_target = c->surf.data ? target_for_surface(&c->surf) : NULL;
+            cur_target = target_of(&c->surf);
             continue;
         }
         if (c->kind == CMD_COPY) {
