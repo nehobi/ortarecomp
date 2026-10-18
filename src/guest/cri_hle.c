@@ -26,6 +26,8 @@
 
 extern void sub_00233BD0_gen(void);
 extern void sub_00233C10_gen(void);
+extern void sub_00236BC0_gen(void);
+extern void sub_00236080_gen(void);
 
 static SDL_AtomicInt lock_ready;
 static SDL_Mutex *lock;
@@ -80,5 +82,31 @@ void sub_00233BD0(void)
 void sub_00233C10(void)
 {
     sub_00233C10_gen();
+    SDL_UnlockMutex(cri_lock());
+}
+
+/* CRI's server passes run under the same lock. On the Xbox, LOCK raises the
+ * caller to priority 15 and resumes the spin thread (0x00233CB0, priority
+ * 2): neither the vblank servers (priority 1), the decoder worker (-2) nor
+ * the thread at 0x00234120 (1) can run while a LOCK is held, so no pass
+ * ever runs during a locked region. Here they run in parallel with it:
+ * skipping a movie, the main thread tore the movie down under LOCK while a
+ * pass was still using it, and the pass called through a cleared vtable
+ * (null at +0x24, from 0x0024D7C0). */
+
+/* Server pass of one level: runs that level's registered callbacks
+ * (2 vblank server, 3 main, 5 idle worker). */
+void sub_00236BC0(void)
+{
+    SDL_LockMutex(cri_lock());
+    sub_00236BC0_gen();
+    SDL_UnlockMutex(cri_lock());
+}
+
+/* Pass of the thread at 0x00234120 (once per vblank). */
+void sub_00236080(void)
+{
+    SDL_LockMutex(cri_lock());
+    sub_00236080_gen();
     SDL_UnlockMutex(cri_lock());
 }
