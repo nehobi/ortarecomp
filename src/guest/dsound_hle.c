@@ -325,10 +325,11 @@ void sub_002C2494(void)
  * DSBCAPS_CTRL3D buffers are placed relative to the listener: DirectSound's
  * distance model (full volume up to the minimum distance, then
  * min / (min + rolloff * (d - min)), held from the maximum distance on) and
- * a left/right pan from the listener's orientation. No HRTF, cones or
- * Doppler. Deferred settings apply at once. The first stage starts many
- * looping emitters around the level; at full volume they piled up into a
- * drone over the music. */
+ * an equal-power left/right pan from the listener's orientation. No HRTF,
+ * cones or Doppler. Deferred settings apply at once. Orta gives positions
+ * relative to the camera with the listener at the origin; enemy gunfire
+ * (looping 3D buffers, stopped when the enemy stops) is near enough to
+ * stay at full volume, panned. */
 
 
 static float fget(uint32_t va)
@@ -380,9 +381,10 @@ static void apply_3d(int id)
         if (n > 1e-6f)
             x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2]) / (d * n);
     }
-    l = sqrtf(1.0f - x);
-    r = sqrtf(1.0f + x);
-    pdo_voice_set_3d(id, g * (l > 1.0f ? 1.0f : l), g * (r > 1.0f ? 1.0f : r));
+    /* Equal-power pan: a source straight ahead is -3 dB in each ear. */
+    l = sqrtf(0.5f * (1.0f - x));
+    r = sqrtf(0.5f * (1.0f + x));
+    pdo_voice_set_3d(id, g * l, g * r);
 }
 
 static void apply_3d_all(void)
