@@ -19,8 +19,8 @@ title loop with no hang.
   the d-pad). Start on the title opens the main menu.
   `PDO_INPUT_SCRIPT=frame:button:frames,...` presses buttons headless.
   NEW GAME -> difficulty menu -> prologue text -> cloud movie
-  (`op_plus.sfd`) -> `opening_bs.sfd` (tested only with a truncated copy,
-  which freezes when the data runs out). Menu graphics stay drawn over
+  (`op_plus.sfd`) -> `opening_bs.sfd` -> first stage, on Windows with the
+  full disc (movies skipped; playing `opening_bs` through is untested). Menu graphics stay drawn over
   later screens (not cleared).
   `tools/recomp.py --trace-functions all` emits entry hooks for bring-up. The title
 makes its HDD cache folders (`Partition5`) on first boot, for the folders
