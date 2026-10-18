@@ -1398,6 +1398,19 @@ bool pdo_gfx_present(void)
 
     if (frames == capture_frame)
         capture_steps();
+    {
+        /* PDO_NO_DRAW=1: drop the frame's commands unless it is captured or
+         * screenshotted, so a debugging run reaches a stage at the game's
+         * own pace on a slow (software) GPU. */
+        static int no_draw = -1;
+        bool shot = shot_dir && frames <= 300 * (uint64_t)shot_every && frames % (uint64_t)shot_every == 0;
+        if (no_draw < 0)
+            no_draw = getenv("PDO_NO_DRAW") && atoi(getenv("PDO_NO_DRAW")) != 0;
+        if (no_draw && !shot && frames != capture_frame) {
+            nverts = nindices = ncmds = 0;
+            return keep_going;
+        }
+    }
     cmd = SDL_AcquireGPUCommandBuffer(dev);
     if (!cmd)
         return keep_going;
