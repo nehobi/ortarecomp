@@ -33,6 +33,7 @@ typedef struct voice {
     double         pos;                 /* in frames */
     uint32_t       loop_start, loop_len;/* frames; len 0 = whole buffer */
     float          volume, headroom;    /* linear */
+    float          g3d[2];              /* 3D left/right gains */
     double         step;                /* frames per output frame */
     float          gain[2][PDO_BIN_SPEAKERS];
     /* ADPCM: the last decoded block, both channels */
@@ -119,6 +120,16 @@ static void update_step(voice *v, uint32_t hz)
 
 /* Which channel of the buffer a mixbin pair feeds. One pair per channel in
  * order for multichannel buffers; every pair takes the mono channel. */
+/* The 3D gain a speaker bin takes: left or right, both for the others. */
+static float side_gain(const voice *v, uint32_t bin)
+{
+    if (bin == PDO_BIN_FRONT_LEFT || bin == PDO_BIN_BACK_LEFT)
+        return v->g3d[0];
+    if (bin == PDO_BIN_FRONT_RIGHT || bin == PDO_BIN_BACK_RIGHT)
+        return v->g3d[1];
+    return 0.5f * (v->g3d[0] + v->g3d[1]);
+}
+
 static void update_gains(voice *v)
 {
     memset(v->gain, 0, sizeof v->gain);
@@ -126,7 +137,7 @@ static void update_gains(voice *v)
         int ch = v->desc.channels == 1 ? 0 : i % v->desc.channels;
         uint32_t bin = v->desc.bins[i].bin;
         if (bin < PDO_BIN_SPEAKERS)
-            v->gain[ch][bin] = db100_to_gain(v->desc.bins[i].volume);
+            v->gain[ch][bin] = db100_to_gain(v->desc.bins[i].volume) * side_gain(v, bin);
         else {
             static uint32_t seen;
             if (bin < 32 && !(seen & (1u << bin))) {
@@ -345,9 +356,12 @@ static void mix_block(float *out, int frames)
     const float k = 0.70710678f;
 
     memset(bins, 0, sizeof(bins[0]) * (size_t)frames);
+    static long solo = -1;
+    if (solo < 0)   /* PDO_AUDIO_SOLO=bytes: mix only buffers of that size */
+        solo = getenv("PDO_AUDIO_SOLO") ? atol(getenv("PDO_AUDIO_SOLO")) : 0;
     SDL_LockMutex(lock);
     for (int i = 0; i < MAX_VOICES; i++)
-        if (voices[i].used && voices[i].playing) {
+        if (voices[i].used && voices[i].playing && (!solo || voices[i].desc.bytes == (uint32_t)solo)) {
             if (voices[i].queued)
                 mix_queue(&voices[i], bins, frames);
             else
@@ -392,6 +406,14 @@ static void mix_block(float *out, int frames)
             SDL_Log("audio: peak %.2f dBFS, %llu clipped frames in the last second, %d voices playing (%d looping)",
                     stat_peak > 0 ? 20.0 * log10(stat_peak) : -120.0,
                     (unsigned long long)stat_clipped, playing, looping);
+            if (getenv("PDO_AUDIO_VOICES")) {
+                SDL_LockMutex(lock);
+                for (int i = 0; i < MAX_VOICES; i++)
+                    if (voices[i].used && voices[i].playing && !voices[i].queued)
+                        SDL_Log("audio:   voice %d data 0x%08x %u bytes%s", i + 1, voices[i].desc.data,
+                                voices[i].desc.bytes, voices[i].looping ? " looping" : "");
+                SDL_UnlockMutex(lock);
+            }
             stat_frames = 0;
             stat_peak = 0;
             stat_clipped = 0;
@@ -492,6 +514,7 @@ int pdo_voice_create(const pdo_voice_desc *desc)
             v->desc = *desc;
             v->volume = 1.0f;
             v->headroom = 1.0f;
+            v->g3d[0] = v->g3d[1] = 1.0f;
             v->cached_block = -1;
             update_step(v, 0);
             update_gains(v);
@@ -564,6 +587,11 @@ uint32_t pdo_voice_position(int id)
 void pdo_voice_set_loop_region(int id, uint32_t start, uint32_t length)
 {
     WITH_VOICE(id, v->loop_start = bytes_to_frames(v, start); v->loop_len = bytes_to_frames(v, length));
+}
+
+void pdo_voice_set_3d(int id, float left, float right)
+{
+    WITH_VOICE(id, v->g3d[0] = left; v->g3d[1] = right; update_gains(v));
 }
 
 void pdo_voice_set_volume(int id, int32_t hundredths_db)

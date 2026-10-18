@@ -29,6 +29,8 @@
 #include "xbox_memory_layout.h"
 
 #include <SDL3/SDL.h>
+
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -51,6 +53,21 @@
 #define OBJ_SIZE    32
 
 static uint32_t the_dsound;
+
+/* 3D state of DSBCAPS_CTRL3D buffers, by voice id (see "3D sound"). */
+#define DS3DMODE_HEADRELATIVE 1
+#define DS3DMODE_DISABLE      2
+#define MAX_3D                513     /* voice ids are 1..512 */
+
+static struct {
+    float pos[3], front[3], top[3], rolloff;
+} listener = { {0, 0, 0}, {0, 0, 1}, {0, 1, 0}, 1.0f };
+
+static struct {
+    bool  used;
+    float pos[3], min_dist, max_dist;
+    uint32_t mode;
+} src3d[MAX_3D];
 
 static int trace_on(void)
 {
@@ -206,12 +223,17 @@ void sub_002C4833(void)
     if (!id || !obj)
         RETURN(16, DSERR_OUTOFMEMORY);
     MEM32(obj + OBJ_TAG) = TAG_BUFFER;
+    if (id < MAX_3D) {
+        memset(&src3d[id], 0, sizeof src3d[id]);
+        src3d[id].used = vd.positional;
+    }
     MEM32(obj + OBJ_VOICE) = (uint32_t)id;
     MEM32(obj + OBJ_REFS) = 1;
     MEM32(obj + OBJ_DATA) = data;
     MEM32(obj + OBJ_BYTES) = bytes;
     MEM32(pp) = obj;
 
+    TRACE("CreateSoundBuffer voice %d", id);
     TRACE("CreateSoundBuffer flags 0x%x, %u bytes, %s %u ch %u Hz, %d bins -> 0x%08x",
           flags, bytes, vd.format == PDO_FMT_XADPCM ? "adpcm" : vd.format == PDO_FMT_PCM8 ? "pcm8" : "pcm16",
           vd.channels, vd.sample_rate, vd.bin_count, obj);
@@ -299,13 +321,127 @@ void sub_002C2494(void)
     RETURN(24, DS_OK);
 }
 
-/* Listener 3D state, recorded only for now. */
-void sub_002C43BD(void) { note_once("3D listener"); RETURN(12, DS_OK); } /* SetAllParameters */
-void sub_002C43DD(void) { RETURN(12, DS_OK); }  /* SetDistanceFactor(pDS, f, apply) */
+/* ── 3D sound ─────────────────────────────────────────────────────────
+ * DSBCAPS_CTRL3D buffers are placed relative to the listener: DirectSound's
+ * distance model (full volume up to the minimum distance, then
+ * min / (min + rolloff * (d - min)), held from the maximum distance on) and
+ * a left/right pan from the listener's orientation. No HRTF, cones or
+ * Doppler. Deferred settings apply at once. The first stage starts many
+ * looping emitters around the level; at full volume they piled up into a
+ * drone over the music. */
+
+
+static float fget(uint32_t va)
+{
+    uint32_t v = MEM32(va);
+    float f;
+    memcpy(&f, &v, 4);
+    return f;
+}
+
+static float fval(uint32_t v)
+{
+    float f;
+    memcpy(&f, &v, 4);
+    return f;
+}
+
+static void apply_3d(int id)
+{
+    float rel[3], right[3], d, g, x = 0.0f, l, r;
+    const float *f = listener.front, *t = listener.top;
+
+    if (id <= 0 || id >= MAX_3D || !src3d[id].used)
+        return;
+    if (src3d[id].mode == DS3DMODE_DISABLE) {
+        pdo_voice_set_3d(id, 1.0f, 1.0f);
+        return;
+    }
+    for (int k = 0; k < 3; k++)
+        rel[k] = src3d[id].pos[k] - (src3d[id].mode == DS3DMODE_HEADRELATIVE ? 0.0f : listener.pos[k]);
+    d = sqrtf(rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]);
+    {
+        float mn = src3d[id].min_dist > 0 ? src3d[id].min_dist : 1.0f;
+        float mx = src3d[id].max_dist > mn ? src3d[id].max_dist : 1e9f;
+        float dc = d < mn ? mn : d > mx ? mx : d;
+        g = mn / (mn + listener.rolloff * (dc - mn));
+    }
+    /* Right = top x front (D3D is left-handed); head-relative uses the
+     * listener's own axes, which are the identity there. */
+    if (src3d[id].mode == DS3DMODE_HEADRELATIVE) {
+        right[0] = 1; right[1] = 0; right[2] = 0;
+    } else {
+        right[0] = t[1] * f[2] - t[2] * f[1];
+        right[1] = t[2] * f[0] - t[0] * f[2];
+        right[2] = t[0] * f[1] - t[1] * f[0];
+    }
+    if (d > 1e-6f) {
+        float n = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+        if (n > 1e-6f)
+            x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2]) / (d * n);
+    }
+    l = sqrtf(1.0f - x);
+    r = sqrtf(1.0f + x);
+    pdo_voice_set_3d(id, g * (l > 1.0f ? 1.0f : l), g * (r > 1.0f ? 1.0f : r));
+}
+
+static void apply_3d_all(void)
+{
+    for (int id = 1; id < MAX_3D; id++)
+        if (src3d[id].used)
+            apply_3d(id);
+}
+
+/* IDirectSound_SetAllParameters(pDS, pds3dl, dwApply). DS3DLISTENER:
+ * dwSize, vPosition, vVelocity, vOrientFront, vOrientTop,
+ * flDistanceFactor, flRolloffFactor, flDopplerFactor. */
+void sub_002C43BD(void)
+{
+    uint32_t l = ARG(1);
+    if (l) {
+        for (int k = 0; k < 3; k++) {
+            listener.pos[k] = fget(l + 4 + 4 * k);
+            listener.front[k] = fget(l + 28 + 4 * k);
+            listener.top[k] = fget(l + 40 + 4 * k);
+        }
+        listener.rolloff = fget(l + 56);
+        TRACE("listener pos %g %g %g front %g %g %g rolloff %g", listener.pos[0], listener.pos[1],
+              listener.pos[2], listener.front[0], listener.front[1], listener.front[2], listener.rolloff);
+        apply_3d_all();
+    }
+    RETURN(12, DS_OK);
+}
+void sub_002C43DD(void) { RETURN(12, DS_OK); }  /* SetDistanceFactor(pDS, f, apply): Doppler only */
 void sub_002C4401(void) { RETURN(12, DS_OK); }  /* SetDopplerFactor */
-void sub_002C4425(void) { RETURN(32, DS_OK); }  /* SetOrientation(pDS, 6 floats, apply) */
-void sub_002C446F(void) { RETURN(20, DS_OK); }  /* SetPosition(pDS, x, y, z, apply) */
-void sub_002C44A4(void) { RETURN(12, DS_OK); }  /* SetRolloffFactor */
+
+/* IDirectSound_SetOrientation(pDS, xFront, yFront, zFront, xTop, yTop, zTop, apply) */
+void sub_002C4425(void)
+{
+    for (int k = 0; k < 3; k++) {
+        listener.front[k] = fval(ARG(1 + k));
+        listener.top[k] = fval(ARG(4 + k));
+    }
+    apply_3d_all();
+    RETURN(32, DS_OK);
+}
+
+/* IDirectSound_SetPosition(pDS, x, y, z, apply) */
+void sub_002C446F(void)
+{
+    for (int k = 0; k < 3; k++)
+        listener.pos[k] = fval(ARG(1 + k));
+    TRACE("listener SetPosition %g %g %g", listener.pos[0], listener.pos[1], listener.pos[2]);
+    apply_3d_all();
+    RETURN(20, DS_OK);
+}
+
+/* IDirectSound_SetRolloffFactor(pDS, f, apply) */
+void sub_002C44A4(void)
+{
+    listener.rolloff = fval(ARG(1));
+    apply_3d_all();
+    RETURN(12, DS_OK);
+}
 void sub_002C44C8(void) { RETURN(20, DS_OK); }  /* SetVelocity */
 void sub_002C44FD(void) { note_once("I3DL2 reverb"); RETURN(12, DS_OK); }  /* SetI3DL2Listener */
 
@@ -327,6 +463,8 @@ void sub_002C12C4(void)
     if (id && MEM32(b + OBJ_REFS)) {
         refs = (MEM32(b + OBJ_REFS) -= 1);
         if (!refs) {
+            if (id < MAX_3D)
+                src3d[id].used = false;
             pdo_voice_destroy(id);
             MEM32(b + OBJ_TAG) = 0;
             if (MEM32(b + OBJ_DATA))
@@ -334,6 +472,7 @@ void sub_002C12C4(void)
             xbox_HeapFree(b);
         }
     }
+    TRACE("Release 0x%08x (voice %d) -> %u", b, id, refs);
     RETURN(4, refs);
 }
 
@@ -498,15 +637,74 @@ void sub_002C24F6(void) { note_once("envelopes (SetEG)"); RETURN(8, DS_OK); }
 void sub_002C24DA(void) { note_once("LFOs (SetLFO)"); RETURN(8, DS_OK); }
 void sub_002C2512(void) { note_once("filters (SetFilter)"); RETURN(8, DS_OK); }
 
-/* Per-buffer 3D state, recorded only for now. */
-void sub_002C37D2(void) { note_once("3D sound sources"); RETURN(12, DS_OK); } /* SetAllParameters */
+/* Per-buffer 3D state (see "3D sound" above). */
+static int src_of(uint32_t buf)
+{
+    int id = voice_of(buf);
+    return id > 0 && id < MAX_3D && src3d[id].used ? id : 0;
+}
+
+/* IDirectSoundBuffer_SetAllParameters(pBuf, pds3db, apply). DS3DBUFFER:
+ * dwSize, vPosition, vVelocity, dwInsideConeAngle, dwOutsideConeAngle,
+ * vConeOrientation, lConeOutsideVolume, flMinDistance, flMaxDistance,
+ * dwMode. */
+void sub_002C37D2(void)
+{
+    int id = src_of(ARG(0));
+    uint32_t p = ARG(1);
+    if (id && p) {
+        for (int k = 0; k < 3; k++)
+            src3d[id].pos[k] = fget(p + 4 + 4 * k);
+        src3d[id].min_dist = fget(p + 52);
+        src3d[id].max_dist = fget(p + 56);
+        src3d[id].mode = MEM32(p + 60);
+        TRACE("3D 0x%08x pos %g %g %g dist %g-%g mode %u", ARG(0), src3d[id].pos[0], src3d[id].pos[1],
+              src3d[id].pos[2], src3d[id].min_dist, src3d[id].max_dist, src3d[id].mode);
+        apply_3d(id);
+    }
+    RETURN(12, DS_OK);
+}
 void sub_002C37F2(void) { RETURN(16, DS_OK); }  /* SetConeAngles */
 void sub_002C3816(void) { RETURN(20, DS_OK); }  /* SetConeOrientation */
 void sub_002C384B(void) { RETURN(12, DS_OK); }  /* SetConeOutsideVolume */
-void sub_002C386B(void) { RETURN(12, DS_OK); }  /* SetMaxDistance */
-void sub_002C388F(void) { RETURN(12, DS_OK); }  /* SetMinDistance */
-void sub_002C38B3(void) { RETURN(12, DS_OK); }  /* SetMode */
-void sub_002C38D3(void) { RETURN(20, DS_OK); }  /* SetPosition */
+
+/* IDirectSoundBuffer_SetMaxDistance(pBuf, f, apply) */
+void sub_002C386B(void)
+{
+    int id = src_of(ARG(0));
+    if (id) { src3d[id].max_dist = fval(ARG(1)); apply_3d(id); }
+    RETURN(12, DS_OK);
+}
+
+/* IDirectSoundBuffer_SetMinDistance(pBuf, f, apply) */
+void sub_002C388F(void)
+{
+    int id = src_of(ARG(0));
+    if (id) { src3d[id].min_dist = fval(ARG(1)); apply_3d(id); }
+    RETURN(12, DS_OK);
+}
+
+/* IDirectSoundBuffer_SetMode(pBuf, dwMode, apply) */
+void sub_002C38B3(void)
+{
+    int id = src_of(ARG(0));
+    if (id) { src3d[id].mode = ARG(1); apply_3d(id); }
+    RETURN(12, DS_OK);
+}
+
+/* IDirectSoundBuffer_SetPosition(pBuf, x, y, z, apply) */
+void sub_002C38D3(void)
+{
+    int id = src_of(ARG(0));
+    if (id) {
+        for (int k = 0; k < 3; k++)
+            src3d[id].pos[k] = fval(ARG(1 + k));
+        TRACE("3D 0x%08x SetPosition %g %g %g apply %u", ARG(0), src3d[id].pos[0], src3d[id].pos[1],
+              src3d[id].pos[2], ARG(4));
+        apply_3d(id);
+    }
+    RETURN(20, DS_OK);
+}
 void sub_002C3908(void) { RETURN(20, DS_OK); }  /* SetVelocity */
 void sub_002C393D(void) { RETURN(12, DS_OK); }  /* SetDistanceFactor */
 void sub_002C3961(void) { RETURN(12, DS_OK); }  /* SetDopplerFactor */

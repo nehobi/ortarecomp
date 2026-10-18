@@ -74,6 +74,9 @@ void pdo_voice_set_volume(int id, int32_t hundredths_db);
 void pdo_voice_set_headroom(int id, uint32_t hundredths_db);
 void pdo_voice_set_frequency(int id, uint32_t hz);   /* 0 = the format's rate */
 void pdo_voice_set_bins(int id, const pdo_voice_bin *bins, int count);
+/* Extra gains from 3D positioning (DSBCAPS_CTRL3D voices), left and right;
+ * 1, 1 means none. Applied on top of the mixbin volumes. */
+void pdo_voice_set_3d(int id, float left, float right);
 
 uint32_t pdo_voice_block_align(int id);
 
