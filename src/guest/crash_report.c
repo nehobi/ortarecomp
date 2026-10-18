@@ -113,10 +113,34 @@ void pdo_crash_report_install(void)
  * waits. Each thread is suspended only while its stack is unwound with
  * RtlVirtualUnwind (no allocation, so a thread holding the heap lock cannot
  * deadlock us); symbols are looked up after it resumes. */
+#ifdef _M_X64
+enum { MAX_THREADS = 64, MAX_FRAMES = 24 };
+
+static int unwind(CONTEXT *ctx, DWORD64 *pcs)
+{
+    int n = 0;
+
+    while (n < MAX_FRAMES && ctx->Rip) {
+        DWORD64 base = 0, frame = 0;
+        PRUNTIME_FUNCTION rf;
+        PVOID handler = NULL;
+
+        pcs[n++] = ctx->Rip;
+        rf = RtlLookupFunctionEntry(ctx->Rip, &base, NULL);
+        if (rf) {
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx->Rip, rf, ctx, &handler, &frame, NULL);
+        } else {                      /* leaf: return address on top */
+            ctx->Rip = *(DWORD64 *)ctx->Rsp;
+            ctx->Rsp += 8;
+        }
+    }
+    return n;
+}
+#endif
+
 void pdo_dump_threads(void)
 {
 #ifdef _M_X64
-    enum { MAX_THREADS = 64, MAX_FRAMES = 24 };
     static DWORD64 pcs[MAX_THREADS][MAX_FRAMES];
     static DWORD ids[MAX_THREADS];
     static int counts[MAX_THREADS];
@@ -129,6 +153,13 @@ void pdo_dump_threads(void)
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     if (snap == INVALID_HANDLE_VALUE)
         return;
+    {   /* This thread first: F11 is handled while the game's main thread
+         * pumps window events (in a vblank wait or present). */
+        CONTEXT ctx;
+        RtlCaptureContext(&ctx);
+        ids[0] = self;
+        counts[nthreads++] = unwind(&ctx, pcs[0]);
+    }
     for (BOOL ok = Thread32First(snap, &te); ok && nthreads < MAX_THREADS; ok = Thread32Next(snap, &te)) {
         HANDLE th;
         CONTEXT ctx;
@@ -143,22 +174,8 @@ void pdo_dump_threads(void)
         if (SuspendThread(th) != (DWORD)-1) {
             memset(&ctx, 0, sizeof ctx);
             ctx.ContextFlags = CONTEXT_FULL;
-            if (GetThreadContext(th, &ctx)) {
-                while (n < MAX_FRAMES && ctx.Rip) {
-                    DWORD64 base = 0, frame = 0;
-                    PRUNTIME_FUNCTION rf;
-                    PVOID handler = NULL;
-
-                    pcs[nthreads][n++] = ctx.Rip;
-                    rf = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
-                    if (rf) {
-                        RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, rf, &ctx, &handler, &frame, NULL);
-                    } else {                      /* leaf: return address on top */
-                        ctx.Rip = *(DWORD64 *)ctx.Rsp;
-                        ctx.Rsp += 8;
-                    }
-                }
-            }
+            if (GetThreadContext(th, &ctx))
+                n = unwind(&ctx, pcs[nthreads]);
             ResumeThread(th);
         }
         CloseHandle(th);
@@ -169,7 +186,7 @@ void pdo_dump_threads(void)
 
     fprintf(stderr, "\n=== THREADS (F11): %d\n", nthreads);
     for (int t = 0; t < nthreads; t++) {
-        fprintf(stderr, "thread %lu\n", ids[t]);
+        fprintf(stderr, "thread %lu%s\n", ids[t], t ? "" : " (this one: handled F11)");
         for (int i = 0; i < counts[t]; i++)
             print_host_address(i ? "from" : "at", pcs[t][i]);
     }
