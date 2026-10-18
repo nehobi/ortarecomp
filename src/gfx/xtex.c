@@ -92,6 +92,49 @@ void pdo_xtex_describe(uint32_t format_word, uint32_t size_word, pdo_xtex_info *
         info->bytes = info->width * info->height * f->bpp / 8;
 }
 
+static uint32_t level_bytes(const struct fmt *f, uint32_t w, uint32_t h)
+{
+    if (f->layout == COMPRESSED)
+        return ((w + 3) / 4) * ((h + 3) / 4) * (f->bpp * 2);
+    return w * h * f->bpp / 8;
+}
+
+uint32_t pdo_xtex_level_count(const pdo_xtex_info *info)
+{
+    const struct fmt *f = find(info->format);
+    uint32_t n = info->levels ? info->levels : 1, max = 1, w = info->width, h = info->height;
+
+    if (!f || f->layout == LINEAR)
+        return 1;
+    while (w > 1 || h > 1) {
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+        max++;
+    }
+    return n < max ? n : max;
+}
+
+void pdo_xtex_level(const pdo_xtex_info *info, uint32_t level, pdo_xtex_info *out, uint32_t *offset)
+{
+    const struct fmt *f = find(info->format);
+    uint32_t w = info->width, h = info->height, off = 0;
+
+    *out = *info;
+    *offset = 0;
+    if (!f || f->layout == LINEAR)
+        return;
+    for (uint32_t l = 0; l < level; l++) {
+        off += level_bytes(f, w, h);
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+    }
+    out->width = w;
+    out->height = h;
+    out->bytes = level_bytes(f, w, h);
+    out->levels = 1;
+    *offset = off;
+}
+
 /* Morton offset of (x, y) in a w x h swizzled texture: interleave the bits,
  * u first, dropping a coordinate's bits once it runs out. */
 static uint32_t swizzle(uint32_t x, uint32_t y, uint32_t w, uint32_t h)

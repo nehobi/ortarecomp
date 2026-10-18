@@ -330,7 +330,8 @@ static SDL_GPUSamplerAddressMode address_mode(uint8_t a)
 static SDL_GPUSampler *get_sampler(const pdo_tex_ref *t)
 {
     uint32_t key = (uint32_t)t->min_filter | (uint32_t)t->mag_filter << 8 |
-                   (uint32_t)t->address_u << 16 | (uint32_t)t->address_v << 24;
+                   (uint32_t)t->address_u << 16 | (uint32_t)t->address_v << 24 |
+                   (uint32_t)(t->mip_filter & 3) << 30;
     SDL_GPUSamplerCreateInfo si;
 
     for (int i = 0; i < nsamplers; i++)
@@ -341,7 +342,10 @@ static SDL_GPUSampler *get_sampler(const pdo_tex_ref *t)
     SDL_zero(si);
     si.min_filter = t->min_filter >= 2 ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
     si.mag_filter = t->mag_filter >= 2 ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
-    si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    /* D3DTSS_MIPFILTER: 0 none (level 0 only), 1 point, 2+ linear. */
+    si.mipmap_mode = t->mip_filter >= 2 ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    si.min_lod = 0.0f;
+    si.max_lod = t->mip_filter ? 1000.0f : 0.0f;
     si.address_mode_u = address_mode(t->address_u);
     si.address_mode_v = address_mode(t->address_v);
     si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
@@ -539,7 +543,10 @@ void pdo_gfx_copy_rect(const pdo_surface *src, const pdo_surface *dst,
 typedef struct pending_upload {
     gtex    *t;
     uint32_t offset;   /* in the frame's texture transfer buffer */
+    uint32_t level, w, h;
 } pending_upload;
+
+#define MAX_UPLOADS 2048
 
 /* Find or create the GPU texture for t; if its texels need (re)uploading,
  * decode them into *staging and note the upload. */
@@ -550,6 +557,7 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
     const uint8_t *src;
     gtex *g = NULL;
     uint64_t h;
+    uint32_t levels;
 
     if (!t->data)
         return white;
@@ -590,7 +598,13 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
         return g->tex;      /* already checked this frame */
     /* The CPU view of a resource is Data | 0x80000000, as D3D computes it. */
     src = (const uint8_t *)((uintptr_t)(t->data | 0x80000000u) + g_xbox_mem_offset);
-    h = info.bytes ? hash_bytes(src, info.bytes) : 0;
+    levels = info.known ? pdo_xtex_level_count(&info) : 1;
+    {   /* the whole mip chain, so a rewrite of any level is seen */
+        pdo_xtex_info last;
+        uint32_t off;
+        pdo_xtex_level(&info, levels - 1, &last, &off);
+        h = info.bytes ? hash_bytes(src, off + last.bytes) : 0;
+    }
     if (!g) {
         SDL_GPUTextureCreateInfo ti;
         if (ntextures == MAX_TEXTURES)
@@ -610,21 +624,31 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
         ti.width = info.width;
         ti.height = info.height;
         ti.layer_count_or_depth = 1;
-        ti.num_levels = 1;
+        ti.num_levels = levels;
         g->tex = SDL_CreateGPUTexture(dev, &ti);
     }
     g->last_used = frames;
-    if (g->hash != h && *nups < 256) {
-        uint32_t need = info.width * info.height * 4;
-        if (*staging_len + need > *staging_cap) {
-            *staging_cap = (*staging_len + need) * 2;
-            *staging = SDL_realloc(*staging, *staging_cap);
+    if (g->hash != h && *nups + (int)levels <= MAX_UPLOADS) {
+        /* Every mip level: sampled with only level 0, distant textures
+         * shimmered and looked grainy. */
+        for (uint32_t l = 0; l < levels; l++) {
+            pdo_xtex_info li;
+            uint32_t off, need;
+            pdo_xtex_level(&info, l, &li, &off);
+            need = li.width * li.height * 4;
+            if (*staging_len + need > *staging_cap) {
+                *staging_cap = (*staging_len + need) * 2;
+                *staging = SDL_realloc(*staging, *staging_cap);
+            }
+            pdo_xtex_decode(&li, src + off, *staging + *staging_len);
+            ups[*nups].t = g;
+            ups[*nups].offset = *staging_len;
+            ups[*nups].level = l;
+            ups[*nups].w = li.width;
+            ups[*nups].h = li.height;
+            (*nups)++;
+            *staging_len += need;
         }
-        pdo_xtex_decode(&info, src, *staging + *staging_len);
-        ups[*nups].t = g;
-        ups[*nups].offset = *staging_len;
-        (*nups)++;
-        *staging_len += need;
         g->hash = h;
     }
     return g->tex;
@@ -1140,7 +1164,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     static uint32_t staging_cap;
     static SDL_GPUTexture **cmd_tex;
     static uint32_t cmd_tex_cap;
-    pending_upload ups[256];
+    static pending_upload ups[MAX_UPLOADS];
     int nups = 0;
     uint32_t staging_len = 0;
     SDL_GPURenderPass *pass = NULL;
@@ -1193,8 +1217,9 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             src.offset = tex_off + ups[i].offset;
             SDL_zero(dst);
             dst.texture = ups[i].t->tex;
-            dst.w = ups[i].t->w;
-            dst.h = ups[i].t->h;
+            dst.mip_level = ups[i].level;
+            dst.w = ups[i].w;
+            dst.h = ups[i].h;
             dst.d = 1;
             SDL_UploadToGPUTexture(copy, &src, &dst, false);
         }

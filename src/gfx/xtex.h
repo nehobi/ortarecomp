@@ -28,7 +28,13 @@ typedef struct pdo_xtex_info {
 /* Fill info from a D3DPixelContainer's Format and Size words. */
 void pdo_xtex_describe(uint32_t format_word, uint32_t size_word, pdo_xtex_info *info);
 
-/* Decode level 0 into tightly packed RGBA8 (width*height*4 bytes). Unknown
+/* Mip levels stored after level 0 (swizzled and DXT textures; a linear
+ * texture has one): how many levels there are, and level n's info and byte
+ * offset from the texture's start. */
+uint32_t pdo_xtex_level_count(const pdo_xtex_info *info);
+void pdo_xtex_level(const pdo_xtex_info *info, uint32_t level, pdo_xtex_info *out, uint32_t *offset);
+
+/* Decode one level (info from pdo_xtex_describe or pdo_xtex_level) into tightly packed RGBA8 (width*height*4 bytes). Unknown
  * formats become magenta so they are easy to spot on screen. */
 void pdo_xtex_decode(const pdo_xtex_info *info, const uint8_t *src, uint8_t *rgba);
 
