@@ -14,6 +14,7 @@ Both are git-ignored: nothing derived from the game belongs in the repository.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -216,6 +217,65 @@ def missed_targets(disasm_dir, xbe):
     return sorted(missed)
 
 
+def false_splits(disasm_dir, xbe, candidates):
+    """Seeds that cut a function in two: the function before the address runs
+    straight into it, so it is that function's own code, not a start.
+
+    The disassembler accepts a seed at any instruction boundary. A call
+    decoded from a data table (a decoder's lookup table in .text) seeded
+    0x00262123, three bytes into Sofdec's block decoder 0x00262120, and
+    0x0025E792 in the middle of the other one; the cut-off pieces fell
+    through to tail calls, edi was not preserved, and the movie decoder
+    crashed on a garbage context pointer in the opening movie. Decoding the
+    preceding function from its start shows the instruction that ends at the
+    address: anything but a ret, an unconditional jmp, a call (it may not
+    return), int3/hlt/ud2 or padding means control falls through into it.
+    """
+    with open(os.path.join(disasm_dir, "functions.json")) as f:
+        funcs = json.load(f)
+    with open(xbe, "rb") as f:
+        image = f.read()
+    info = xbe_info.parse(image)
+    spans = sorted((int(e["start"], 16), int(e["start"], 16) + e["size"]) for e in funcs)
+    lo = [a for a, _ in spans]
+
+    import bisect
+    import capstone
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+
+    def read(va, n):
+        for sec in info["sections"]:
+            if sec["va"] <= va < sec["va"] + sec["rsize"]:
+                o = sec["raw"] + va - sec["va"]
+                return image[o:o + min(n, sec["va"] + sec["rsize"] - va)]
+        return b""
+
+    padding = re.compile(r"(\w+), (?:dword ptr )?\[?\1(?: \+ 0)?\]?")
+    bad = set()
+    for va in candidates:
+        # The function the address follows on from: it starts before va and
+        # reaches it (a split piece ends exactly at the next start).
+        i = bisect.bisect_left(lo, va) - 1
+        if i < 0 or spans[i][1] < va:
+            continue
+        start = spans[i][0]
+        if va - start > 0x10000:
+            continue
+        last = None
+        for insn in md.disasm(read(start, va - start), start):
+            last = insn
+            if insn.address + insn.size >= va:
+                break
+        if last is None or last.address + last.size != va:
+            continue
+        m = last.mnemonic
+        if (m in ("ret", "retf", "jmp", "call", "int3", "hlt", "ud2", "nop")
+                or (m in ("lea", "mov") and padding.fullmatch(last.op_str))):
+            continue
+        bad.add(va)
+    return bad
+
+
 # ── Names carried over from JSRF ────────────────────────────────────────
 
 def apply_names(names_json, functions_json):
@@ -320,13 +380,19 @@ def main():
 
     # Direct calls (and tail jumps) to code the sweep did not turn into a
     # function: seed them and disassemble again until none are left.
-    seeded = set()
-    for _ in range(3):
-        missed = set(missed_targets(d("disasm"), xbe)) - seeded
-        if not missed:
+    seeded, rejected = set(), set()
+    for _ in range(5):
+        missed = set(missed_targets(d("disasm"), xbe)) - seeded - rejected
+        # Checked against the latest disassembly every round: a start found
+        # in the same round as the seed can make it a split only afterwards.
+        cut = false_splits(d("disasm"), xbe, missed | seeded)
+        rejected |= cut
+        missed -= cut
+        if not missed and not (seeded & cut):
             break
-        print(f"\n{len(missed)} call/jump targets are not functions yet; seeding them")
-        seeded |= missed
+        print(f"\n{len(missed)} call/jump targets are not functions yet; seeding them"
+              + (f" ({len(cut)} rejected: they would cut a function)" if cut else ""))
+        seeded = (seeded - cut) | missed
         with open(d("missed_seeds.json"), "w") as f:
             json.dump([{"start": f"0x{a:08X}", "note": "direct call target"} for a in sorted(seeded)], f)
         run_tool("disasm", *disasm_args, "--seed-functions", d("missed_seeds.json"), "--force")
