@@ -396,6 +396,7 @@ void sub_002C25A6(void)
     int id = voice_of(ARG(0));
     if (id)
         pdo_voice_stop(id);
+    TRACE("Stop 0x%08x", ARG(0));
     RETURN(4, DS_OK);
 }
 
@@ -436,6 +437,7 @@ void sub_002C25DA(void)
     int id = voice_of(ARG(0));
     if (id)
         pdo_voice_set_loop_region(id, ARG(1), ARG(2));
+    TRACE("SetLoopRegion 0x%08x %u, %u bytes", ARG(0), ARG(1), ARG(2));
     RETURN(12, DS_OK);
 }
 
@@ -550,6 +552,7 @@ static void pause_voice(int id, uint32_t how)
 void sub_002C25BE(void)
 {
     pause_voice(voice_of(ARG(0)), ARG(1));
+    TRACE("Pause 0x%08x %u", ARG(0), ARG(1));
     RETURN(8, DS_OK);
 }
 

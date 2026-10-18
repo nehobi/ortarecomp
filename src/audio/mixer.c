@@ -380,9 +380,18 @@ static void mix_block(float *out, int frames)
     if (stats) {
         stat_frames += (Uint64)frames;
         if (stat_frames >= PDO_MIX_RATE) {
-            SDL_Log("audio: peak %.2f dBFS, %llu clipped frames in the last second",
+            int playing = 0, looping = 0;
+
+            SDL_LockMutex(lock);
+            for (int i = 0; i < MAX_VOICES; i++)
+                if (voices[i].used && voices[i].playing && !voices[i].queued) {
+                    playing++;
+                    looping += voices[i].looping;
+                }
+            SDL_UnlockMutex(lock);
+            SDL_Log("audio: peak %.2f dBFS, %llu clipped frames in the last second, %d voices playing (%d looping)",
                     stat_peak > 0 ? 20.0 * log10(stat_peak) : -120.0,
-                    (unsigned long long)stat_clipped);
+                    (unsigned long long)stat_clipped, playing, looping);
             stat_frames = 0;
             stat_peak = 0;
             stat_clipped = 0;
