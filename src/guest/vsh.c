@@ -248,6 +248,10 @@ static float rcc(float x)
     return signbit(r) ? -a : a;
 }
 
+/* Set by a caller re-running one vertex to log every instruction
+ * (PDO_VSH_BAD in d3d_hle.c); single-threaded use only. */
+_Thread_local bool pdo_vsh_trace;
+
 void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
                  float c[PDO_VSH_CONSTANTS][4], float out[VSH_OUTPUTS][4])
 {
@@ -342,6 +346,13 @@ void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
         default: break;
         }
 
+        if (pdo_vsh_trace)
+            SDL_Log("vsh %3u: mac %u ilu %u c%d%s a0 %d | A %g %g %g %g | B %g %g %g %g | C %g %g %g %g"
+                    " | mac %g %g %g %g -> r%u/%x | ilu %g %g %g %g -> r%u/%x | o %s%u/%x",
+                    pc, mac, ilu, cidx, op->rel ? "(rel)" : "", m.a0, a[0], a[1], a[2], a[3], b[0], b[1], b[2],
+                    b[3], cc[0], cc[1], cc[2], cc[3], mr[0], mr[1], mr[2], mr[3], op->out_r, op->mac_mask,
+                    ir[0], ir[1], ir[2], ir[3], op->ilu_r, op->ilu_mask, op->orb ? "o" : "c", op->addr,
+                    op->o_mask);
         /* Writes, after both units have computed. */
         if (mac == MAC_ARL) {
             m.a0 = (int)floorf(a[0]);

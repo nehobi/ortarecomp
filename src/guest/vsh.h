@@ -76,4 +76,6 @@ void pdo_vsh_fetch(uint8_t type, const uint8_t *src, float out[4]);
 /* Size in bytes of one attribute of a D3DVSDT type (0 if unknown). */
 uint32_t pdo_vsh_type_size(uint8_t type);
 
+extern _Thread_local bool pdo_vsh_trace;
+
 #endif

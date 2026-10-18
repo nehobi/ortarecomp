@@ -679,6 +679,59 @@ void sub_002B19A0(void)
 
 static float vconst[PDO_VSH_CONSTANTS][4];
 
+/* Orta creates a pure device (D3DCREATE_PUREDEVICE, flag 0x10 kept at
+ * 0x002BDEB8): SetVertexShaderConstantNotInline then sends the constants to
+ * the GPU only and skips the shadow, and that is how the game loads its
+ * bone palettes (76 constants at slot 112 before each skinned draw). The
+ * programs ran with stale matrices: vertices thrown thousands of units out,
+ * the lines out of the dragon and the boss in pieces. So every constant
+ * setter also writes the shadow here; a pure device never reads it back. */
+static void shadow_constants(uint32_t slot, uint32_t src, uint32_t dwords)
+{
+    if (slot >= PDO_VSH_CONSTANTS || !src)
+        return;
+    if (dwords > (PDO_VSH_CONSTANTS - slot) * 4)
+        dwords = (PDO_VSH_CONSTANTS - slot) * 4;
+    for (uint32_t i = 0; i < dwords; i++)
+        MEM32(VSH_SHADOW + 16 * slot + 4 * i) = MEM32(src + 4 * i);
+}
+
+/* D3DDevice_SetVertexShaderConstant1(ecx = slot, edx = pConstantData) */
+extern void sub_002B1770_gen(void);
+void sub_002B1770(void)
+{
+    shadow_constants(g_ecx, g_edx, 4);
+    sub_002B1770_gen();
+}
+
+/* D3DDevice_SetVertexShaderConstant4(ecx = slot, edx = pConstantData) */
+extern void sub_002B17D0_gen(void);
+void sub_002B17D0(void)
+{
+    shadow_constants(g_ecx, g_edx, 16);
+    sub_002B17D0_gen();
+}
+
+/* D3DDevice_SetVertexShaderConstantNotInline(ecx = slot, edx = pConstantData,
+ * DwordCount) */
+extern void sub_002B1960_gen(void);
+void sub_002B1960(void)
+{
+    shadow_constants(g_ecx, g_edx, MEM32(g_esp + 4));
+    sub_002B1960_gen();
+}
+
+/* D3DDevice_SetShaderConstantMode(Mode): the 96-constant mode loads its
+ * fixed constants (slots 60-62, from a table in the library) straight into
+ * the push buffer. */
+extern void sub_002B1B10_gen(void);
+void sub_002B1B10(void)
+{
+    if ((MEM32(g_esp + 4) & ~0x10u) == 0)
+        shadow_constants(60, 0x002BC618u, 12);
+    sub_002B1B10_gen();
+}
+
 #define MAX_PROGRAMS 256
 static struct { uint32_t handle; pdo_vsh_program *prog; } programs[MAX_PROGRAMS];
 
@@ -1129,6 +1182,7 @@ static uint32_t pack_color(const float *c)
  * transform to get the clip-space position the renderer takes. */
 typedef struct vsh_job {
     const pdo_vsh_program *p;
+    uint32_t handle;
     uint32_t sbase[16], sstride[16], first;
     float scale[3], offset[3], zs;
     pdo_vertex *out;
@@ -1164,6 +1218,33 @@ static void vsh_range(void *ctx, uint32_t lo, uint32_t hi)
         pdo_vsh_run(p, (const float (*)[4])in, vconst, o);
 
         cw = o[VSH_OPOS][3];
+        {   /* PDO_VSH_BAD=n: for the first n vertices that land far outside
+             * the screen, log the inputs and re-run with an instruction trace. */
+            static int budget = -1;
+            static SDL_AtomicInt left;
+            float x = (o[VSH_OPOS][0] - j->offset[0]) / j->scale[0];
+            if (budget < 0) {
+                budget = getenv("PDO_VSH_BAD") ? atoi(getenv("PDO_VSH_BAD")) : 0;
+                SDL_SetAtomicInt(&left, budget);
+            }
+            if (budget > 0 && (fabsf(x) > 50.0f || !(cw == cw)) && SDL_AddAtomicInt(&left, -1) > 0) {
+                static SDL_Mutex *mx;
+                float o2[VSH_OUTPUTS][4];
+                if (!mx) mx = SDL_CreateMutex();
+                SDL_LockMutex(mx);
+                SDL_Log("vsh bad: program 0x%08x vertex %u (%u insns) oPos %g %g %g %g frame %llu", j->handle,
+                        j->first + i, p->count, o[VSH_OPOS][0], o[VSH_OPOS][1], o[VSH_OPOS][2], o[VSH_OPOS][3],
+                        (unsigned long long)pdo_gfx_frame_count());
+                for (int r = 0; r < PDO_VSH_INPUTS; r++)
+                    if (p->inputs_read & (1u << r))
+                        SDL_Log("vsh bad:   v%d type 0x%02x stream %u +%u = %g %g %g %g", r, p->input[r].type,
+                                p->input[r].stream, p->input[r].offset, in[r][0], in[r][1], in[r][2], in[r][3]);
+                pdo_vsh_trace = true;
+                pdo_vsh_run(p, (const float (*)[4])in, vconst, o2);
+                pdo_vsh_trace = false;
+                SDL_UnlockMutex(mx);
+            }
+        }
         v->pos[0] = (o[VSH_OPOS][0] - j->offset[0]) / j->scale[0] * cw;
         v->pos[1] = (o[VSH_OPOS][1] - j->offset[1]) / j->scale[1] * cw;
         v->pos[2] = (o[VSH_OPOS][2] - j->offset[2]) / j->zs * cw;
@@ -1204,6 +1285,7 @@ static bool fetch_vsh(const pdo_vsh_program *p, uint32_t base, uint32_t stride,
         w = (float)rtw; h = (float)rth;
     }
     j.p = p;
+    j.handle = st.vshader;
     j.first = first;
     j.out = out;
     j.scale[0] = w * 0.5f; j.scale[1] = -h * 0.5f; j.scale[2] = zs;
