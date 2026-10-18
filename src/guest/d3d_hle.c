@@ -75,14 +75,28 @@ static void call_guest_cdecl1(uint32_t fn_va, uint32_t arg)
 /* Sleep until the next vblank on the shared timeline; returns its index.
  * Vblanks fall on one fixed timeline and every waiter wakes at the next one,
  * as on hardware. */
+/* PDO_FAST=n: vblanks come n times as often, so a debugging run reaches a
+ * point of the game sooner (the game is paced on vblanks; sound and other
+ * clocks are not, so timing-sensitive behaviour changes). */
+static Uint64 vblank_ns(void)
+{
+    static Uint64 ns;
+    if (!ns) {
+        const char *e = getenv("PDO_FAST");
+        int n = e ? atoi(e) : 1;
+        ns = VBLANK_NS / (Uint64)(n > 1 ? n : 1);
+    }
+    return ns;
+}
+
 static Uint64 wait_vblank(void)
 {
     Uint64 now = SDL_GetTicksNS(), index, at;
 
     if (!epoch)
         epoch = now;
-    index = (now - epoch) / VBLANK_NS + 1;
-    at = epoch + index * VBLANK_NS;
+    index = (now - epoch) / vblank_ns() + 1;
+    at = epoch + index * vblank_ns();
     if (at > now)
         SDL_DelayPrecise(at - now);
     return index;
@@ -90,7 +104,7 @@ static Uint64 wait_vblank(void)
 
 static Uint64 current_vblank(void)
 {
-    return epoch ? (SDL_GetTicksNS() - epoch) / VBLANK_NS : 0;
+    return epoch ? (SDL_GetTicksNS() - epoch) / vblank_ns() : 0;
 }
 
 void sub_002ADCB0(void)
