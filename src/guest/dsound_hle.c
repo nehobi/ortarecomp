@@ -215,6 +215,8 @@ void sub_002C4833(void)
     TRACE("CreateSoundBuffer flags 0x%x, %u bytes, %s %u ch %u Hz, %d bins -> 0x%08x",
           flags, bytes, vd.format == PDO_FMT_XADPCM ? "adpcm" : vd.format == PDO_FMT_PCM8 ? "pcm8" : "pcm16",
           vd.channels, vd.sample_rate, vd.bin_count, obj);
+    for (int i = 0; i < vd.bin_count; i++)
+        TRACE("  0x%08x bin %u volume %d", obj, vd.bins[i].bin, vd.bins[i].volume);
     RETURN(16, DS_OK);
 }
 
@@ -447,6 +449,7 @@ void sub_002C24BE(void)
     int id = voice_of(ARG(0));
     if (id)
         pdo_voice_set_volume(id, (int32_t)ARG(1));
+    TRACE("SetVolume 0x%08x %d", ARG(0), (int32_t)ARG(1));
     RETURN(8, DS_OK);
 }
 
@@ -456,6 +459,7 @@ void sub_002C252E(void)
     int id = voice_of(ARG(0));
     if (id)
         pdo_voice_set_headroom(id, ARG(1));
+    TRACE("SetHeadroom 0x%08x %u", ARG(0), ARG(1));
     RETURN(8, DS_OK);
 }
 
@@ -485,6 +489,8 @@ void sub_002C254A(void)
         }
         pdo_voice_set_bins(id, bins, n);
     }
+    for (int i = 0; i < n; i++)
+        TRACE("  0x%08x bin %u volume %d", ARG(0), bins[i].bin, bins[i].volume);
     RETURN(8, DS_OK);
 }
 
@@ -535,6 +541,8 @@ void sub_002C2566(void)
         }
         pdo_voice_set_bins(id, bins, n);
     }
+    for (int i = 0; i < n; i++)
+        TRACE("  0x%08x bin %u volume %d", ARG(0), bins[i].bin, bins[i].volume);
     RETURN(8, DS_OK);
 }
 
@@ -858,6 +866,8 @@ void sub_002C269B(void)
         }
         pdo_voice_set_bins(id, bins, n);
     }
+    for (int i = 0; i < n; i++)
+        TRACE("  0x%08x bin %u volume %d", ARG(0), bins[i].bin, bins[i].volume);
     RETURN(8, DS_OK);
 }
 
