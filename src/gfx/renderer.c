@@ -783,6 +783,33 @@ static void present_pass(SDL_GPUCommandBuffer *cmd)
     SDL_EndGPURenderPass(pass);
 }
 
+/* A hang where the game thread never comes back to pump window events
+ * ignores F11, so a watchdog takes the thread dump itself once no frame has
+ * been presented for 15 s (once per stall). */
+static int SDLCALL watchdog(void *unused)
+{
+    uint64_t seen = 0;
+    int still = 0;
+    bool dumped = false;
+
+    (void)unused;
+    for (;;) {
+        uint64_t now = *(volatile uint64_t *)&frames;
+        SDL_Delay(1000);
+        if (now != seen) {
+            seen = now;
+            still = 0;
+            dumped = false;
+        } else if (++still >= 15 && !dumped && seen > 0) {
+            SDL_Log("watchdog: no frame for %d s (frame %llu), dumping threads", still,
+                    (unsigned long long)seen);
+            pdo_dump_threads();
+            dumped = true;
+        }
+    }
+    return 0;
+}
+
 bool pdo_gfx_init(int width, int height)
 {
     SDL_GPUTextureCreateInfo ti;
@@ -873,6 +900,7 @@ bool pdo_gfx_init(int width, int height)
 
     if (getenv("PDO_CAPTURE"))      /* same as F12 at that frame */
         capture_frame = (uint64_t)atoll(getenv("PDO_CAPTURE"));
+    SDL_DetachThread(SDL_CreateThread(watchdog, "watchdog", NULL));
     shot_dir = getenv("PDO_SCREENSHOT");
     every = getenv("PDO_SCREENSHOT_EVERY");
     if (every && atoi(every) > 0)

@@ -184,9 +184,9 @@ void pdo_dump_threads(void)
     }
     CloseHandle(snap);
 
-    fprintf(stderr, "\n=== THREADS (F11): %d\n", nthreads);
+    fprintf(stderr, "\n=== THREADS: %d\n", nthreads);
     for (int t = 0; t < nthreads; t++) {
-        fprintf(stderr, "thread %lu%s\n", ids[t], t ? "" : " (this one: handled F11)");
+        fprintf(stderr, "thread %lu%s\n", ids[t], t ? "" : " (this one: took the dump)");
         for (int i = 0; i < counts[t]; i++)
             print_host_address(i ? "from" : "at", pcs[t][i]);
     }
