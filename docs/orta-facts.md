@@ -57,6 +57,21 @@ virtual addresses in the USA `default.xbe`.
 - D3D device fields moved by 0x124 from 4134 (vblank event +0x2554, vblank
   callback +0x2550).
 
+## Episode 1 music (checked against a longplay)
+
+- Music keys map to sound numbers through the table at 0x00340F70 (key,
+  sound). Episode 1: 0x2777 = stage music (`s01_bgm1`), 0x2774 = boss
+  music (`s01_bgm2`), 0x2775 = a short cue started and faded by zone
+  triggers 303/304.
+- The canyon is silent by design: the ramp event (0xF6AEA, started by
+  trigger 204) fades 0x2777 over 600 frames and its completion callback
+  0x000D66F0 jumps to segment 6. Trigger 406 at 3500 in that segment's list
+  (0x00373B20) creates a fader whose callback 0x000D68A0 requests the boss
+  scene 0xF6B58. The scene table at 0x00340DD8 (scene, keys, count) starts
+  0x2774 for that scene through 0x00013CC0.
+- Requests go through the queue at 0x0046D480 (enqueue 0x00068F60 and
+  0x00068FB0, processed by 0x000692C0 into sound manager vtable 0x0032D4A0).
+
 ## Compared with JSRF (player notes)
 
 - Not cel-shaded: no inverted-hull outlines to get right.
