@@ -1,0 +1,17 @@
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -2935,7 +2935,12 @@
+ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment);
+ 
+ #define XBOX_THREAD_STACK_SIZE  (512 * 1024)
+-#define XBOX_MAX_THREAD_STACKS  8
++/* Live workers, not workers ever made (stacks go back on exit). Panzer Dragoon
++ * Orta has eight alive while its boss cutscene loads (CRI servers, sound and
++ * file workers); the ninth loader then fell back to inline and the caller waited
++ * forever on a worker that had already finished. Slices come from the heap only
++ * when a thread starts, so a higher cap costs nothing until it is used. */
++#define XBOX_MAX_THREAD_STACKS  32
+ 
+ static int g_thread_stacks_used = 0;
+ 
