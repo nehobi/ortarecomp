@@ -71,6 +71,12 @@ virtual addresses in the USA `default.xbe`.
   0x2774 for that scene through 0x00013CC0.
 - Requests go through the queue at 0x0046D480 (enqueue 0x00068F60 and
   0x00068FB0, processed by 0x000692C0 into sound manager vtable 0x0032D4A0).
+- Orta passes IDs that look like code addresses (scene 0x000F6B58, the
+  argument 0x00225574 to 0x001B25B0). The disassembler took 0x00225574 for a
+  function and cut the play method 0x00225270 there; every sound played
+  through that path left the stack 44 bytes low, and the queue processor then
+  dropped the requests after it in the same frame, the boss music among them
+  (patch 0022).
 
 ## Compared with JSRF (player notes)
 

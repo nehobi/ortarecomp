@@ -1,0 +1,25 @@
+diff --git a/tools/disasm/functions.py b/tools/disasm/functions.py
+--- a/tools/disasm/functions.py
++++ b/tools/disasm/functions.py
+@@ -556,8 +556,21 @@
+                 continue
+             targets.add(target)
+ 
++        # Labels: where a conditional branch lands. A jcc stays inside its
++        # body (see _pass_tail_jump_targets), so its target is code of the
++        # function that branches there, however the sweep measured that body.
++        # Panzer Dragoon Orta's sound play method 0x00225270 branches to its own
++        # 0x00225574 just after a `jmp`, and the same number is an ID passed
++        # to 0x001B25B0 (`push 225574h`): as a function it cut the method short, its
++        # `jmp` to the shared epilogue became a stub that popped 4 bytes instead
++        # of 48, and the caller's stack was 44 bytes low after every such sound.
++        labels = {insn.jump_target for insn in self.engine.instructions.values()
++                  if insn.is_cond_jump and insn.jump_target is not None}
++
+         found = 0
+         for target in sorted(targets):
++            if target in labels:
++                continue
+             # An immediate alone cannot justify splitting an instruction the
+             # sweep already decoded. It may be an integer constant that happens
+             # to fall in an as-yet unclaimed code gap. Keep the same prologue
