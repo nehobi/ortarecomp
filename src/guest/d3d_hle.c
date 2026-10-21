@@ -29,6 +29,7 @@
 /* Device fields moved by 0x124 from 4134: JSRF's callback is at +0x242C. */
 #define DEV_VBLANK_CALLBACK 0x2550u         /* set by SetVerticalBlankCallback (0x002ADC90) */
 #define DEV_BACKBUFFERS     0x21C0u         /* surfaces GetBackBuffer2 returns, by index */
+#define DEV_ENABLED_LIGHTS  0x0398u         /* LightEnable's list of lights, linked at +0x8C */
 
 /* NTSC: 60000/1001 Hz. */
 #define VBLANK_NS 16683333ull
@@ -390,8 +391,6 @@ static struct {
     float    mat[TS_COUNT][16];
     float    material[4][4];      /* D3DMATERIAL8: diffuse, ambient, specular, emissive */
     float    power;
-    uint8_t  light_on[8];
-    uint32_t light_raw[8][26];    /* D3DLIGHT8 as the game passed it */
     bool     have_viewport;
     uint32_t vp_x, vp_y, vp_w, vp_h;
     float    vp_minz, vp_maxz;
@@ -560,25 +559,47 @@ void sub_002ADBE0(void)
     }
 }
 
-/* D3DDevice_SetLight(Index, pLight) */
-extern void sub_002AE510_gen(void);
-void sub_002AE510(void)
-{
-    WRAP_BEGIN(2);
-    sub_002AE510_gen();
-    if (a[0] < 8 && a[1])
-        for (int i = 0; i < 26; i++)
-            st.light_raw[a[0]][i] = MEM32(a[1] + 4 * i);
-}
-
 /* D3DDevice_LightEnable(Index, bEnable) */
 extern void sub_002AE6F0_gen(void);
 void sub_002AE6F0(void)
 {
     WRAP_BEGIN(2);
+    {   /* PDO_LIGHT_TRACE=1: log each call with the code addresses on the
+         * stack above it (the callers), to see who switches lights. */
+        static int trace = -1;
+        if (trace < 0)
+            trace = getenv("PDO_LIGHT_TRACE") != NULL;
+        if (trace) {
+            char line[256];
+            int len = SDL_snprintf(line, sizeof line, "light: frame %llu LightEnable(%u, %u) from",
+                                   (unsigned long long)pdo_gfx_frame_count(), a[0], a[1]);
+            for (uint32_t k = 0, found = 0; k < 64 && found < 6 && len < 220; k++) {
+                uint32_t w = MEM32(g_esp + 4 * k);
+                if (w >= 0x00011000u && w < 0x002AC080u) {
+                    len += SDL_snprintf(line + len, sizeof line - len, " %08x", w);
+                    found++;
+                }
+            }
+            SDL_Log("%s", line);
+        }
+    }
     sub_002AE6F0_gen();
-    if (a[0] < 8)
-        st.light_on[a[0]] = a[1] != 0;
+}
+
+/* The lights switched on, as the device keeps them: LightEnable links each
+ * one into a list (any index; Orta uses 0-9 and 33-35), and each entry
+ * starts with the D3DLIGHT8 SetLight stored. Like the library's upload, at
+ * most 8. Returns how many were written to out. */
+static int enabled_lights(uint32_t out[8])
+{
+    uint32_t dev = MEM32(D3D_DEVICE_PTR), l;
+    int n = 0;
+
+    if (!dev)
+        return 0;
+    for (l = MEM32(dev + DEV_ENABLED_LIGHTS); l && n < 8; l = MEM32(l + 0x8C))
+        out[n++] = l;
+    return n;
 }
 
 static float lf(uint32_t bits)
@@ -594,7 +615,7 @@ static float lf(uint32_t bits)
  * material colours taken from the vertex where the material sources say
  * so. Specular highlights are not computed. Returns a D3DCOLOR. */
 static uint32_t light_vertex(const float p[3], const float n[3], uint32_t vdiffuse, uint32_t vspecular,
-                             bool has_diffuse, bool has_specular)
+                             bool has_diffuse, bool has_specular, const uint32_t *lights, int nlights)
 {
     float mat[4][4], amb[4], out[4];
     bool cv = RS(RS_COLORVERTEX) != 0;
@@ -612,19 +633,27 @@ static uint32_t light_vertex(const float p[3], const float n[3], uint32_t vdiffu
     unpack_d3dcolor(RS(RS_AMBIENT), amb);
     for (int c = 0; c < 3; c++)
         out[c] = mat[3][c] + amb[c] * mat[1][c];
-    for (int l = 0; l < 8; l++) {
-        const uint32_t *L = st.light_raw[l];
-        uint32_t type = L[0];
+    for (int i = 0; i < nlights; i++) {
+        uint32_t L[26], type;
         float ldir[3], att = 1.0f, ndotl;
 
-        if (!st.light_on[l])
-            continue;
+        for (int k = 0; k < 26; k++)
+            L[k] = MEM32(lights[i] + 4 * k);
+        type = L[0];
         /* D3DLIGHT8 in words: Type 0, Diffuse 1-4, Specular 5-8, Ambient 9-12,
          * Position 13-15, Direction 16-18, Range 19, Falloff 20,
          * Attenuation0-2 21-23, Theta 24, Phi 25. */
         if (type == 3) {                          /* directional */
-            for (int c = 0; c < 3; c++)
+            /* The library normalizes it on upload (0x002B8055). */
+            float len = 0;
+            for (int c = 0; c < 3; c++) {
                 ldir[c] = -lf(L[16 + c]);
+                len += ldir[c] * ldir[c];
+            }
+            len = sqrtf(len);
+            if (len > 0)
+                for (int c = 0; c < 3; c++)
+                    ldir[c] /= len;
         } else {                                  /* point, spot */
             float d2 = 0, d, range = lf(L[19]);
             for (int c = 0; c < 3; c++) {
@@ -958,9 +987,10 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
     target_size(&rtw, &rth);
     d->vertex_info[0] = st.vshader;
     d->vertex_info[1] = RS(RS_LIGHTING);
-    d->vertex_info[2] = RS(RS_COLORVERTEX) & 0xFF;
-    for (int l = 0; l < 8; l++)
-        d->vertex_info[2] |= (uint32_t)st.light_on[l] << (8 + l);
+    {
+        uint32_t lights[8];
+        d->vertex_info[2] = (RS(RS_COLORVERTEX) & 0xFF) | (uint32_t)enabled_lights(lights) << 8;
+    }
     d->vertex_info[3] = (RS(RS_DIFFUSEMATERIALSOURCE) & 0xF) << 12 | (RS(RS_AMBIENTMATERIALSOURCE) & 0xF) << 8 |
                         (RS(RS_SPECULARMATERIALSOURCE) & 0xF) << 4 | (RS(RS_EMISSIVEMATERIALSOURCE) & 0xF);
     d->vertex_info[4] = RS(RS_AMBIENT);
@@ -1175,6 +1205,8 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
     uint32_t diffuse_off = 0, specular_off = 0, normal_off = 0, psize_off = 0, set_of[4], gen[4];
     bool has_diffuse = (fvf & 0x40) != 0, has_specular = (fvf & 0x80) != 0, has_normal = (fvf & 0x10) != 0;
     bool lit, scale;
+    uint32_t lights[8];
+    int nlights = 0;
     float wvp[16], wv[16];
     int rtw, rth;
 
@@ -1212,6 +1244,8 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
 
     target_size(&rtw, &rth);
     lit = !*pretransformed && RS(RS_LIGHTING);
+    if (lit)
+        nlights = enabled_lights(lights);
     scale = !*pretransformed && RS(RS_POINTSCALEENABLE);
     mat_mul(st.mat[TS_WORLD], st.mat[TS_VIEW], wv);
     mat_mul(wv, st.mat[TS_PROJECTION], wvp);
@@ -1256,7 +1290,7 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
                     for (int c = 0; c < 3; c++)
                         wn[c] /= len;
             }
-            o->diffuse = light_vertex(wp, wn, o->diffuse, o->specular, has_diffuse, has_specular);
+            o->diffuse = light_vertex(wp, wn, o->diffuse, o->specular, has_diffuse, has_specular, lights, nlights);
             o->specular = 0;
         }
         /* Fog coordinate: eye depth for table fog, else the specular

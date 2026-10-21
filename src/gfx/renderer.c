@@ -1043,7 +1043,7 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
             d->ff.fog_mode[0], d->ff.fog_mode[1], d->ff.fog_params[0], d->ff.fog_params[1], d->ff.fog_params[2],
             d->ff.fog_color[0], d->ff.fog_color[1], d->ff.fog_color[2]);
     SDL_Log("capture:     vs %08x lighting %u colorvertex %u sources %04x ambient %08x "
-            "material %08x/%08x/%08x lights %02x", d->vertex_info[0], d->vertex_info[1], d->vertex_info[2] & 0xFF,
+            "material %08x/%08x/%08x lights %u", d->vertex_info[0], d->vertex_info[1], d->vertex_info[2] & 0xFF,
             d->vertex_info[3], d->vertex_info[4], d->vertex_info[5], d->vertex_info[6], d->vertex_info[7],
             d->vertex_info[2] >> 8);
     if (d->ff.ps_final[2] & 0xFF) {

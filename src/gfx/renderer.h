@@ -104,8 +104,8 @@ typedef struct pdo_draw {
     float              viewport[6];  /* x, y, w, h, min z, max z */
     uint8_t            stencil_ref;
     /* For captures only: the vertex shader (FVF or program handle),
-     * lighting enable, COLORVERTEX with the lights switched on (a bit each)
- * in bits 8-15, material sources (diffuse, ambient,
+     * lighting enable, COLORVERTEX with the number of lights switched on in
+ * bits 8-15, material sources (diffuse, ambient,
      * specular, emissive: a nibble each), AMBIENT, the material's diffuse,
      * ambient and emissive as D3DCOLORs. */
     uint32_t           vertex_info[8];
