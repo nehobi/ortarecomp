@@ -78,6 +78,18 @@ virtual addresses in the USA `default.xbe`.
   dropped the requests after it in the same frame, the boss music among them
   (patch 0022).
 
+## Rendering
+
+- Episode 2's camouflaged creatures mix 64% of a 128x128 copy of the frame
+  (copied from the back buffer each frame) into their texture, through a
+  pixel shader with texture mode PROJECT2D; their vertex program writes
+  screen coordinates as (x, y, 0, w), so the lookup needs the divide by q.
+- Particles are point sprites (states 116-123, set by the reset code at
+  0x0027D539): sparks in episode 1 come from a vertex program that writes
+  oPts; runs of 15 and 30 points use a 32x32 sprite texture.
+- Episode 2 water uses bump environment mapping (V8U8 textures, texture
+  modes BUMPENVMAP and BUMPENVMAP_LUM).
+
 ## Compared with JSRF (player notes)
 
 - Not cel-shaded: no inverted-hull outlines to get right.
