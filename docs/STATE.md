@@ -26,8 +26,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 - Episode 1: waterfalls animate and wing-tip trails show (confirmed);
   sparks look like larger particles (check against a video).
-- Episode 2: camouflaged creatures no longer black (PROJECT2D divide),
-  dust.
+- Episode 2: dust. Camouflaged creatures confirmed against a video (the
+  gray warping is the original's look), dying enemies keep their colours
+  (lights 33-35).
 
 ## Open
 
