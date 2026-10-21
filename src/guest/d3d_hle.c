@@ -1172,7 +1172,7 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
                       pdo_vertex *out, bool *pretransformed)
 {
     uint32_t pos = fvf & 0x00E, off = 0, ntc = (fvf >> 8) & 0xF, tc_off[4] = {0}, tc_n[4] = {0};
-    uint32_t diffuse_off = 0, specular_off = 0, normal_off = 0, psize_off = 0, set_of[4];
+    uint32_t diffuse_off = 0, specular_off = 0, normal_off = 0, psize_off = 0, set_of[4], gen[4];
     bool has_diffuse = (fvf & 0x40) != 0, has_specular = (fvf & 0x80) != 0, has_normal = (fvf & 0x10) != 0;
     bool lit, scale;
     float wvp[16], wv[16];
@@ -1195,8 +1195,20 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
     }
     if (!stride)
         stride = off;
-    for (int s = 0; s < 4; s++)
+    /* D3DTSS_TEXCOORDINDEX: the coordinate set in the low word; the high
+     * word asks for generated coordinates instead (D3DTSS_TCI_*). */
+    for (int s = 0; s < 4; s++) {
         set_of[s] = TS(s, TSS_TEXCOORDINDEX) & 0xFFFF;
+        gen[s] = *pretransformed ? 0 : TS(s, TSS_TEXCOORDINDEX) >> 16;
+        if (gen[s] > 2) {
+            static uint32_t warned;
+            if (!(warned & (1u << (gen[s] & 31)))) {
+                warned |= 1u << (gen[s] & 31);
+                SDL_Log("d3d: texture coordinate generation 0x%x not handled", gen[s] << 16);
+            }
+            gen[s] = 0;
+        }
+    }
 
     target_size(&rtw, &rth);
     lit = !*pretransformed && RS(RS_LIGHTING);
@@ -1255,6 +1267,27 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
             o->fog = has_specular ? (float)(o->specular >> 24) / 255.0f : 1.0f;
         for (int s = 0; s < 4; s++) {
             uint32_t set = set_of[s];
+            if (gen[s]) {
+                /* TCI_CAMERASPACENORMAL (1): the unit normal in camera
+                 * space; TCI_CAMERASPACEPOSITION (2): the position. Three
+                 * components, then the stage's texture transform. */
+                float g[3] = { 0, 0, 0 }, len;
+                if (gen[s] == 2) {
+                    for (int c = 0; c < 3; c++)
+                        g[c] = x * wv[c] + y * wv[4 + c] + z * wv[8 + c] + wv[12 + c];
+                } else if (has_normal) {
+                    float nx = f32(v + normal_off), ny = f32(v + normal_off + 4), nz = f32(v + normal_off + 8);
+                    for (int c = 0; c < 3; c++)
+                        g[c] = nx * wv[c] + ny * wv[4 + c] + nz * wv[8 + c];
+                    len = sqrtf(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                    if (len > 0)
+                        for (int c = 0; c < 3; c++)
+                            g[c] /= len;
+                }
+                memcpy(o->tc[s], g, sizeof g);
+                texture_transform(s, 3, o->tc[s]);
+                continue;
+            }
             if (set < ntc && set < 4)
                 for (uint32_t c = 0; c < tc_n[set]; c++)
                     o->tc[s][c] = f32(v + tc_off[set] + 4 * c);
