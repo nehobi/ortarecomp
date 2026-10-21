@@ -1091,7 +1091,8 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
          * 0 PSAlphaInputs[8], 8 FinalCombinerInputsABCD, 9 ...EFG,
          * 10 PSConstant0[8], 18 PSConstant1[8], 26 PSAlphaOutputs[8],
          * 34 PSRGBInputs[8], 42 CompareMode, 43/44 FinalCombinerConstant0/1,
-         * 45 PSRGBOutputs[8], 53 PSCombinerCount, 54 PSTextureModes, ... */
+         * 45 PSRGBOutputs[8], 53 PSCombinerCount, 54 PSTextureModes,
+         * 57/58 PSC0Mapping/PSC1Mapping, 59 PSFinalCombinerConstants. */
         uint32_t def = MEM32(st.pshader + 8);
         if (def) {
             for (int i = 0; i < 8; i++) {
@@ -1118,6 +1119,15 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
             d->ff.ps_final[3] = (int32_t)MEM32(def + 4 * 54);
             unpack_d3dcolor(MEM32(def + 4 * 43), d->ff.ps_fc0);
             unpack_d3dcolor(MEM32(def + 4 * 44), d->ff.ps_fc1);
+            {   /* 59 PSFinalCombinerConstants: which SetPixelShaderConstant
+                 * register feeds the final combiner's C0 (bits 0-3) and C1
+                 * (bits 4-7); 0xF for none. */
+                uint32_t fm = MEM32(def + 4 * 59), k0 = fm & 0xF, k1 = (fm >> 4) & 0xF;
+                if (k0 < 0xF && psconst_set[k0])
+                    memcpy(d->ff.ps_fc0, psconst[k0], sizeof psconst[k0]);
+                if (k1 < 0xF && psconst_set[k1])
+                    memcpy(d->ff.ps_fc1, psconst[k1], sizeof psconst[k1]);
+            }
         }
     }
     /* Fog (FOGCOLOR is state 138 in 4928: its setter writes there). */
