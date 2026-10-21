@@ -956,6 +956,17 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
 
     memset(d, 0, sizeof *d);
     target_size(&rtw, &rth);
+    d->vertex_info[0] = st.vshader;
+    d->vertex_info[1] = RS(RS_LIGHTING);
+    d->vertex_info[2] = RS(RS_COLORVERTEX) & 0xFF;
+    for (int l = 0; l < 8; l++)
+        d->vertex_info[2] |= (uint32_t)st.light_on[l] << (8 + l);
+    d->vertex_info[3] = (RS(RS_DIFFUSEMATERIALSOURCE) & 0xF) << 12 | (RS(RS_AMBIENTMATERIALSOURCE) & 0xF) << 8 |
+                        (RS(RS_SPECULARMATERIALSOURCE) & 0xF) << 4 | (RS(RS_EMISSIVEMATERIALSOURCE) & 0xF);
+    d->vertex_info[4] = RS(RS_AMBIENT);
+    d->vertex_info[5] = pack_color(st.material[0]);
+    d->vertex_info[6] = pack_color(st.material[1]);
+    d->vertex_info[7] = pack_color(st.material[3]);
     d->ps.blend_enable = RS(RS_ALPHABLENDENABLE) != 0;
     d->ps.src_blend = (uint16_t)RS(RS_SRCBLEND);
     d->ps.dst_blend = (uint16_t)RS(RS_DESTBLEND);
