@@ -26,7 +26,7 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 - Episode 1: waterfalls, wing-tip trails and particles (point sprites)
   confirmed.
-- Episode 2: dust. Camouflaged creatures confirmed against a video (the
+- Episode 2: dust moves (confirmed). Camouflaged creatures confirmed against a video (the
   gray warping is the original's look), dying enemies keep their colours
   (lights 33-35).
 
