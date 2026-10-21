@@ -86,6 +86,9 @@ vec4 sample_stage(int s)
 {
     vec4 tc = tc_for(stage_misc[s].z);
     if (stage_misc[s].y == 0) return vec4(1.0);
+    // Fixed-function stages run as PROJECT2D too: divide by q (see
+    // ps_texture; q = 0 is a component nobody wrote).
+    if (tc.w != 0.0) tc.xy /= tc.w;
     vec2 uv = tc.xy * tc_scale[s].xy;
     return sample_tex(s, uv);
 }

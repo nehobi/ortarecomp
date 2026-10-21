@@ -1133,6 +1133,10 @@ static void texture_transform(int s, uint32_t n, float *tc)
             out[c] /= out[count - 1];
     for (int c = 0; c < 4; c++)
         tc[c] = out[c];
+    /* q for the rasterizer's divide: only a fourth output component that
+     * was not divided here. */
+    if (count != 4 || (flags & 256))
+        tc[3] = 0.0f;
 }
 
 /* D3D point size in pixels: the vertex's own (FVF PSIZE) or POINTSIZE; with
