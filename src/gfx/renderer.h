@@ -26,12 +26,14 @@ void pdo_gfx_shutdown(void);
 /* One vertex as the shaders see it. Positions are in clip space; colours are
  * D3DCOLORs; four texture coordinate sets of up to four components; fog is
  * the fog coordinate (eye distance, or the fog factor itself when the fog
- * table mode is NONE). */
+ * table mode is NONE). psize is the point size in pixels, for point lists
+ * (the shaders do not read it). */
 typedef struct pdo_vertex {
     float    pos[4];
     uint32_t diffuse, specular;
     float    tc[4][4];
     float    fog;
+    float    psize;
 } pdo_vertex;
 
 /* A texture as the game described it: a guest D3DPixelContainer's data

@@ -321,7 +321,9 @@ void d3d_trace_call(uint32_t va, const char *name, int args)
  * 92: XbSymbolDatabase's D3DRS_FogEnable is RS_BASE + 4*92). Complex states
  * are 4134's + 19: each checked against the address its setter writes
  * (FogColor 138, ZEnable 143, StencilEnable 144, StencilFail 145, CullMode
- * 147, TextureFactor 148, ZBias 149). */
+ * 147, TextureFactor 148, ZBias 149). Point states 116-123 likewise: the
+ * reset code at 0x0027D539 sets POINTSIZE 116 to 1.0 and clears
+ * POINTSPRITEENABLE 118 and POINTSCALEENABLE 119. */
 enum {
     RS_ZFUNC = 57, RS_ALPHAFUNC = 58, RS_ALPHABLENDENABLE = 59, RS_ALPHATESTENABLE = 60,
     RS_ALPHAREF = 61, RS_SRCBLEND = 62, RS_DESTBLEND = 63, RS_ZWRITEENABLE = 64,
@@ -332,6 +334,8 @@ enum {
     RS_LIGHTING = 102, RS_SPECULARENABLE = 103, RS_COLORVERTEX = 105,
     RS_SPECULARMATERIALSOURCE = 110, RS_DIFFUSEMATERIALSOURCE = 111,
     RS_AMBIENTMATERIALSOURCE = 112, RS_EMISSIVEMATERIALSOURCE = 113, RS_AMBIENT = 115,
+    RS_POINTSIZE = 116, RS_POINTSIZE_MIN = 117, RS_POINTSPRITEENABLE = 118,
+    RS_POINTSCALEENABLE = 119, RS_POINTSCALE_A = 120, RS_POINTSIZE_MAX = 123,
     RS_FOGCOLOR = 138,
     RS_ZENABLE = 143, RS_STENCILENABLE = 144, RS_STENCILFAIL = 145, RS_CULLMODE = 147,
     RS_TEXTUREFACTOR = 148,
@@ -1131,14 +1135,31 @@ static void texture_transform(int s, uint32_t n, float *tc)
         tc[c] = out[c];
 }
 
+/* D3D point size in pixels: the vertex's own (FVF PSIZE) or POINTSIZE; with
+ * POINTSCALEENABLE, scaled by distance d from the eye as
+ * Vh * size * sqrt(1 / (A + B d + C d^2)); then clamped to MIN..MAX. */
+static float point_size(float size, float d, bool scale)
+{
+    float mn = lf(RS(RS_POINTSIZE_MIN)), mx = lf(RS(RS_POINTSIZE_MAX));
+
+    if (scale) {
+        float a = lf(RS(RS_POINTSCALE_A)), b = lf(RS(RS_POINTSCALE_A + 1)), c = lf(RS(RS_POINTSCALE_A + 2));
+        float q = a + b * d + c * d * d;
+        size = q > 0.0f ? (float)st.vp_h * size * sqrtf(1.0f / q) : 0.0f;
+    }
+    if (size < mn) size = mn;
+    if (mx > 0.0f && size > mx) size = mx;
+    return size;
+}
+
 /* Fetch vertices [first, first + count) of an FVF stream into our layout. */
 static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
                       pdo_vertex *out, bool *pretransformed)
 {
     uint32_t pos = fvf & 0x00E, off = 0, ntc = (fvf >> 8) & 0xF, tc_off[4] = {0}, tc_n[4] = {0};
-    uint32_t diffuse_off = 0, specular_off = 0, normal_off = 0, set_of[4];
+    uint32_t diffuse_off = 0, specular_off = 0, normal_off = 0, psize_off = 0, set_of[4];
     bool has_diffuse = (fvf & 0x40) != 0, has_specular = (fvf & 0x80) != 0, has_normal = (fvf & 0x10) != 0;
-    bool lit;
+    bool lit, scale;
     float wvp[16], wv[16];
     int rtw, rth;
 
@@ -1148,7 +1169,7 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
     else if (pos >= 0x006 && pos <= 0x00C) off = 12 + 4 * ((pos - 0x004) / 2);
     else return false;
     if (fvf & 0x010) { normal_off = off; off += 12; }   /* normal */
-    if (fvf & 0x020) off += 4;           /* point size */
+    if (fvf & 0x020) { psize_off = off; off += 4; }   /* point size */
     if (has_diffuse) { diffuse_off = off; off += 4; }
     if (has_specular) { specular_off = off; off += 4; }
     for (uint32_t i = 0; i < ntc && i < 4; i++) {
@@ -1164,6 +1185,7 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
 
     target_size(&rtw, &rth);
     lit = !*pretransformed && RS(RS_LIGHTING);
+    scale = !*pretransformed && RS(RS_POINTSCALEENABLE);
     mat_mul(st.mat[TS_WORLD], st.mat[TS_VIEW], wv);
     mat_mul(wv, st.mat[TS_PROJECTION], wvp);
 
@@ -1185,6 +1207,14 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
         }
         o->diffuse = has_diffuse ? MEM32(v + diffuse_off) : 0xFFFFFFFFu;
         o->specular = has_specular ? MEM32(v + specular_off) : 0;
+        {
+            float e[3] = { 0, 0, 0 };
+            if (scale)
+                for (int c = 0; c < 3; c++)
+                    e[c] = x * wv[c] + y * wv[4 + c] + z * wv[8 + c] + wv[12 + c];
+            o->psize = point_size(fvf & 0x020 ? f32(v + psize_off) : lf(RS(RS_POINTSIZE)),
+                                  sqrtf(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]), scale);
+        }
         if (lit) {
             const float *w = st.mat[TS_WORLD];
             float wp[3], wn[3] = { 0, 0, 0 };
@@ -1310,6 +1340,7 @@ static void vsh_range(void *ctx, uint32_t lo, uint32_t hi)
         v->diffuse = pack_color(o[VSH_OD0]);
         v->specular = pack_color(o[VSH_OD1]);
         v->fog = o[VSH_OFOG][0];
+        v->psize = point_size(o[VSH_OPTS][0], 0.0f, false);
         for (int t = 0; t < 4; t++)
             memcpy(v->tc[t], o[VSH_OT0 + t], sizeof v->tc[t]);
     }
@@ -1428,6 +1459,47 @@ static uint32_t build_indices(uint32_t type, const uint32_t *in, uint32_t n, uin
     return k;
 }
 
+/* Draw a point list as quads of each vertex's psize pixels, square on the
+ * screen, the way the hardware rasterizes points. With POINTSPRITEENABLE the
+ * texture coordinates run from (0, 0) at the top left to (1, 1). */
+static void draw_points(pdo_draw *d, const pdo_vertex *v, const uint32_t *order, uint32_t n)
+{
+    static pdo_vertex *qv;
+    static uint32_t *qi, cap;
+    bool sprite = RS(RS_POINTSPRITEENABLE) != 0;
+    float vw = d->viewport[2] > 0.0f ? d->viewport[2] : 1.0f, vh = d->viewport[3] > 0.0f ? d->viewport[3] : 1.0f;
+
+    if (n > cap) {
+        cap = n * 2;
+        qv = SDL_realloc(qv, cap * 4 * sizeof *qv);
+        qi = SDL_realloc(qi, cap * 6 * sizeof *qi);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        const pdo_vertex *p = &v[order[i]];
+        /* Half the size in clip units: 2 / viewport pixels per pixel. */
+        float hx = p->psize / vw * p->pos[3], hy = p->psize / vh * p->pos[3];
+        for (int c = 0; c < 4; c++) {
+            pdo_vertex *o = &qv[i * 4 + c];
+            float sx = (c & 1) ? 1.0f : 0.0f, sy = (c & 2) ? 1.0f : 0.0f;
+            *o = *p;
+            o->pos[0] += (sx * 2.0f - 1.0f) * hx;
+            o->pos[1] -= (sy * 2.0f - 1.0f) * hy;
+            if (sprite)
+                for (int s = 0; s < 4; s++) {
+                    o->tc[s][0] = sx;
+                    o->tc[s][1] = sy;
+                    o->tc[s][2] = 0.0f;
+                    o->tc[s][3] = 1.0f;
+                }
+        }
+        qi[i * 6 + 0] = i * 4;     qi[i * 6 + 1] = i * 4 + 1; qi[i * 6 + 2] = i * 4 + 2;
+        qi[i * 6 + 3] = i * 4 + 1; qi[i * 6 + 4] = i * 4 + 3; qi[i * 6 + 5] = i * 4 + 2;
+    }
+    d->ps.topology = 0;
+    d->ps.cull = 0;             /* points have no facing */
+    pdo_gfx_draw(d, qv, n * 4, qi, n * 6);
+}
+
 /* The shared part of every draw: vertices [first, first+count) of stream
  * data at 'base', primitive order given by 'order' (n entries, relative to
  * first). */
@@ -1525,6 +1597,10 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
                         d.ff.ps_c1[s][0], d.ff.ps_c1[s][1], d.ff.ps_c1[s][2], d.ff.ps_c1[s][3]);
             }
         }
+    }
+    if (type == 1) {
+        draw_points(&d, vbuf, order, n);
+        return;
     }
     ni = build_indices(type, order, n, ibuf, &d.ps.topology);
     pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
@@ -1729,6 +1805,7 @@ static void imm_emit(float x, float y, float z, float w)
     o->diffuse = pack_color(imm.diffuse);
     o->specular = pack_color(imm.specular);
     o->fog = 1.0f;
+    o->psize = point_size(lf(RS(RS_POINTSIZE)), 0.0f, false);
     for (int s = 0; s < 4; s++) {
         uint32_t set = TS(s, TSS_TEXCOORDINDEX) & 0xFFFF;
         if (set < 4)
@@ -1789,8 +1866,11 @@ void sub_002AF6A0(void)
             ibuf = SDL_realloc(ibuf, icap * sizeof *ibuf);
         }
         fill_draw_state(&d, (st.vshader & 0x00E) == 0x004);
-        pdo_gfx_draw(&d, imm.v, imm.n,
-                     ibuf, build_indices(imm.type, sequential(imm.n), imm.n, ibuf, &d.ps.topology));
+        if (imm.type == 1)
+            draw_points(&d, imm.v, sequential(imm.n), imm.n);
+        else
+            pdo_gfx_draw(&d, imm.v, imm.n,
+                         ibuf, build_indices(imm.type, sequential(imm.n), imm.n, ibuf, &d.ps.topology));
     }
     imm.active = false;
     g_esp += 4;
