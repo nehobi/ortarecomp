@@ -87,6 +87,10 @@ virtual addresses in the USA `default.xbe`.
 - Particles are point sprites (states 116-123, set by the reset code at
   0x0027D539): sparks in episode 1 come from a vertex program that writes
   oPts; runs of 15 and 30 points use a 32x32 sprite texture.
+- Lights: the sun is light 0; per-object point lights 6-9 (picked by range
+  against the object's bounding sphere, 0x0027F450); presets switch
+  between the sun and lights 33-35 (episode 2's creatures: sun off, 33 and
+  34 on). The device keeps the enabled ones in a list at +0x398.
 - Episode 2 water uses bump environment mapping (V8U8 textures, texture
   modes BUMPENVMAP and BUMPENVMAP_LUM).
 
