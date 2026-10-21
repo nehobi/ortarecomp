@@ -1082,9 +1082,10 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
     }
     for (uint32_t k = 0; k < 3 && k < c->index_count; k++) {
         const pdo_vertex *v = &verts[indices[c->first_index + k]];
-        SDL_Log("capture:     v pos %.3f %.3f %.3f %.3f d %08x s %08x t0 %.3f %.3f %.3f t1 %.3f %.3f %.3f fog %.2f",
-                v->pos[0], v->pos[1], v->pos[2], v->pos[3], v->diffuse, v->specular,
-                v->tc[0][0], v->tc[0][1], v->tc[0][2], v->tc[1][0], v->tc[1][1], v->tc[1][2], v->fog);
+        SDL_Log("capture:     v pos %.3f %.3f %.3f %.3f d %08x s %08x t0 %.3f %.3f %.3f %.3f "
+                "t1 %.3f %.3f %.3f %.3f fog %.2f",
+                v->pos[0], v->pos[1], v->pos[2], v->pos[3], v->diffuse, v->specular, v->tc[0][0], v->tc[0][1],
+                v->tc[0][2], v->tc[0][3], v->tc[1][0], v->tc[1][1], v->tc[1][2], v->tc[1][3], v->fog);
     }
     /* Each distinct guest texture once, as decoded. */
     for (int s = 0; s < 4; s++) {
