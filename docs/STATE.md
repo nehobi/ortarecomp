@@ -15,7 +15,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
   CPU, render targets and frame copies, bump environment mapping (episode 2
   water), texture transforms, point sprites, PROJECT2D, camera-space
   texture coordinate generation (episode 1 rain: finer now, confirmed;
-  it comes and goes in the original too).
+  it comes and goes in the original too; the player's dragon is shiny
+  again, confirmed).
 - xboxrecomp v0.13.1 + patches 0001-0022: 0020-0021 give threads the stack
   they ask for (an exhausted pool deadlocked the cutscene before the
   episode 1 boss); 0022 stops an ID that looks like an address from
@@ -25,8 +26,6 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 - Episode 1: waterfalls animate and wing-tip trails show (confirmed);
   sparks look like larger particles (check against a video).
-- The player's dragon body: flat black, shiny in the original; probably
-  camera-space-normal texture generation (env map), fixed in 00a8fcf.
 - Episode 2: camouflaged creatures no longer black (PROJECT2D divide),
   dust.
 
