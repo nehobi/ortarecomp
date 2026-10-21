@@ -369,11 +369,12 @@ enum {
     TSS_ADDRESSU = 0, TSS_ADDRESSV = 1, TSS_MAGFILTER = 3, TSS_MINFILTER = 4, TSS_MIPFILTER = 5,
     TSS_COLOROP = 12, TSS_COLORARG0 = 13, TSS_COLORARG1 = 14, TSS_COLORARG2 = 15,
     TSS_ALPHAOP = 16, TSS_ALPHAARG0 = 17, TSS_ALPHAARG1 = 18, TSS_ALPHAARG2 = 19,
-    TSS_RESULTARG = 20, TSS_BUMPENVMAT00 = 22, TSS_TEXCOORDINDEX = 28,
+    TSS_RESULTARG = 20, TSS_TEXTURETRANSFORMFLAGS = 21, TSS_BUMPENVMAT00 = 22,
+    TSS_TEXCOORDINDEX = 28,
 };
 /* D3DTRANSFORMSTATETYPE on the Xbox: VIEW 0, PROJECTION 1, TEXTURE0-3 2-5,
  * WORLD 6, WORLD1-3 7-9. */
-enum { TS_VIEW = 0, TS_PROJECTION = 1, TS_WORLD = 6, TS_COUNT = 10 };
+enum { TS_VIEW = 0, TS_PROJECTION = 1, TS_TEXTURE0 = 2, TS_WORLD = 6, TS_COUNT = 10 };
 
 static struct {
     uint32_t tex[4];
@@ -1103,6 +1104,33 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
     }
 }
 
+/* D3DTSS_TEXTURETRANSFORMFLAGS: stage s's coordinates times its texture
+ * matrix (D3DTS_TEXTURE0 + s), as a row vector. Low byte: how many output
+ * components the rasterizer uses (0 disables); 256 (PROJECTED): divide by
+ * the last of them. The input is padded the way D3D pads it: the first
+ * missing component is 1, so a 2D coordinate (u, v, 1, 0) picks up the
+ * matrix's third row as a translation -- how textures are scrolled. */
+static void texture_transform(int s, uint32_t n, float *tc)
+{
+    uint32_t flags = TS(s, TSS_TEXTURETRANSFORMFLAGS), count = flags & 0xFF;
+    const float *m = st.mat[TS_TEXTURE0 + s];
+    float in[4] = { 0, 0, 0, 0 }, out[4];
+
+    if (!count)
+        return;
+    for (uint32_t c = 0; c < n && c < 4; c++)
+        in[c] = tc[c];
+    if (n < 4)
+        in[n] = 1.0f;
+    for (int c = 0; c < 4; c++)
+        out[c] = in[0] * m[c] + in[1] * m[4 + c] + in[2] * m[8 + c] + in[3] * m[12 + c];
+    if ((flags & 256) && count >= 2 && count <= 4 && out[count - 1] != 0.0f)
+        for (uint32_t c = 0; c + 1 < count; c++)
+            out[c] /= out[count - 1];
+    for (int c = 0; c < 4; c++)
+        tc[c] = out[c];
+}
+
 /* Fetch vertices [first, first + count) of an FVF stream into our layout. */
 static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
                       pdo_vertex *out, bool *pretransformed)
@@ -1185,6 +1213,8 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
             if (set < ntc && set < 4)
                 for (uint32_t c = 0; c < tc_n[set]; c++)
                     o->tc[s][c] = f32(v + tc_off[set] + 4 * c);
+            if (!*pretransformed && set < ntc && set < 4)
+                texture_transform(s, tc_n[set], o->tc[s]);
         }
     }
     return true;
