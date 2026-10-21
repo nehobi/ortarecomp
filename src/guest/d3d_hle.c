@@ -369,7 +369,7 @@ enum {
     TSS_ADDRESSU = 0, TSS_ADDRESSV = 1, TSS_MAGFILTER = 3, TSS_MINFILTER = 4, TSS_MIPFILTER = 5,
     TSS_COLOROP = 12, TSS_COLORARG0 = 13, TSS_COLORARG1 = 14, TSS_COLORARG2 = 15,
     TSS_ALPHAOP = 16, TSS_ALPHAARG0 = 17, TSS_ALPHAARG1 = 18, TSS_ALPHAARG2 = 19,
-    TSS_RESULTARG = 20, TSS_TEXCOORDINDEX = 28,
+    TSS_RESULTARG = 20, TSS_BUMPENVMAT00 = 22, TSS_TEXCOORDINDEX = 28,
 };
 /* D3DTRANSFORMSTATETYPE on the Xbox: VIEW 0, PROJECTION 1, TEXTURE0-3 2-5,
  * WORLD 6, WORLD1-3 7-9. */
@@ -995,6 +995,17 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
         d->ff.stage_misc[s][1] = t != 0;
         d->ff.stage_misc[s][2] = s;
         d->ff.tc_scale[s][0] = d->ff.tc_scale[s][1] = 1.0f;
+        /* BUMPENVMAT00, 01, 11, 10, LSCALE, LOFFSET: indices 22-27, which
+         * 0x002B0260 copies as they are into the NV2A's per-stage bump
+         * environment methods (0x1B68). */
+        for (int i = 0; i < 4; i++) {
+            uint32_t m = TS(s, TSS_BUMPENVMAT00 + i);
+            memcpy(&d->ff.bump_mat[s][i], &m, 4);
+        }
+        for (int i = 0; i < 2; i++) {
+            uint32_t m = TS(s, TSS_BUMPENVMAT00 + 4 + i);
+            memcpy(&d->ff.bump_lum[s][i], &m, 4);
+        }
         if (t) {
             pdo_xtex_info ti;
             pdo_xtex_describe(MEM32(t + 12), MEM32(t + 16), &ti);
@@ -1007,6 +1018,9 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
             switch (ti.format) {
             case 0x03: case 0x05: case 0x07: case 0x11: case 0x1C: case 0x1E:
                 d->ff.tc_scale[s][2] = 1.0f;
+                break;
+            case 0x28:      /* V8U8 */
+                d->ff.tc_scale[s][3] = 1.0f;
                 break;
             }
             d->tex[s].data = MEM32(t + 4);

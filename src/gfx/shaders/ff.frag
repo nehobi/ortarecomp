@@ -33,10 +33,13 @@ layout(set = 3, binding = 0, std140) uniform FF {
     ivec4 ps_final;      // final ABCD, final EFG, PSCombinerCount, texture modes
     vec4  ps_fc0;
     vec4  ps_fc1;
-    vec4  tc_scale[4];   // xy: texel -> normalised for linear textures; z: no alpha
+    vec4  tc_scale[4];   // xy: texel -> normalised for linear textures; z: no alpha;
+                         // w: red and green signed (V8U8), stored offset by 128
     ivec4 fog_mode;      // enable, D3DFOGMODE (0 NONE, 1 EXP, 2 EXP2, 3 LINEAR)
     vec4  fog_color;
     vec4  fog_params;    // start, end, density
+    vec4  bump_mat[4];   // BUMPENVMAT00, 01, 11, 10
+    vec4  bump_lum[4];   // BUMPENVLSCALE, BUMPENVLOFFSET
 };
 
 vec4 tc_for(int set)
@@ -75,6 +78,7 @@ vec4 sample_tex(int s, vec2 uv)
     else if (s == 2) c = texture(tex2, uv);
     else c = texture(tex3, uv);
     if (tc_scale[s].z != 0.0) c.a = 1.0;
+    if (tc_scale[s].w != 0.0) c.rg = clamp((c.rg * 255.0 - 128.0) / 127.0, -1.0, 1.0);
     return c;
 }
 
@@ -196,6 +200,18 @@ vec4 ps_texture(int s, int mode)
     if (mode == 4) return clamp(tc_for(s), 0.0, 1.0);     // PASSTHRU
     if (stage_misc[s].y == 0) return vec4(0.0, 0.0, 0.0, 1.0);
     vec2 uv = tc_for(s).xy * tc_scale[s].xy;
+    if ((mode == 6 || mode == 7) && s > 0) {
+        // BUMPENVMAP(_LUM): the previous stage's texel (du, dv), through
+        // this stage's bump matrix, offsets these coordinates:
+        // u += M00 du + M10 dv, v += M01 du + M11 dv.
+        vec4 prev = ps_reg[8 + s - 1];
+        vec4 m = bump_mat[s];
+        uv += vec2(m.x * prev.r + m.w * prev.g, m.y * prev.r + m.z * prev.g);
+        vec4 c = sample_tex(s, uv);
+        if (mode == 7)          // luminance from the previous texel's blue
+            c.rgb *= clamp(prev.b * bump_lum[s].x + bump_lum[s].y, 0.0, 1.0);
+        return c;
+    }
     return sample_tex(s, uv);
 }
 

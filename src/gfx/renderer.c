@@ -1042,6 +1042,16 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
             d->ff.alpha_test[0], d->ff.alpha_test[1], d->ff.alpha_test[2], d->ff.alpha_test[3],
             d->ff.fog_mode[0], d->ff.fog_mode[1], d->ff.fog_params[0], d->ff.fog_params[1], d->ff.fog_params[2],
             d->ff.fog_color[0], d->ff.fog_color[1], d->ff.fog_color[2]);
+    if (d->ff.ps_final[2] & 0xFF) {
+        /* The pixel shader in full: texture modes, then each combiner stage's
+         * RGB and alpha inputs and outputs with its two constants. */
+        SDL_Log("capture:     ps modes %08x flags %08x", d->ff.ps_final[3], d->ff.ps_final[2]);
+        for (int k = 0; k < (d->ff.ps_final[2] & 0xFF) && k < 8; k++)
+            SDL_Log("capture:     ps %d rgb %08x>%08x a %08x>%08x c0 %.2f,%.2f,%.2f,%.2f c1 %.2f,%.2f,%.2f,%.2f",
+                    k, d->ff.ps_rgb_in[k], d->ff.ps_rgb_out[k], d->ff.ps_a_in[k], d->ff.ps_a_out[k],
+                    d->ff.ps_c0[k][0], d->ff.ps_c0[k][1], d->ff.ps_c0[k][2], d->ff.ps_c0[k][3],
+                    d->ff.ps_c1[k][0], d->ff.ps_c1[k][1], d->ff.ps_c1[k][2], d->ff.ps_c1[k][3]);
+    }
     if (d->ps.stencil_enable)
         SDL_Log("capture:     stencil func %x ref %u mask %x/%x ops %x %x %x", d->ps.stencil_func, d->stencil_ref,
                 d->ps.stencil_mask, d->ps.stencil_write_mask, d->ps.stencil_fail, d->ps.stencil_zfail,

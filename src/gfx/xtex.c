@@ -9,7 +9,7 @@ enum layout { SWIZZLED, LINEAR, COMPRESSED };
 typedef enum pix {
     PIX_L8, PIX_AL8, PIX_A1R5G5B5, PIX_X1R5G5B5, PIX_A4R4G4B4, PIX_R5G6B5,
     PIX_A8R8G8B8, PIX_X8R8G8B8, PIX_A8, PIX_A8L8, PIX_A8B8G8R8, PIX_B8G8R8A8,
-    PIX_R8G8B8A8, PIX_DXT1, PIX_DXT3, PIX_DXT5,
+    PIX_R8G8B8A8, PIX_V8U8, PIX_DXT1, PIX_DXT3, PIX_DXT5,
 } pix;
 
 static const struct fmt {
@@ -42,6 +42,7 @@ static const struct fmt {
     { 0x1E, "LIN_X8R8G8B8",  LINEAR,     PIX_X8R8G8B8, 32 },
     { 0x1F, "LIN_A8",        LINEAR,     PIX_A8,       8 },
     { 0x20, "LIN_A8L8",      LINEAR,     PIX_A8L8,     16 },
+    { 0x28, "V8U8",          SWIZZLED,   PIX_V8U8,     16 },
     { 0x3A, "A8B8G8R8",      SWIZZLED,   PIX_A8B8G8R8, 32 },
     { 0x3B, "B8G8R8A8",      SWIZZLED,   PIX_B8G8R8A8, 32 },
     { 0x3C, "R8G8B8A8",      SWIZZLED,   PIX_R8G8B8A8, 32 },
@@ -188,6 +189,9 @@ static void texel(pix p, const uint8_t *s, uint8_t *d)
     case PIX_A8B8G8R8:  put(d, s[0], s[1], s[2], s[3]); break;  /* memory: R G B A */
     case PIX_B8G8R8A8:  put(d, s[1], s[2], s[3], s[0]); break;  /* memory: A R G B */
     case PIX_R8G8B8A8:  put(d, s[3], s[2], s[1], s[0]); break;  /* memory: A B G R */
+    /* Signed U, V (memory: U V) for bump mapping, stored offset by 128 so
+     * filtering stays monotonic; the shader maps them back to -1..1. */
+    case PIX_V8U8:      put(d, s[0] ^ 0x80u, s[1] ^ 0x80u, 255, 255); break;
     default:            put(d, 255, 0, 255, 255); break;
     }
 }

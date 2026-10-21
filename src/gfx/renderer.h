@@ -62,13 +62,19 @@ typedef struct pdo_ff_uniforms {
     /* Per stage: texture coordinate scale (x, y). Linear (non-swizzled)
      * textures are addressed in texels on the NV2A, so 1/width, 1/height;
      * swizzled and compressed ones are normalised already, so 1.
-     * z: 1 if the format has no alpha (alpha reads as 1). */
+     * z: 1 if the format has no alpha (alpha reads as 1).
+     * w: 1 if red and green are signed (V8U8), stored offset by 128. */
     float   tc_scale[4][4];
     /* Fog: enable, D3DFOGMODE (0 NONE: the coordinate is the factor,
      * 1 EXP, 2 EXP2, 3 LINEAR); colour; start, end, density. */
     int32_t fog_mode[4];
     float   fog_color[4];
     float   fog_params[4];
+    /* Per stage, for texture mode BUMPENVMAP(_LUM): the bump matrix in
+     * texture stage state order (00, 01, 11, 10) and luminance scale,
+     * offset. */
+    float   bump_mat[4][4];
+    float   bump_lum[4][4];
 } pdo_ff_uniforms;
 
 /* Fixed-function output state, in the XDK's GL-valued enums. */
