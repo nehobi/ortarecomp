@@ -127,7 +127,10 @@ def missed_targets(disasm_dir, xbe):
     fails and pops no arguments either. Orta's sound objects had several;
     0x0003E080, registered with `push offset`, was another. Switch jump
     tables, the other pointers into a function, sit in .text after their
-    function, and are reached by an indexed jump, not an immediate.
+    function, and are reached by an indexed jump, not an immediate. A
+    function can start right after such a table instead of after a ret: the
+    calls to 0x00111BC0, after 0x00111990's tables, failed from the
+    start of the second boss fight of episode 2, whose boss was not drawn.
     """
     with open(os.path.join(disasm_dir, "functions.json")) as f:
         funcs = json.load(f)
@@ -174,7 +177,8 @@ def missed_targets(disasm_dir, xbe):
     def taken_address(va):
         """A function start that only a pointer leads to."""
         return (va % 16 == 0 and va not in starts and any(a <= va < b for a, b in code)
-                and (byte_at(va - 1) in (0xCC, 0x90, 0xC3) or byte_at(va - 3) == 0xC2)
+                and (byte_at(va - 1) in (0xCC, 0x90, 0xC3) or byte_at(va - 3) == 0xC2
+                     or after_jump_table(info, image, va))
                 and decodes(va))
 
     missed = set()
@@ -215,6 +219,17 @@ def missed_targets(disasm_dir, xbe):
             continue
         missed.add(dst)
     return sorted(missed)
+
+
+def after_jump_table(info, image, va):
+    """va follows a switch jump table: its last entry, the dword before va,
+    points back into the code just above it."""
+    for sec in info["sections"]:
+        if sec["va"] <= va - 4 and va <= sec["va"] + sec["rsize"]:
+            o = sec["raw"] + va - 4 - sec["va"]
+            entry = int.from_bytes(image[o:o + 4], "little")
+            return va - 0x10000 <= entry < va - 4
+    return False
 
 
 def false_splits(disasm_dir, xbe, candidates):
@@ -259,8 +274,8 @@ def false_splits(disasm_dir, xbe, candidates):
         if i < 0 or spans[i][1] < va:
             continue
         start = spans[i][0]
-        if va - start > 0x10000:
-            continue
+        if va - start > 0x10000 or after_jump_table(info, image, va):
+            continue    # data before va: nothing falls through into it
         last = None
         for insn in md.disasm(read(start, va - start), start):
             last = insn

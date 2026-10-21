@@ -57,6 +57,12 @@ virtual addresses in the USA `default.xbe`.
 - D3D device fields moved by 0x124 from 4134 (vblank event +0x2554, vblank
   callback +0x2550).
 
+- A function can also start right after the switch jump tables of the one
+  before it: 0x00111BC0, reached only through a pointer, follows
+  0x00111990's tables. Undetected, every call to it failed from the start
+  of episode 2's second boss fight, and the boss was not drawn. `recomp.py`
+  seeds such addresses too (6 functions).
+
 ## Episode 1 music (checked against a longplay)
 
 - Music keys map to sound numbers through the table at 0x00340F70 (key,
