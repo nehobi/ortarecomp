@@ -24,8 +24,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 ## To check with the player (built, untested on Windows)
 
-- Episode 1: waterfalls animate and wing-tip trails show (confirmed);
-  sparks look like larger particles (check against a video).
+- Episode 1: waterfalls, wing-tip trails and particles (point sprites)
+  confirmed.
 - Episode 2: dust. Camouflaged creatures confirmed against a video (the
   gray warping is the original's look), dying enemies keep their colours
   (lights 33-35).
