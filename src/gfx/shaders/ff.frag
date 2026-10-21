@@ -199,7 +199,12 @@ vec4 ps_texture(int s, int mode)
     if (mode == 0) return vec4(0.0, 0.0, 0.0, 1.0);       // no texture
     if (mode == 4) return clamp(tc_for(s), 0.0, 1.0);     // PASSTHRU
     if (stage_misc[s].y == 0) return vec4(0.0, 0.0, 0.0, 1.0);
-    vec2 uv = tc_for(s).xy * tc_scale[s].xy;
+    vec4 tc = tc_for(s);
+    // PROJECT2D divides by q: how a vertex program hands over screen
+    // coordinates (x, y, -, w) into a copy of the frame. q = 0 is an
+    // output the program never wrote.
+    if (mode == 1 && tc.w != 0.0) tc.xy /= tc.w;
+    vec2 uv = tc.xy * tc_scale[s].xy;
     if ((mode == 6 || mode == 7) && s > 0) {
         // BUMPENVMAP(_LUM): the previous stage's texel (du, dv), through
         // this stage's bump matrix, offsets these coordinates:
