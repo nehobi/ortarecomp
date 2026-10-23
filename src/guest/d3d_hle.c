@@ -164,6 +164,9 @@ void sub_002B3510(void)
                       : (int)(interval & 0xF);
     }
     SDL_Log("d3d: CreateDevice, back buffer %dx%d, presentation interval %d", w, h, swap_interval);
+    if (pp)     /* D3DPRESENT_PARAMETERS: BackBufferFormat +8, MultiSampleType +16, Flags +36 */
+        SDL_Log("d3d: back buffer format 0x%x, multisample 0x%x, flags 0x%x", MEM32(pp + 8), MEM32(pp + 16),
+                MEM32(pp + 36));
     pdo_gfx_init(w, h);
     sub_002B3510_gen();
     note_backbuffers();
