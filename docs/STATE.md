@@ -42,8 +42,14 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 3. Lifter: ~120 call targets in generated code are unresolved stubs; audit
    them. `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
-4. Later: graphics options (resolution scale, anti-aliasing, aspect ratio,
-   overlay).
+4. Reverb (I3DL2, the DSP image, effect mixbins) is accepted but silent.
+
+## Options overlay
+
+F1, or Back+Start on a controller: resolution scale 1-4x, anti-aliasing
+(MSAA up to what the GPU takes), 4:3 or stretch, TV softening, master
+volume, FPS counter. The game waits in Swap and the sound holds while it
+is open; settings go to ortarecomp.ini when it closes.
 
 ## Testing
 

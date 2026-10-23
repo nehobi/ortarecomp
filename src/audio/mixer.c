@@ -7,6 +7,7 @@
  */
 
 #include "audio/mixer.h"
+#include "config.h"
 
 #include <SDL3/SDL.h>
 
@@ -421,15 +422,34 @@ static void mix_block(float *out, int frames)
     }
 }
 
+/* While the options overlay is open the voices hold still: silence out, and
+ * no play cursor moves. */
+static SDL_AtomicInt paused;
+
+void pdo_mixer_set_paused(bool on)
+{
+    SDL_SetAtomicInt(&paused, on);
+}
+
 static void SDLCALL stream_cb(void *userdata, SDL_AudioStream *s, int additional, int total)
 {
     float buf[BLOCK_FRAMES * 2];
+    /* The overlay's master volume, squared so the slider feels even. */
+    float g = (float)pdo_settings_get()->master_volume / 100.0f;
 
+    g *= g;
     while (additional > 0) {
         int frames = additional / 8;
         if (frames > BLOCK_FRAMES) frames = BLOCK_FRAMES;
         if (frames <= 0) frames = 1;
-        mix_block(buf, frames);
+        if (SDL_GetAtomicInt(&paused))
+            memset(buf, 0, sizeof(float) * 2 * (size_t)frames);
+        else {
+            mix_block(buf, frames);
+            if (g != 1.0f)
+                for (int i = 0; i < frames * 2; i++)
+                    buf[i] *= g;
+        }
         SDL_PutAudioStreamData(s, buf, frames * 8);
         additional -= frames * 8;
     }
@@ -445,7 +465,8 @@ static int SDLCALL pacer_main(void *unused)
     while (!SDL_GetAtomicInt(&pacer_quit)) {
         Uint64 due = (SDL_GetTicksNS() - start) * PDO_MIX_RATE / SDL_NS_PER_SECOND;
         while (mixed + BLOCK_FRAMES <= due) {
-            mix_block(buf, BLOCK_FRAMES);
+            if (!SDL_GetAtomicInt(&paused))
+                mix_block(buf, BLOCK_FRAMES);
             mixed += BLOCK_FRAMES;
         }
         SDL_Delay(2);

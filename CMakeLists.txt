@@ -100,6 +100,7 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         src/guest/d3d_calltrace.c
         src/audio/mixer.c
         src/gfx/renderer.c
+        src/gfx/overlay.c
         src/gfx/xtex.c)
     target_include_directories(pdo_recomp PUBLIC "${PDO_GEN_DIR}" src)
     target_link_libraries(pdo_recomp PUBLIC xbox_kernel SDL3::SDL3-static)

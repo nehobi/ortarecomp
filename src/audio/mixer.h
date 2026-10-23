@@ -54,6 +54,8 @@ typedef struct pdo_voice_desc {
 
 bool pdo_mixer_init(void);
 void pdo_mixer_shutdown(void);
+/* Hold every voice (silence, no cursor moves) while the options overlay is open. */
+void pdo_mixer_set_paused(bool on);
 
 int  pdo_voice_create(const pdo_voice_desc *desc);  /* returns id > 0, or 0 */
 void pdo_voice_destroy(int id);

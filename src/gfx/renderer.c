@@ -2,6 +2,10 @@
 
 #include "gfx/renderer.h"
 
+#include "audio/mixer.h"
+#include "config.h"
+#include "gfx/overlay.h"
+
 #include "gfx/shaders_spv.h"
 #include "gfx/xtex.h"
 
@@ -29,6 +33,24 @@ static SDL_GPUTextureFormat depth_format;
 static int frame_w, frame_h;
 static uint64_t frames;
 static SDL_GPUShader *vs, *fs;
+
+/* Overlay settings in force: every render target is rscale times the game's
+ * size (viewports and copies scaled to match), drawn with nsamples samples
+ * into a multisampled buffer (ms) that resolves into the texture the game
+ * samples. A target whose resolved texture was written directly (a copy, a
+ * new target) is stale: its multisampled buffer is seeded from it before the
+ * next draw. */
+static int rscale = 1, nsamples = 1;
+static SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+static SDL_GPUTexture *frame_ms;
+static bool frame_stale;
+static volatile bool paused;        /* the overlay menu holds the game */
+
+/* Window pass: the frame (aspect, softening) and the overlay over it; and the
+ * seed pass that copies a resolved target back into its multisampled one. */
+static SDL_GPUGraphicsPipeline *screen_pipeline, *overlay_pipeline, *seed_pipeline;
+static SDL_GPUSampler *linear;
+static SDL_GPUTexture *overlay_tex;
 
 /* Present pass: frame -> gamma ramp -> output, then output -> window. */
 static SDL_GPUTexture *output, *gamma_lut;
@@ -303,6 +325,7 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     pi.target_info.num_color_targets = 1;
     pi.target_info.depth_stencil_format = depth_format;
     pi.target_info.has_depth_stencil_target = true;
+    pi.multisample_state.sample_count = sample_count;
 
     p = SDL_CreateGPUGraphicsPipeline(dev, &pi);
     if (!p) {
@@ -389,8 +412,10 @@ static uint64_t hash_bytes(const uint8_t *p, size_t n)
 
 typedef struct rtarget {
     uint32_t data;            /* guest data address, 0x80000000 masked off */
-    uint32_t w, h;
-    SDL_GPUTexture *color, *depth;
+    uint32_t w, h;            /* the game's size */
+    uint32_t pw, ph;          /* ours: times rscale */
+    SDL_GPUTexture *color, *depth, *ms;
+    bool stale;
 } rtarget;
 
 static rtarget targets[MAX_TARGETS];
@@ -423,7 +448,43 @@ static rtarget *find_target(uint32_t data, uint32_t w, uint32_t h)
     return NULL;
 }
 
-static void clear_texture(SDL_GPUTexture *t)
+/* A target's textures at our size: the sampled colour, depth, and with
+ * multisampling the multisampled colour (depth is multisampled then too). */
+static bool make_target(Uint32 w, Uint32 h, SDL_GPUTexture **color, SDL_GPUTexture **depth,
+                        SDL_GPUTexture **ms)
+{
+    SDL_GPUTextureCreateInfo ti;
+
+    SDL_zero(ti);
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width = w;
+    ti.height = h;
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    *color = SDL_CreateGPUTexture(dev, &ti);
+    *ms = NULL;
+    if (nsamples > 1) {
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        ti.sample_count = sample_count;
+        *ms = SDL_CreateGPUTexture(dev, &ti);
+    }
+    ti.format = depth_format;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    ti.sample_count = sample_count;
+    *depth = SDL_CreateGPUTexture(dev, &ti);
+    if (*color && *depth && (nsamples == 1 || *ms))
+        return true;
+    SDL_ReleaseGPUTexture(dev, *color);
+    SDL_ReleaseGPUTexture(dev, *depth);
+    SDL_ReleaseGPUTexture(dev, *ms);
+    *color = *depth = *ms = NULL;
+    return false;
+}
+
+/* Clear a new target to black, its multisampled buffer too. */
+static void clear_texture(SDL_GPUTexture *t, SDL_GPUTexture *ms)
 {
     SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
     SDL_GPUColorTargetInfo ct;
@@ -431,9 +492,10 @@ static void clear_texture(SDL_GPUTexture *t)
     if (!c)
         return;
     SDL_zero(ct);
-    ct.texture = t;
+    ct.texture = ms ? ms : t;
     ct.load_op = SDL_GPU_LOADOP_CLEAR;
-    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.store_op = ms ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
+    ct.resolve_texture = ms ? t : NULL;
     ct.clear_color.a = 1.0f;
     SDL_EndGPURenderPass(SDL_BeginGPURenderPass(c, &ct, 1, NULL));
     SDL_SubmitGPUCommandBuffer(c);
@@ -463,7 +525,6 @@ static rtarget *target_of(const pdo_surface *s)
 
 static rtarget *target_for_surface(const pdo_surface *s)
 {
-    SDL_GPUTextureCreateInfo ti;
     rtarget *r;
     int w, h;
 
@@ -478,6 +539,7 @@ static rtarget *target_for_surface(const pdo_surface *s)
         if (targets[i].data == phys(s->data)) {
             SDL_ReleaseGPUTexture(dev, targets[i].color);
             SDL_ReleaseGPUTexture(dev, targets[i].depth);
+            SDL_ReleaseGPUTexture(dev, targets[i].ms);
             targets[i] = targets[--ntargets];
             break;
         }
@@ -494,25 +556,13 @@ static rtarget *target_for_surface(const pdo_surface *s)
     r->data = phys(s->data);
     r->w = (uint32_t)w;
     r->h = (uint32_t)h;
-    SDL_zero(ti);
-    ti.type = SDL_GPU_TEXTURETYPE_2D;
-    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ti.width = r->w;
-    ti.height = r->h;
-    ti.layer_count_or_depth = 1;
-    ti.num_levels = 1;
-    r->color = SDL_CreateGPUTexture(dev, &ti);
-    ti.format = depth_format;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-    r->depth = SDL_CreateGPUTexture(dev, &ti);
-    if (!r->color || !r->depth) {
-        SDL_Log("gfx: cannot create a %ux%u render target (%s)", r->w, r->h, SDL_GetError());
-        SDL_ReleaseGPUTexture(dev, r->color);
-        SDL_ReleaseGPUTexture(dev, r->depth);
+    r->pw = r->w * (uint32_t)rscale;
+    r->ph = r->h * (uint32_t)rscale;
+    if (!make_target(r->pw, r->ph, &r->color, &r->depth, &r->ms)) {
+        SDL_Log("gfx: cannot create a %ux%u render target (%s)", r->pw, r->ph, SDL_GetError());
         return NULL;
     }
-    clear_texture(r->color);
+    clear_texture(r->color, r->ms);
     SDL_Log("gfx: render target %ux%u at 0x%08x (%s)", r->w, r->h, r->data,
             pdo_xtex_format_name((s->format_word >> 8) & 0xFF));
     ntargets++;
@@ -671,6 +721,119 @@ static SDL_GPUShader *make_shader(const uint8_t *code, size_t len, SDL_GPUShader
     return SDL_CreateGPUShader(dev, &si);
 }
 
+static SDL_GPUShader *screen_vs, *screen_fs;
+
+/* Render scale and samples from the settings, the samples as many as both
+ * the colour and the depth format take. */
+static void choose_quality(void)
+{
+    static const SDL_GPUSampleCount counts[] = { SDL_GPU_SAMPLECOUNT_1, SDL_GPU_SAMPLECOUNT_2,
+                                                 SDL_GPU_SAMPLECOUNT_4, SDL_GPU_SAMPLECOUNT_8 };
+    const pdo_settings *st = pdo_settings_get();
+    int want = st->msaa >= 8 ? 3 : st->msaa >= 4 ? 2 : st->msaa >= 2 ? 1 : 0;
+
+    while (want > 0 && !(SDL_GPUTextureSupportsSampleCount(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, counts[want])
+                         && SDL_GPUTextureSupportsSampleCount(dev, depth_format, counts[want])))
+        want--;
+    rscale = SDL_clamp(st->render_scale, 1, 4);
+    nsamples = 1 << want;
+    sample_count = counts[want];
+}
+
+/* The frame after the gamma ramp, at our size. */
+static SDL_GPUTexture *make_output(void)
+{
+    SDL_GPUTextureCreateInfo ti;
+
+    SDL_zero(ti);
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width = (Uint32)(frame_w * rscale);
+    ti.height = (Uint32)(frame_h * rscale);
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    return SDL_CreateGPUTexture(dev, &ti);
+}
+
+/* Draws a resolved target into its multisampled buffer: inside a target's
+ * pass, so with its depth buffer and sample count, depth left alone. */
+static void make_seed_pipeline(void)
+{
+    SDL_GPUGraphicsPipelineCreateInfo pi;
+    SDL_GPUColorTargetDescription ct;
+
+    if (seed_pipeline)
+        SDL_ReleaseGPUGraphicsPipeline(dev, seed_pipeline);
+    seed_pipeline = NULL;
+    if (nsamples == 1 || !screen_vs || !screen_fs)
+        return;
+    SDL_zero(ct);
+    ct.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    SDL_zero(pi);
+    pi.vertex_shader = screen_vs;
+    pi.fragment_shader = screen_fs;
+    pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    pi.target_info.color_target_descriptions = &ct;
+    pi.target_info.num_color_targets = 1;
+    pi.target_info.depth_stencil_format = depth_format;
+    pi.target_info.has_depth_stencil_target = true;
+    pi.multisample_state.sample_count = sample_count;
+    seed_pipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+    if (!seed_pipeline)
+        SDL_Log("gfx: cannot create the multisample seed pass (%s)", SDL_GetError());
+}
+
+/* The overlay changed the render scale or anti-aliasing: every target is
+ * made again at the new size (their contents go; the game redraws them),
+ * and the pipelines for the new sample count. */
+static void apply_quality(void)
+{
+    int old_scale = rscale, old_samples = nsamples;
+
+    choose_quality();
+    if (rscale == old_scale && nsamples == old_samples)
+        return;
+    SDL_WaitForGPUIdle(dev);
+    for (int i = 0; i < npipelines; i++)
+        SDL_ReleaseGPUGraphicsPipeline(dev, pipelines[i].p);
+    npipelines = 0;
+    SDL_ReleaseGPUTexture(dev, frame_color);
+    SDL_ReleaseGPUTexture(dev, frame_depth);
+    SDL_ReleaseGPUTexture(dev, frame_ms);
+    SDL_ReleaseGPUTexture(dev, output);
+    if (!make_target((Uint32)(frame_w * rscale), (Uint32)(frame_h * rscale), &frame_color, &frame_depth,
+                     &frame_ms)) {
+        SDL_Log("gfx: cannot render at %dx with %d samples (%s); back to 1x, no anti-aliasing",
+                rscale, nsamples, SDL_GetError());
+        rscale = nsamples = 1;
+        sample_count = SDL_GPU_SAMPLECOUNT_1;
+        make_target((Uint32)frame_w, (Uint32)frame_h, &frame_color, &frame_depth, &frame_ms);
+    }
+    clear_texture(frame_color, frame_ms);
+    frame_stale = false;
+    /* Each target again at the new size, kept in the list so this frame's
+     * draws still find them as targets, not as textures in guest memory. */
+    for (int i = 0; i < ntargets; i++) {
+        rtarget *r = &targets[i];
+        SDL_ReleaseGPUTexture(dev, r->color);
+        SDL_ReleaseGPUTexture(dev, r->depth);
+        SDL_ReleaseGPUTexture(dev, r->ms);
+        r->pw = r->w * (uint32_t)rscale;
+        r->ph = r->h * (uint32_t)rscale;
+        r->stale = false;
+        if (!make_target(r->pw, r->ph, &r->color, &r->depth, &r->ms)) {
+            targets[i--] = targets[--ntargets];
+            continue;
+        }
+        clear_texture(r->color, r->ms);
+    }
+    output = make_output();
+    make_seed_pipeline();
+    SDL_Log("gfx: rendering at %dx (%dx%d), %d sample%s", rscale, frame_w * rscale, frame_h * rscale,
+            nsamples, nsamples > 1 ? "s" : "");
+}
+
 static bool init_present(void)
 {
     SDL_GPUTextureCreateInfo ti;
@@ -679,16 +842,16 @@ static bool init_present(void)
     SDL_GPUColorTargetDescription ct;
     SDL_GPUShader *pvs, *pfs;
 
+    output = make_output();
     SDL_zero(ti);
     ti.type = SDL_GPU_TEXTURETYPE_2D;
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ti.width = (Uint32)frame_w;
-    ti.height = (Uint32)frame_h;
     ti.layer_count_or_depth = 1;
     ti.num_levels = 1;
-    output = SDL_CreateGPUTexture(dev, &ti);
     ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.width = PDO_OVERLAY_W;
+    ti.height = PDO_OVERLAY_H;
+    overlay_tex = SDL_CreateGPUTexture(dev, &ti);
     ti.width = 256;
     ti.height = 1;
     gamma_lut = SDL_CreateGPUTexture(dev, &ti);
@@ -698,6 +861,8 @@ static bool init_present(void)
     si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     nearest = SDL_CreateGPUSampler(dev, &si);
+    si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
+    linear = SDL_CreateGPUSampler(dev, &si);
 
     pvs = make_shader(present_vert_spv, sizeof present_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     pfs = make_shader(present_frag_spv, sizeof present_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 0);
@@ -710,8 +875,25 @@ static bool init_present(void)
     pi.target_info.color_target_descriptions = &ct;
     pi.target_info.num_color_targets = 1;
     present_pipeline = pvs && pfs ? SDL_CreateGPUGraphicsPipeline(dev, &pi) : NULL;
-    SDL_ReleaseGPUShader(dev, pvs);
     SDL_ReleaseGPUShader(dev, pfs);
+    screen_fs = make_shader(screen_frag_spv, sizeof screen_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+    screen_vs = pvs;
+    if (have_swapchain && screen_fs) {
+        ct.format = SDL_GetGPUSwapchainTextureFormat(dev, window);
+        pi.fragment_shader = screen_fs;
+        screen_pipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+        ct.blend_state.enable_blend = true;
+        ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        overlay_pipeline = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+        if (!screen_pipeline || !overlay_pipeline)
+            SDL_Log("gfx: cannot create the window pass (%s)", SDL_GetError());
+    }
+    make_seed_pipeline();
 
     for (int i = 0; i < 256; i++) {     /* identity until the game sets one */
         gamma_rgba[i * 4 + 0] = gamma_rgba[i * 4 + 1] = gamma_rgba[i * 4 + 2] = (uint8_t)i;
@@ -796,7 +978,7 @@ static int SDLCALL watchdog(void *unused)
     for (;;) {
         uint64_t now = *(volatile uint64_t *)&frames;
         SDL_Delay(1000);
-        if (now != seen) {
+        if (now != seen || paused) {
             seen = now;
             still = 0;
             dumped = false;
@@ -844,28 +1026,22 @@ bool pdo_gfx_init(int width, int height)
 
     frame_w = width;
     frame_h = height;
-    SDL_zero(ti);
-    ti.type = SDL_GPU_TEXTURETYPE_2D;
-    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ti.width = (Uint32)width;
-    ti.height = (Uint32)height;
-    ti.layer_count_or_depth = 1;
-    ti.num_levels = 1;
-    frame_color = SDL_CreateGPUTexture(dev, &ti);
-
     depth_format = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
                                                 SDL_GPU_TEXTURETYPE_2D,
                                                 SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
                    ? SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT
                    : SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
-    ti.format = depth_format;
-    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-    frame_depth = SDL_CreateGPUTexture(dev, &ti);
+    choose_quality();
+    if (!make_target((Uint32)(width * rscale), (Uint32)(height * rscale), &frame_color, &frame_depth, &frame_ms))
+        frame_color = NULL;
 
+    SDL_zero(ti);
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     ti.width = ti.height = 1;
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
     white = SDL_CreateGPUTexture(dev, &ti);
     if (!frame_color || !frame_depth || !white) {
         SDL_Log("gfx: cannot create the frame targets (%s)", SDL_GetError());
@@ -923,6 +1099,14 @@ void pdo_gfx_shutdown(void)
     SDL_ReleaseGPUShader(dev, fs);
     SDL_ReleaseGPUTexture(dev, frame_color);
     SDL_ReleaseGPUTexture(dev, frame_depth);
+    SDL_ReleaseGPUTexture(dev, frame_ms);
+    SDL_ReleaseGPUTexture(dev, overlay_tex);
+    SDL_ReleaseGPUSampler(dev, linear);
+    SDL_ReleaseGPUGraphicsPipeline(dev, screen_pipeline);
+    SDL_ReleaseGPUGraphicsPipeline(dev, overlay_pipeline);
+    SDL_ReleaseGPUGraphicsPipeline(dev, seed_pipeline);
+    SDL_ReleaseGPUShader(dev, screen_vs);
+    SDL_ReleaseGPUShader(dev, screen_fs);
     SDL_ReleaseGPUTexture(dev, white);
     SDL_ReleaseGPUTexture(dev, output);
     SDL_ReleaseGPUTexture(dev, gamma_lut);
@@ -975,19 +1159,31 @@ static SDL_GPUTexture *cur_color(void)
 
 static void cur_size(Uint32 *w, Uint32 *h)
 {
-    *w = cur_target ? cur_target->w : (Uint32)frame_w;
-    *h = cur_target ? cur_target->h : (Uint32)frame_h;
+    *w = cur_target ? cur_target->pw : (Uint32)(frame_w * rscale);
+    *h = cur_target ? cur_target->ph : (Uint32)(frame_h * rscale);
 }
+
+static SDL_GPUTexture *snapshot(SDL_GPUCommandBuffer *cmd);
 
 static SDL_GPURenderPass *begin_pass(SDL_GPUCommandBuffer *cmd, const command *clear)
 {
     SDL_GPUColorTargetInfo ct;
     SDL_GPUDepthStencilTargetInfo dt;
+    SDL_GPURenderPass *pass;
+    SDL_GPUTexture *ms = cur_target ? cur_target->ms : frame_ms, *seed = NULL;
+    bool *stale = cur_target ? &cur_target->stale : &frame_stale;
+
+    /* The resolved texture holds what the multisampled buffer does not:
+     * draw it in first, unless this pass clears the colour anyway. */
+    if (ms && *stale && !(clear && (clear->clear_flags & 0xF0)))
+        seed = snapshot(cmd);
+    *stale = false;
 
     SDL_zero(ct);
-    ct.texture = cur_color();
+    ct.texture = ms ? ms : cur_color();
     ct.load_op = SDL_GPU_LOADOP_LOAD;
-    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.store_op = ms ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
+    ct.resolve_texture = ms ? cur_color() : NULL;
     SDL_zero(dt);
     dt.texture = cur_target ? cur_target->depth : frame_depth;
     dt.load_op = SDL_GPU_LOADOP_LOAD;
@@ -1012,7 +1208,16 @@ static SDL_GPURenderPass *begin_pass(SDL_GPUCommandBuffer *cmd, const command *c
             dt.clear_stencil = (Uint8)clear->clear_stencil;
         }
     }
-    return SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+    pass = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+    if (pass && seed && seed_pipeline) {
+        SDL_GPUTextureSamplerBinding tsb = { seed, nearest };
+        float params[4] = { 0, 0, 0, 0 };
+        SDL_BindGPUGraphicsPipeline(pass, seed_pipeline);
+        SDL_BindGPUFragmentSamplers(pass, 0, &tsb, 1);
+        SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof params);
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+    return pass;
 }
 
 static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex)
@@ -1167,10 +1372,10 @@ static void copy_rect(SDL_GPUCommandBuffer *cmd, const command *c)
     rtarget *rs = c->surf.data ? target_for_surface(&c->surf) : NULL;
     rtarget *rd = c->surf2.data ? target_for_surface(&c->surf2) : NULL;
     SDL_GPUTexture *ts = rs ? rs->color : frame_color, *td = rd ? rd->color : frame_color;
-    int sw = rs ? (int)rs->w : frame_w, sh = rs ? (int)rs->h : frame_h;
-    int dw = rd ? (int)rd->w : frame_w, dh = rd ? (int)rd->h : frame_h;
-    int x = c->rect[0], y = c->rect[1], w = c->rect[2], h = c->rect[3];
-    int dx = c->rect[4], dy = c->rect[5];
+    int sw = rs ? (int)rs->pw : frame_w * rscale, sh = rs ? (int)rs->ph : frame_h * rscale;
+    int dw = rd ? (int)rd->pw : frame_w * rscale, dh = rd ? (int)rd->ph : frame_h * rscale;
+    int x = c->rect[0] * rscale, y = c->rect[1] * rscale, w = c->rect[2] * rscale, h = c->rect[3] * rscale;
+    int dx = c->rect[4] * rscale, dy = c->rect[5] * rscale;
     SDL_GPUTextureLocation src, dst;
     SDL_GPUCopyPass *copy;
 
@@ -1195,6 +1400,10 @@ static void copy_rect(SDL_GPUCommandBuffer *cmd, const command *c)
     copy = SDL_BeginGPUCopyPass(cmd);
     SDL_CopyGPUTextureToTexture(copy, &src, &dst, (Uint32)w, (Uint32)h, 1, false);
     SDL_EndGPUCopyPass(copy);
+    if (rd)
+        rd->stale = rd->ms != NULL;
+    else
+        frame_stale = frame_ms != NULL;
 }
 
 /* PDO_CAPTURE_STEP=n: at the capture frame, also save the target being
@@ -1310,10 +1519,10 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         if (!p)
             continue;
         SDL_BindGPUGraphicsPipeline(pass, p);
-        vp.x = c->draw.viewport[0];
-        vp.y = c->draw.viewport[1];
-        vp.w = c->draw.viewport[2];
-        vp.h = c->draw.viewport[3];
+        vp.x = c->draw.viewport[0] * (float)rscale;
+        vp.y = c->draw.viewport[1] * (float)rscale;
+        vp.w = c->draw.viewport[2] * (float)rscale;
+        vp.h = c->draw.viewport[3] * (float)rscale;
         vp.min_depth = c->draw.viewport[4];
         vp.max_depth = c->draw.viewport[5];
         SDL_SetGPUViewport(pass, &vp);
@@ -1405,7 +1614,7 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
     char path[1024];
 
     snprintf(path, sizeof path, "%s/%s_%05llu.bmp", dir, name, (unsigned long long)frames);
-    save_texture(cmdp, output, frame_w, frame_h, path);
+    save_texture(cmdp, output, frame_w * rscale, frame_h * rscale, path);
 }
 
 static void capture_steps(void)
@@ -1447,6 +1656,8 @@ bool pdo_gfx_pump_events(void)
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_EVENT_QUIT)
             keep_going = false;
+        if (pdo_overlay_event(&ev))
+            continue;
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F11 && !ev.key.repeat)
             pdo_dump_threads();
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
@@ -1454,6 +1665,116 @@ bool pdo_gfx_pump_events(void)
             SDL_Log("capture: frame %llu", (unsigned long long)capture_frame);
         }
     }
+    return keep_going;
+}
+
+/* The finished frame onto the window, 4:3 or stretched, softened if asked,
+ * with the overlay over it. */
+static void present_to_window(SDL_GPUCommandBuffer *cmd)
+{
+    const pdo_settings *st = pdo_settings_get();
+    SDL_GPUTexture *swap = NULL;
+    Uint32 sw = 0, sh = 0;
+    SDL_Surface *img;
+    bool changed;
+    SDL_GPUColorTargetInfo ct;
+    SDL_GPURenderPass *pass;
+    SDL_GPUViewport vp;
+
+    if (!have_swapchain || !screen_pipeline)
+        return;
+    img = pdo_overlay_image(&changed);
+    if (img && changed && overlay_tex) {
+        Uint32 bytes = PDO_OVERLAY_W * PDO_OVERLAY_H * 4;
+        SDL_GPUTransferBufferCreateInfo tbi = { SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, bytes, 0 };
+        SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
+        if (tb) {
+            uint8_t *map = SDL_MapGPUTransferBuffer(dev, tb, false);
+            SDL_GPUTextureTransferInfo src;
+            SDL_GPUTextureRegion dst;
+            SDL_GPUCopyPass *copy;
+
+            for (int y = 0; y < PDO_OVERLAY_H; y++)
+                memcpy(map + (size_t)y * PDO_OVERLAY_W * 4, (uint8_t *)img->pixels + (size_t)y * img->pitch,
+                       PDO_OVERLAY_W * 4);
+            SDL_UnmapGPUTransferBuffer(dev, tb);
+            copy = SDL_BeginGPUCopyPass(cmd);
+            SDL_zero(src);
+            src.transfer_buffer = tb;
+            SDL_zero(dst);
+            dst.texture = overlay_tex;
+            dst.w = PDO_OVERLAY_W;
+            dst.h = PDO_OVERLAY_H;
+            dst.d = 1;
+            SDL_UploadToGPUTexture(copy, &src, &dst, false);
+            SDL_EndGPUCopyPass(copy);
+            SDL_ReleaseGPUTransferBuffer(dev, tb);
+        }
+    }
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh) || !swap)
+        return;
+    SDL_zero(vp);
+    if (st->aspect == PDO_ASPECT_STRETCH) {
+        vp.w = (float)sw;
+        vp.h = (float)sh;
+    } else {    /* the game's 4:3, scaled to fit, bars elsewhere */
+        float k = SDL_min((float)sw / frame_w, (float)sh / frame_h);
+        vp.w = SDL_floorf(frame_w * k);
+        vp.h = SDL_floorf(frame_h * k);
+        vp.x = SDL_floorf((sw - vp.w) / 2);
+        vp.y = SDL_floorf((sh - vp.h) / 2);
+    }
+    vp.max_depth = 1.0f;
+    SDL_zero(ct);
+    ct.texture = swap;
+    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.clear_color.a = 1.0f;
+    pass = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+    if (!pass)
+        return;
+    {
+        SDL_GPUTextureSamplerBinding tsb = { output, linear };
+        float params[4] = { st->soft_filter ? 1.0f : 0.0f, 1.0f / (float)frame_h, 0, 0 };
+        SDL_SetGPUViewport(pass, &vp);
+        SDL_BindGPUGraphicsPipeline(pass, screen_pipeline);
+        SDL_BindGPUFragmentSamplers(pass, 0, &tsb, 1);
+        SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof params);
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+    if (img && overlay_tex && overlay_pipeline) {
+        SDL_GPUTextureSamplerBinding tsb = { overlay_tex, linear };
+        float params[4] = { 0, 0, 0, 0 };
+        SDL_BindGPUGraphicsPipeline(pass, overlay_pipeline);
+        SDL_BindGPUFragmentSamplers(pass, 0, &tsb, 1);
+        SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof params);
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+    SDL_EndGPURenderPass(pass);
+}
+
+/* The options menu is open: keep the game in this Swap, the sound held,
+ * redrawing the last frame with the menu over it until it closes. */
+static bool hold_for_overlay(void)
+{
+    bool keep_going = true;
+
+    paused = true;
+    pdo_mixer_set_paused(true);
+    while (pdo_overlay_open() && keep_going) {
+        SDL_GPUCommandBuffer *cmd;
+
+        keep_going = pdo_gfx_pump_events();
+        cmd = SDL_AcquireGPUCommandBuffer(dev);
+        if (cmd) {
+            present_to_window(cmd);
+            SDL_SubmitGPUCommandBuffer(cmd);
+        }
+        if (!have_swapchain)
+            SDL_Delay(16);
+    }
+    pdo_mixer_set_paused(false);
+    paused = false;
     return keep_going;
 }
 
@@ -1481,36 +1802,14 @@ bool pdo_gfx_present(void)
             return keep_going;
         }
     }
+    apply_quality();
     cmd = SDL_AcquireGPUCommandBuffer(dev);
     if (!cmd)
         return keep_going;
     replay(cmd);
     present_pass(cmd);
 
-    if (have_swapchain) {
-        SDL_GPUTexture *swap = NULL;
-        Uint32 sw = 0, sh = 0;
-
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh) && swap) {
-            /* Keep the game's aspect ratio: scale to fit, bars elsewhere. */
-            float scale = SDL_min((float)sw / frame_w, (float)sh / frame_h);
-            Uint32 w = (Uint32)(frame_w * scale), h = (Uint32)(frame_h * scale);
-            SDL_GPUBlitInfo bi;
-
-            SDL_zero(bi);
-            bi.source.texture = output;
-            bi.source.w = (Uint32)frame_w;
-            bi.source.h = (Uint32)frame_h;
-            bi.destination.texture = swap;
-            bi.destination.x = (sw - w) / 2;
-            bi.destination.y = (sh - h) / 2;
-            bi.destination.w = w;
-            bi.destination.h = h;
-            bi.load_op = SDL_GPU_LOADOP_CLEAR;
-            bi.filter = SDL_GPU_FILTER_LINEAR;
-            SDL_BlitGPUTexture(cmd, &bi);
-        }
-    }
+    present_to_window(cmd);
 
     if (shot_dir && frames <= 300 * (uint64_t)shot_every && frames % (uint64_t)shot_every == 0)
         save_screenshot(&cmd, shot_dir, "frame");
@@ -1520,5 +1819,8 @@ bool pdo_gfx_present(void)
     }
     if (cmd)
         SDL_SubmitGPUCommandBuffer(cmd);
+    pdo_overlay_frame();
+    if (pdo_overlay_open())
+        keep_going = hold_for_overlay() && keep_going;
     return keep_going;
 }

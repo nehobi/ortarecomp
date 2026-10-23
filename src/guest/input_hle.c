@@ -24,6 +24,7 @@
 
 #include "guest/guest.h"
 #include "xbox_memory_layout.h"
+#include "gfx/overlay.h"
 
 #include <SDL3/SDL.h>
 #include <string.h>
@@ -283,6 +284,15 @@ static void read_port(int port, pad_state *s)
         if (rx) s->thumb[2] = rx;
         if (ry) s->thumb[3] = ry;
         apply_script(s);
+    }
+    {   /* The options overlay keeps the game's input while it is open. */
+        bool any = s->buttons != 0;
+        for (int i = 0; i < 8; i++)
+            any |= s->analog[i] > 30;
+        for (int i = 0; i < 4; i++)
+            any |= s->thumb[i] > 8000 || s->thumb[i] < -8000;
+        if (pdo_overlay_blocks_input(any))
+            memset(s, 0, sizeof *s);
     }
 }
 
