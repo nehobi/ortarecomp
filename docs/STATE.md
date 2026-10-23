@@ -36,7 +36,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    updates through 0x00111BC0, a function behind a jump table that
    recomp.py now seeds). Tentacles confirmed right; some enemies white (a missing
    texture in a fixed-function draw gives white).
-2. Sound effects may be too loud against the music.
+2. Sound effects feel loud against the music. The game sets them itself
+   (music -26.0 dB, most effects -22.5 dB at equal option levels); no
+   reverb yet (I3DL2, DSP image, effect mixbins), which the original adds.
 3. Lifter: ~120 call targets in generated code are unresolved stubs; audit
    them. `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
