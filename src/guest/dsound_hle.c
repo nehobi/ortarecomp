@@ -1029,6 +1029,7 @@ void sub_002C2682(void)
     int id = stream_voice(ARG(0));
     if (id)
         pdo_voice_set_volume(id, (int32_t)ARG(1));
+    TRACE("stream SetVolume 0x%08x %d", ARG(0), (int32_t)ARG(1));
     RETURN(8, DS_OK);
 }
 
@@ -1038,6 +1039,7 @@ void sub_002C2696(void)
     int id = stream_voice(ARG(0));
     if (id)
         pdo_voice_set_headroom(id, ARG(1));
+    TRACE("stream SetHeadroom 0x%08x %u", ARG(0), ARG(1));
     RETURN(8, DS_OK);
 }
 
