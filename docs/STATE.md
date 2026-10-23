@@ -32,8 +32,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 ## Open
 
-1. Episode 2: the boss in the next area not visible (tentacles confirmed
-   right now); some enemies white (a missing
+1. Episode 2: the second boss shows and can be beaten (confirmed; it
+   updates through 0x00111BC0, a function behind a jump table that
+   recomp.py now seeds). Tentacles confirmed right; some enemies white (a missing
    texture in a fixed-function draw gives white).
 2. Sound effects may be too loud against the music.
 3. Lifter: ~120 call targets in generated code are unresolved stubs; audit
