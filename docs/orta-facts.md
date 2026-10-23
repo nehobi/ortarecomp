@@ -86,6 +86,11 @@ virtual addresses in the USA `default.xbe`.
 
 ## Rendering
 
+- No multisampling (MultiSampleType 0x11, D3DMULTISAMPLE_NONE), a 16-bit
+  640x480 back buffer, presentation flags 0x2E. The 3D scene is drawn into
+  a 512x384 R5G6B5 target and stretched over the screen by the game;
+  on hardware the TV encoder's flicker filter then softens it.
+
 - Episode 2's camouflaged creatures mix 64% of a 128x128 copy of the frame
   (copied from the back buffer each frame) into their texture, through a
   pixel shader with texture mode PROJECT2D; their vertex program writes
