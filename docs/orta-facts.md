@@ -72,7 +72,10 @@ virtual addresses in the USA `default.xbe`.
   CPU up; CRI's region mutex (cri_hle.c) is waited on without it. CRI
   also suspends and resumes its threads around every locked region; under
   the lock that suspension is cooperative (patch 0023), since a host
-  SuspendThread froze threads holding the guest CPU or that mutex.
+  SuspendThread froze threads holding the guest CPU or that mutex. Guest
+  code the kernel runs itself (file I/O completion APCs, exception
+  handlers, DPCs) takes the guest CPU too, and our vblank wait gives it
+  up while it sleeps.
 
 ## Episode 1 music (checked against a longplay)
 

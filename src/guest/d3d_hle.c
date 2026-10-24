@@ -90,6 +90,9 @@ static Uint64 vblank_ns(void)
     return ns;
 }
 
+int guest_cpu_yield_begin(void);       /* xboxrecomp, patch 0023 */
+void guest_cpu_yield_end(int held);
+
 static Uint64 wait_vblank(void)
 {
     Uint64 now = SDL_GetTicksNS(), index, at;
@@ -98,8 +101,13 @@ static Uint64 wait_vblank(void)
         epoch = now;
     index = (now - epoch) / vblank_ns() + 1;
     at = epoch + index * vblank_ns();
-    if (at > now)
+    if (at > now) {
+        /* A kernel wait on the console: the other threads run meanwhile
+         * (the guest CPU lock, see guest.c). */
+        int held = guest_cpu_yield_begin();
         SDL_DelayPrecise(at - now);
+        guest_cpu_yield_end(held);
+    }
     return index;
 }
 

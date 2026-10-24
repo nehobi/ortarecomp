@@ -1,7 +1,81 @@
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
-@@ -9541,6 +9541,8 @@
+@@ -461,6 +461,12 @@
+ 
+ static void bridge_write_handle(uint32_t handle_va, HANDLE h);
+ 
++/* A guest callback a bridge runs (an APC, an exception handler, a DPC) holds
++ * the guest CPU like any guest code; see guest_cpu_acquire. */
++static int guest_cb_enter(void);
++static void guest_cb_leave(int took);
++#define GUEST_CALLBACK(call) do { int took_ = guest_cb_enter(); call; guest_cb_leave(took_); } while (0)
++
+ static void bridge_run_thread_inline(recomp_func_t fn, uint32_t ctx1,
+                                      uint32_t ctx2)
+ {
+@@ -1831,7 +1837,7 @@
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = information;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = (status == 0) ? 0 : status;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
+-    fn();
++    GUEST_CALLBACK(fn());
+ 
+     g_eax = 0;
+ }
+@@ -2070,7 +2076,7 @@
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = context;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = dpc_va;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
+-    { int _irql = xbox_IrqlEnterInterrupt(2); fn(); xbox_IrqlLeaveInterrupt(_irql); }
++    { int _irql = xbox_IrqlEnterInterrupt(2); GUEST_CALLBACK(fn()); xbox_IrqlLeaveInterrupt(_irql); }
+     return 1;
+ }
+ 
+@@ -2110,7 +2116,7 @@
+      * the dummy return address and the argument, so g_esp needs no fixup. */
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = context;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
+-    fn();
++    GUEST_CALLBACK(fn());
+     /* g_eax is whatever the routine returned, which is this call's result. */
+ }
+ 
+@@ -2258,7 +2264,7 @@
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = context;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = kint;
+     g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
+-    { int _irql = xbox_IrqlEnterInterrupt(16); fn(); xbox_IrqlLeaveInterrupt(_irql); }
++    { int _irql = xbox_IrqlEnterInterrupt(16); GUEST_CALLBACK(fn()); xbox_IrqlLeaveInterrupt(_irql); }
+     return (int)(g_eax & 1u);
+ }
+ 
+@@ -3400,7 +3406,7 @@
+                 g_esp -= 4; BRIDGE_MEM32(g_esp) = reg;
+                 g_esp -= 4; BRIDGE_MEM32(g_esp) = exc_record;
+                 g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;  /* return address */
+-                fn();
++                GUEST_CALLBACK(fn());
+                 /* 16, not 20: the handler's own `ret` has already taken the
+                  * return address off, leaving just the four arguments for the
+                  * caller to drop. Cleaning 20 leaves esp four bytes high, and
+@@ -7998,13 +8004,13 @@
+                 uint32_t stack_top;
+ 
+                 if (inline_workers && !strcmp(inline_workers, "inline")) {
+-                    bridge_run_thread_inline(fn, start_context1, start_context2);
++                    GUEST_CALLBACK(bridge_run_thread_inline(fn, start_context1, start_context2));
+                     g_eax = 0;
+                     return;
+                 }
+                 stack_top = xbox_AllocThreadStack();
+                 if (!stack_top) {
+-                    bridge_run_thread_inline(fn, start_context1, start_context2);
++                    GUEST_CALLBACK(bridge_run_thread_inline(fn, start_context1, start_context2));
+                 } else {
+                     HANDLE th = bridge_spawn_thread(fn, start_context1,
+                                                     start_context2, stack_top);
+@@ -9547,6 +9553,8 @@
  static RECOMP_TLS int t_guest_held;       /* and holds the guest CPU */
  static RECOMP_TLS int t_dispatch_depth;
  
@@ -10,7 +84,7 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
  static int guest_cpu_enabled(void)
  {
      if (g_guest_cpu_on < 0) {
-@@ -9553,15 +9555,33 @@
+@@ -9559,15 +9567,33 @@
      return g_guest_cpu_on;
  }
  
@@ -48,7 +122,7 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
  }
  
  void guest_cpu_part(void)
-@@ -9573,6 +9593,26 @@
+@@ -9579,6 +9605,46 @@
      t_guest_thread = 0;
  }
  
@@ -72,10 +146,30 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 +        guest_cpu_acquire();
 +}
 +
++/* A bridge runs guest code from inside a kernel call (the CPU given up), or
++ * a host thread runs it (a timer's DPC): take the CPU for it, as the console
++ * runs it on its one processor. Completion APCs ran unlocked beside the
++ * thread holding the CPU, which is the race the lock is for. */
++static int guest_cb_enter(void)
++{
++    if (!guest_cpu_enabled() || t_guest_held)
++        return 0;
++    guest_cpu_acquire();
++    return 1;
++}
++
++static void guest_cb_leave(int took)
++{
++    if (took && t_guest_held) {
++        t_guest_held = 0;
++        LeaveCriticalSection(&g_guest_cpu);
++    }
++}
++
  /* A guest thread lets go of the guest CPU for the length of every kernel
   * call. */
  static void kernel_thunk_dispatch(void)
-@@ -9588,10 +9628,8 @@
+@@ -9594,11 +9660,10 @@
      /* Back to guest code: take the CPU again. Only at the outermost call --
       * a guest callback a bridge runs (an APC) returns into the bridge, not to
       * the thread's own code -- and only if the thread still exists as one. */
@@ -83,11 +177,14 @@ diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 -        EnterCriticalSection(&g_guest_cpu);
 -        t_guest_held = 1;
 -    }
-+    if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled())
+-    (void)held;
++    /* A callback that made this call (an APC holding the CPU, see
++     * guest_cb_enter) gets it back too: its guest code goes on. */
++    if ((held || (t_guest_thread && t_dispatch_depth == 0)) && guest_cpu_enabled())
 +        guest_cpu_acquire();
-     (void)held;
  }
  
+ static void kernel_thunk_dispatch_body(void)
 diff --git a/src/kernel/kernel_thread.c b/src/kernel/kernel_thread.c
 --- a/src/kernel/kernel_thread.c
 +++ b/src/kernel/kernel_thread.c
