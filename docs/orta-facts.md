@@ -63,6 +63,14 @@ virtual addresses in the USA `default.xbe`.
   of episode 2's second boss fight, and the boss was not drawn. `recomp.py`
   seeds such addresses too (6 functions).
 
+- Orta's threads assume one CPU. Run truly in parallel, the sound request
+  processor (0x000692C0) walked a list (0x0021E570, 0x00220520) another
+  thread was reallocating and called through a stale entry (a crash after
+  episode 4). guest.c turns xboxrecomp's guest CPU lock on: one guest
+  thread at a time, switching at kernel calls. CRI's spin thread
+  (0x00233CB0) loops without a kernel call and is overridden to give the
+  CPU up; CRI's region mutex (cri_hle.c) is waited on without it.
+
 ## Episode 1 music (checked against a longplay)
 
 - Music keys map to sound numbers through the table at 0x00340F70 (key,

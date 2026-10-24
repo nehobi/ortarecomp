@@ -1,0 +1,32 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -9573,6 +9573,28 @@
+     t_guest_thread = 0;
+ }
+ 
++/* Give the guest CPU up around a host-side wait (a lock of the game's own
++ * that a host mutex stands in for, a sleep), so a thread holding that lock
++ * can come back from its kernel call and finish. Only a thread that holds
++ * the guest CPU gives it up; the value says whether to take it back. */
++int guest_cpu_yield_begin(void)
++{
++    int held = t_guest_held;
++    if (held) {
++        t_guest_held = 0;
++        LeaveCriticalSection(&g_guest_cpu);
++    }
++    return held;
++}
++
++void guest_cpu_yield_end(int held)
++{
++    if (held) {
++        EnterCriticalSection(&g_guest_cpu);
++        t_guest_held = 1;
++    }
++}
++
+ /* A guest thread lets go of the guest CPU for the length of every kernel
+  * call. */
+ static void kernel_thunk_dispatch(void)

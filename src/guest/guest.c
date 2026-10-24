@@ -89,6 +89,19 @@ bool pdo_guest_init(const void *xbe_data, size_t xbe_size,
 #endif
     }
 
+    /* One guest thread at a time, as on the console's single CPU, switching
+     * at kernel calls. Without it Orta's threads run truly in parallel: the
+     * sound request processor (0x000692C0) walked a list another thread was
+     * reallocating and called through a stale entry. Set RECOMP_GUEST_LOCK=0
+     * to compare. */
+    if (!getenv("RECOMP_GUEST_LOCK")) {
+#ifdef _WIN32
+        _putenv_s("RECOMP_GUEST_LOCK", "1");
+#else
+        setenv("RECOMP_GUEST_LOCK", "1", 1);
+#endif
+    }
+
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
         SDL_Log("guest: could not map the Xbox address space");
         return false;

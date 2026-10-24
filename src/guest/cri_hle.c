@@ -32,6 +32,16 @@ extern void sub_00236080_gen(void);
 static SDL_AtomicInt lock_ready;
 static SDL_Mutex *lock;
 
+/* src/guest/guest.c turns xboxrecomp's guest CPU lock on: one guest thread
+ * runs at a time and gives the CPU up at every kernel call. A thread inside
+ * CRI's region can be in such a call, waiting to get the CPU back, so a
+ * thread may not wait for this mutex while it holds the CPU: the two would
+ * wait for each other. Wait with the CPU given up, then take it back. */
+int guest_cpu_yield_begin(void);
+void guest_cpu_yield_end(int held);
+
+static void enter_cri(void);
+
 static SDL_Mutex *cri_lock(void)
 {
     /* First use can come from two threads at once. */
@@ -70,10 +80,19 @@ static void report_passes(void)
     next = now + 10000;
 }
 
+static void enter_cri(void)
+{
+    if (!SDL_TryLockMutex(cri_lock())) {
+        int held = guest_cpu_yield_begin();
+        SDL_LockMutex(cri_lock());
+        guest_cpu_yield_end(held);
+    }
+}
+
 /* CRI LOCK */
 void sub_00233BD0(void)
 {
-    SDL_LockMutex(cri_lock());
+    enter_cri();
     report_passes();
     sub_00233BD0_gen();
 }
@@ -98,7 +117,7 @@ void sub_00233C10(void)
  * (2 vblank server, 3 main, 5 idle worker). */
 void sub_00236BC0(void)
 {
-    SDL_LockMutex(cri_lock());
+    enter_cri();
     sub_00236BC0_gen();
     SDL_UnlockMutex(cri_lock());
 }
@@ -106,7 +125,7 @@ void sub_00236BC0(void)
 /* Pass of the thread at 0x00234120 (once per vblank). */
 void sub_00236080(void)
 {
-    SDL_LockMutex(cri_lock());
+    enter_cri();
     sub_00236080_gen();
     SDL_UnlockMutex(cri_lock());
 }
