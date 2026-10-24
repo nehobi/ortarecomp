@@ -69,7 +69,10 @@ virtual addresses in the USA `default.xbe`.
   episode 4). guest.c turns xboxrecomp's guest CPU lock on: one guest
   thread at a time, switching at kernel calls. CRI's spin thread
   (0x00233CB0) loops without a kernel call and is overridden to give the
-  CPU up; CRI's region mutex (cri_hle.c) is waited on without it.
+  CPU up; CRI's region mutex (cri_hle.c) is waited on without it. CRI
+  also suspends and resumes its threads around every locked region; under
+  the lock that suspension is cooperative (patch 0023), since a host
+  SuspendThread froze threads holding the guest CPU or that mutex.
 
 ## Episode 1 music (checked against a longplay)
 

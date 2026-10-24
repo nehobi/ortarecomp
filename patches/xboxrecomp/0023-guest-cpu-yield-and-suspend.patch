@@ -1,0 +1,211 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -9541,6 +9541,8 @@
+ static RECOMP_TLS int t_guest_held;       /* and holds the guest CPU */
+ static RECOMP_TLS int t_dispatch_depth;
+ 
++int xbox_thread_suspend_pending(void);   /* kernel_thread.c */
++
+ static int guest_cpu_enabled(void)
+ {
+     if (g_guest_cpu_on < 0) {
+@@ -9553,15 +9555,33 @@
+     return g_guest_cpu_on;
+ }
+ 
++int xbox_guest_cpu_lock_on(void)
++{
++    return guest_cpu_enabled();
++}
++
++/* Take the guest CPU, not while this thread is suspended (see
++ * xbox_NtSuspendThread: under the lock a suspension takes effect here). */
++static void guest_cpu_acquire(void)
++{
++    for (;;) {
++        while (xbox_thread_suspend_pending())
++            Sleep(1);
++        EnterCriticalSection(&g_guest_cpu);
++        if (!xbox_thread_suspend_pending())
++            break;
++        LeaveCriticalSection(&g_guest_cpu);
++    }
++    t_guest_held = 1;
++}
++
+ /* Called once on each host thread that runs a guest thread, before its first
+  * guest instruction. */
+ void guest_cpu_join(void)
+ {
+     t_guest_thread = 1;
+-    if (guest_cpu_enabled() && !t_guest_held) {
+-        EnterCriticalSection(&g_guest_cpu);
+-        t_guest_held = 1;
+-    }
++    if (guest_cpu_enabled() && !t_guest_held)
++        guest_cpu_acquire();
+ }
+ 
+ void guest_cpu_part(void)
+@@ -9573,6 +9593,26 @@
+     t_guest_thread = 0;
+ }
+ 
++/* Give the guest CPU up around a host-side wait (a lock of the game's own
++ * that a host mutex stands in for, a sleep), so a thread holding that lock
++ * can come back from its kernel call and finish. Only a thread that holds
++ * the guest CPU gives it up; the value says whether to take it back. */
++int guest_cpu_yield_begin(void)
++{
++    int held = t_guest_held;
++    if (held) {
++        t_guest_held = 0;
++        LeaveCriticalSection(&g_guest_cpu);
++    }
++    return held;
++}
++
++void guest_cpu_yield_end(int held)
++{
++    if (held)
++        guest_cpu_acquire();
++}
++
+ /* A guest thread lets go of the guest CPU for the length of every kernel
+  * call. */
+ static void kernel_thunk_dispatch(void)
+@@ -9588,10 +9628,8 @@
+     /* Back to guest code: take the CPU again. Only at the outermost call --
+      * a guest callback a bridge runs (an APC) returns into the bridge, not to
+      * the thread's own code -- and only if the thread still exists as one. */
+-    if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled()) {
+-        EnterCriticalSection(&g_guest_cpu);
+-        t_guest_held = 1;
+-    }
++    if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled())
++        guest_cpu_acquire();
+     (void)held;
+ }
+ 
+diff --git a/src/kernel/kernel_thread.c b/src/kernel/kernel_thread.c
+--- a/src/kernel/kernel_thread.c
++++ b/src/kernel/kernel_thread.c
+@@ -344,12 +344,89 @@
+     return STATUS_SUCCESS;
+ }
+ 
++/* Suspension under the guest CPU lock (RECOMP_GUEST_LOCK=1).
++ *
++ * Only the thread holding the guest CPU runs guest code, so a thread another
++ * one suspends is never in the middle of guest code: it is in a kernel call
++ * or waiting for the CPU. A host SuspendThread would still stop it wherever
++ * it is on the host side -- holding the guest CPU on its way in, or a host
++ * lock a title's override stands in for its own -- and every guest thread
++ * then waits for it. Panzer Dragoon Orta's CRI middleware suspends and
++ * resumes its threads around every locked region and froze the attract
++ * movie on Windows this way. (POSIX never suspended other threads at all,
++ * see win32_compat.c.)
++ *
++ * So under the lock the suspension is counted here and takes effect where
++ * the thread would take the guest CPU again (guest_cpu_acquire): it waits
++ * there until resumed, as a suspended thread on the console simply is not
++ * scheduled. A thread suspending itself waits at once. Threads created
++ * suspended are still resumed on the host, through the host count. */
++#ifdef _WIN32
++#define MAX_COOP_SUSPEND 128
++static struct { DWORD tid; LONG count; } s_coop[MAX_COOP_SUSPEND];
++static SRWLOCK s_coop_lock = SRWLOCK_INIT;
++int xbox_guest_cpu_lock_on(void);
++
++static LONG *coop_count(DWORD tid, int create)
++{
++    int i, free_slot = -1;
++    for (i = 0; i < MAX_COOP_SUSPEND; i++) {
++        if (s_coop[i].tid == tid)
++            return &s_coop[i].count;
++        if (free_slot < 0 && (s_coop[i].tid == 0 || s_coop[i].count == 0))
++            free_slot = i;
++    }
++    if (!create || free_slot < 0)
++        return NULL;
++    s_coop[free_slot].tid = tid;
++    s_coop[free_slot].count = 0;
++    return &s_coop[free_slot].count;
++}
++
++int xbox_thread_suspend_pending(void)
++{
++    LONG *c;
++    int pending;
++    AcquireSRWLockShared(&s_coop_lock);
++    c = coop_count(GetCurrentThreadId(), 0);
++    pending = c && *c > 0;
++    ReleaseSRWLockShared(&s_coop_lock);
++    return pending;
++}
++#else
++int xbox_thread_suspend_pending(void)
++{
++    return 0;
++}
++#endif
++
+ NTSTATUS __stdcall xbox_NtSuspendThread(
+     HANDLE ThreadHandle,
+     PULONG PreviousSuspendCount)
+ {
+     DWORD prev;
+ 
++#ifdef _WIN32
++    if (xbox_guest_cpu_lock_on()) {
++        DWORD tid = GetThreadId(ThreadHandle);
++        LONG *c;
++        if (!tid)
++            return STATUS_UNSUCCESSFUL;
++        AcquireSRWLockExclusive(&s_coop_lock);
++        c = coop_count(tid, 1);
++        prev = c ? (DWORD)(*c)++ : 0;
++        ReleaseSRWLockExclusive(&s_coop_lock);
++        if (PreviousSuspendCount)
++            *PreviousSuspendCount = (ULONG)prev;
++        /* Suspending itself: wait now (this is a kernel call, the guest CPU
++         * is not held). */
++        if (tid == GetCurrentThreadId())
++            while (xbox_thread_suspend_pending())
++                Sleep(1);
++        return STATUS_SUCCESS;
++    }
++#endif
++
+     /*
+      * SuspendThread returns the previous suspend count, or (DWORD)-1 on
+      * failure. The Xbox call reports that count through an out-parameter, so
+@@ -378,6 +455,27 @@
+ {
+     DWORD prev;
+ 
++#ifdef _WIN32
++    if (xbox_guest_cpu_lock_on()) {
++        DWORD tid = GetThreadId(ThreadHandle);
++        LONG *c;
++        int ours = 0;
++        AcquireSRWLockExclusive(&s_coop_lock);
++        c = tid ? coop_count(tid, 0) : NULL;
++        if (c && *c > 0) {
++            prev = (DWORD)(*c)--;
++            ours = 1;
++        }
++        ReleaseSRWLockExclusive(&s_coop_lock);
++        if (ours) {
++            if (PreviousSuspendCount)
++                *PreviousSuspendCount = (ULONG)prev;
++            return STATUS_SUCCESS;
++        }
++        /* Not suspended by us: created suspended, resumed on the host. */
++    }
++#endif
++
+     /* Mirror of NtSuspendThread: (DWORD)-1 is failure, not a count. */
+     prev = ResumeThread(ThreadHandle);
+     if (prev == (DWORD)-1) {
