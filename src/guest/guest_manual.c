@@ -51,6 +51,25 @@ void recomp_icall_fail_log(uint32_t va)
         if (g_icall_trace[idx])
             fprintf(stderr, "    [%2d] 0x%08X\n", i, g_icall_trace[idx]);
     }
+    fflush(stderr);    {   /* The first few in full: who called, with what. The call has pushed
+         * its guest return address, so the stack names the caller and the
+         * code addresses above it its callers. */
+        static int detailed;
+        if (detailed++ < 4) {
+            int shown = 0;
+            fprintf(stderr, "  returning to 0x%08X; eax %08X ebx %08X ecx %08X edx %08X esi %08X "
+                            "edi %08X ebp %08X esp %08X\n  guest stack, code addresses:",
+                    MEM32(g_esp), g_eax, g_ebx, g_ecx, g_edx, g_esi, g_edi, g_ebp, g_esp);
+            for (uint32_t k = 0; k < 256 && shown < 12; k++) {
+                uint32_t v = MEM32(g_esp + 4 * k);
+                if (v >= 0x00011000u && v < 0x002AC080u) {
+                    fprintf(stderr, " %08X", v);
+                    shown++;
+                }
+            }
+            fprintf(stderr, "\n");
+        }
+    }
     fflush(stderr);
 }
 
