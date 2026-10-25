@@ -17,6 +17,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
   texture coordinate generation (episode 1 rain: finer now, confirmed;
   it comes and goes in the original too; the player's dragon is shiny
   again, confirmed).
+- Shadow maps (built, untested on Windows): the depth-only pass into a
+  512x512 LIN_D16 surface, compared in ff.frag (stored GREATER r/q, 2x2
+  filtered); in episode 1 they shade the player's dragon.
 - xboxrecomp v0.13.1 + patches 0001-0024: 0020-0021 give threads the stack
   they ask for (an exhausted pool deadlocked the cutscene before the
   episode 1 boss); 0022 stops an ID that looks like an address from

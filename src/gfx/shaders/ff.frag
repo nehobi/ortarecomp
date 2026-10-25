@@ -21,7 +21,8 @@ layout(set = 2, binding = 3) uniform sampler2D tex3;
 layout(set = 3, binding = 0, std140) uniform FF {
     ivec4 color_op[4];   // op, arg1, arg2, arg0
     ivec4 alpha_op[4];   // op, arg1, arg2, arg0
-    ivec4 stage_misc[4]; // result arg, has texture, texcoord set, -
+    ivec4 stage_misc[4]; // result arg, has texture, texcoord set, shadow map
+                         // (8 | D3DCMP_* - 0x200, + 16 for 24-bit depth)
     vec4  tfactor;
     ivec4 alpha_test;    // enable, func, ref (0-255), specular enable
     ivec4 ps_rgb_in[2];  // pixel shader (register combiners), 8 stages each
@@ -82,10 +83,63 @@ vec4 sample_tex(int s, vec2 uv)
     return c;
 }
 
+// Shadow maps. On the Xbox a depth-format texture is not read as colour:
+// the texel is the outcome of comparing the stored depth with r/q, in that
+// order (stored SHADOWFUNC r/q), 1 or 0, filtered between the four nearest
+// texels. The order is the reverse of OpenGL's. Orta sets GREATER and
+// offsets its shadow pass's depth back: a lit surface stores more than its
+// own r/q and reads 1, and its pixel shader dims what reads 0.
+// The depth is read with texelFetch and blended here, so it works whatever
+// filtering the GPU allows on depth formats.
+ivec2 tex_size(int s)
+{
+    if (s == 0) return textureSize(tex0, 0);
+    if (s == 1) return textureSize(tex1, 0);
+    if (s == 2) return textureSize(tex2, 0);
+    return textureSize(tex3, 0);
+}
+
+float fetch_depth(int s, ivec2 p)
+{
+    p = clamp(p, ivec2(0), tex_size(s) - 1);
+    if (s == 0) return texelFetch(tex0, p, 0).r;
+    if (s == 1) return texelFetch(tex1, p, 0).r;
+    if (s == 2) return texelFetch(tex2, p, 0).r;
+    return texelFetch(tex3, p, 0).r;
+}
+
+float shadow_test(int f, float d, float ref)
+{
+    if (f == 0) return 0.0;                     // NEVER
+    if (f == 1) return d < ref ? 1.0 : 0.0;     // LESS
+    if (f == 2) return d == ref ? 1.0 : 0.0;    // EQUAL
+    if (f == 3) return d <= ref ? 1.0 : 0.0;    // LESSEQUAL
+    if (f == 4) return d > ref ? 1.0 : 0.0;     // GREATER
+    if (f == 5) return d != ref ? 1.0 : 0.0;    // NOTEQUAL
+    if (f == 6) return d >= ref ? 1.0 : 0.0;    // GREATEREQUAL
+    return 1.0;                                 // ALWAYS
+}
+
+vec4 shadow_stage(int s, vec4 tc)
+{
+    int m = stage_misc[s].w;
+    if (tc.w != 0.0) tc.xyz /= tc.w;
+    vec2 p = tc.xy * tc_scale[s].xy * vec2(tex_size(s)) - 0.5;
+    vec2 f = fract(p);
+    ivec2 i = ivec2(floor(p));
+    float ref = tc.z / ((m & 16) != 0 ? 16777215.0 : 65535.0);
+    float a = shadow_test(m & 7, fetch_depth(s, i), ref);
+    float b = shadow_test(m & 7, fetch_depth(s, i + ivec2(1, 0)), ref);
+    float c = shadow_test(m & 7, fetch_depth(s, i + ivec2(0, 1)), ref);
+    float d = shadow_test(m & 7, fetch_depth(s, i + ivec2(1, 1)), ref);
+    return vec4(mix(mix(a, b, f.x), mix(c, d, f.x), f.y));
+}
+
 vec4 sample_stage(int s)
 {
     vec4 tc = tc_for(stage_misc[s].z);
     if (stage_misc[s].y == 0) return vec4(1.0);
+    if ((stage_misc[s].w & 8) != 0) return shadow_stage(s, tc);
     // Fixed-function stages run as PROJECT2D too: divide by q (see
     // ps_texture; q = 0 is a component nobody wrote).
     if (tc.w != 0.0) tc.xy /= tc.w;
@@ -203,6 +257,7 @@ vec4 ps_texture(int s, int mode)
     if (mode == 4) return clamp(tc_for(s), 0.0, 1.0);     // PASSTHRU
     if (stage_misc[s].y == 0) return vec4(0.0, 0.0, 0.0, 1.0);
     vec4 tc = tc_for(s);
+    if ((stage_misc[s].w & 8) != 0) return shadow_stage(s, tc);
     // PROJECT2D divides by q: how a vertex program hands over screen
     // coordinates (x, y, -, w) into a copy of the frame. q = 0 is an
     // output the program never wrote.

@@ -50,7 +50,8 @@ typedef struct pdo_tex_ref {
 typedef struct pdo_ff_uniforms {
     int32_t color_op[4][4];     /* op, arg1, arg2, arg0 */
     int32_t alpha_op[4][4];
-    int32_t stage_misc[4][4];   /* result arg, has texture, texcoord set, - */
+    int32_t stage_misc[4][4];   /* result arg, has texture, texcoord set, shadow
+                                 * (8 | D3DCMP - 0x200, + 16 for 24-bit depth) */
     float   tfactor[4];
     int32_t alpha_test[4];      /* enable, func, ref, specular enable */
     /* A pixel shader (NV2A register combiners), straight from the XDK's
@@ -86,6 +87,7 @@ typedef struct pdo_pipeline_state {
     uint16_t src_blend, dst_blend, blend_op;
     uint8_t  z_enable, z_write;
     uint8_t  cull;              /* 0 none, 1 cull clockwise, 2 counter-clockwise */
+    uint8_t  single_sample;     /* renderer only: the target is a shadow map */
     uint16_t z_func;
     uint32_t color_write;       /* Xbox D3DCOLORWRITEENABLE_* bits */
     /* Polygon offset (D3DRS_ZBIAS sets these): constant in depth-buffer
@@ -129,6 +131,12 @@ typedef struct pdo_surface {
  * texture whose data address is a surface drawn to this way samples what was
  * drawn (the GPU copy), not guest memory. */
 void pdo_gfx_set_target(const pdo_surface *color);
+
+/* The depth-stencil surface set with it (pNewZStencil; data 0 for none).
+ * A depth-only pass (a colour surface without memory) renders into a
+ * target keyed by this surface, and a depth-format texture over the same
+ * memory samples that target's depth: a shadow map. */
+void pdo_gfx_set_depth(const pdo_surface *depth);
 
 /* D3DDevice_CopyRects, one rectangle: src (x, y, w, h) to dst at (dx, dy),
  * clipped to both surfaces. Either may be the back buffer. */

@@ -333,7 +333,7 @@ void d3d_trace_call(uint32_t va, const char *name, int args)
  * 92: XbSymbolDatabase's D3DRS_FogEnable is RS_BASE + 4*92). Complex states
  * are 4134's + 19: each checked against the address its setter writes
  * (FogColor 138, ZEnable 143, StencilEnable 144, StencilFail 145, CullMode
- * 147, TextureFactor 148, ZBias 149). Point states 116-123 likewise: the
+ * 147, TextureFactor 148, ZBias 149, ShadowFunc 156). Point states 116-123 likewise: the
  * reset code at 0x0027D539 sets POINTSIZE 116 to 1.0 and clears
  * POINTSPRITEENABLE 118 and POINTSCALEENABLE 119. */
 enum {
@@ -351,6 +351,7 @@ enum {
     RS_FOGCOLOR = 138,
     RS_ZENABLE = 143, RS_STENCILENABLE = 144, RS_STENCILFAIL = 145, RS_CULLMODE = 147,
     RS_TEXTUREFACTOR = 148,
+    RS_SHADOWFUNC = 156,    /* SetRenderState_ShadowFunc (0x002AFA50) writes RS_BASE + 4*156 */
 };
 /* D3DDevice_SetRenderState_Simple(method in ecx, value in edx): writes one
  * NV2A method to the push buffer. The XDK's inline SetRenderState stores the
@@ -438,6 +439,7 @@ static void state_init(void)
 static uint32_t backbuffers[MAX_BACKBUFFERS];
 static int nbackbuffers;
 static pdo_surface cur_rt;                           /* data 0: back buffer */
+static uint32_t cur_zformat;                         /* D3DFORMAT of the depth surface */
 
 static void note_backbuffer(uint32_t surf)
 {
@@ -498,18 +500,23 @@ void sub_002ADF50(void)
 }
 
 /* D3DDevice_SetRenderTarget(pRenderTarget, pNewZStencil). NULL keeps the
- * current colour target. */
+ * current colour target; the depth surface goes to the renderer each time,
+ * since a depth-only pass is keyed by it (a shadow map). */
 extern void sub_002AD9C0_gen(void);
 void sub_002AD9C0(void)
 {
     WRAP_BEGIN(2);
-    if (a[0]) {
-        cur_rt = surface_of(a[0]);
-        pdo_gfx_set_target(&cur_rt);
-        if (getenv("PDO_D3D_TRACE"))
-            SDL_Log("d3d: SetRenderTarget 0x%08x data 0x%08x format 0x%08x size 0x%08x",
-                    a[0], cur_rt.data, cur_rt.format_word, cur_rt.size_word);
+    {
+        pdo_surface z = surface_of(a[1]);
+        pdo_gfx_set_depth(&z);
+        cur_zformat = a[1] ? (z.format_word >> 8) & 0xFF : 0;
     }
+    if (a[0])
+        cur_rt = surface_of(a[0]);
+    pdo_gfx_set_target(&cur_rt);
+    if (getenv("PDO_D3D_TRACE"))
+        SDL_Log("d3d: SetRenderTarget 0x%08x data 0x%08x format 0x%08x size 0x%08x, depth 0x%08x",
+                a[0], cur_rt.data, cur_rt.format_word, cur_rt.size_word, a[1] ? MEM32(a[1] + 4) : 0);
     sub_002AD9C0_gen();     /* also resets the viewport to the target */
 }
 
@@ -1031,11 +1038,16 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
         d->stencil_ref = (uint8_t)RS(RS_STENCILREF);
     }
     /* Polygon offset, as D3DRS_ZBIAS leaves it: offset -ZBias depth units,
-     * slope scale -ZBias times a constant. Same units as our 24-bit depth. */
+     * slope scale -ZBias times a constant. Our depth is 24-bit; a 16-bit
+     * depth surface's unit (Orta's shadow map, LIN_D16) is 256 of ours, and
+     * left unscaled the shadow pass's offset was too small to keep a lit
+     * surface from shadowing itself. */
     if (RS(RS_SOLIDOFFSETENABLE)) {
         uint32_t o = RS(RS_POLYGONOFFSETZOFFSET), sl = RS(RS_POLYGONOFFSETZSLOPESCALE);
         memcpy(&d->ps.depth_bias, &o, 4);
         memcpy(&d->ps.depth_slope, &sl, 4);
+        if (cur_zformat == 0x2C || cur_zformat == 0x2D || cur_zformat == 0x30 || cur_zformat == 0x31)
+            d->ps.depth_bias *= 256.0f;
     }
 
     for (int s = 0; s < 4; s++) {
@@ -1078,6 +1090,22 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
                 break;
             case 0x28:      /* V8U8 */
                 d->ff.tc_scale[s][3] = 1.0f;
+                break;
+            case 0x2A: case 0x2B: case 0x2E: case 0x2F:     /* D24S8, F24S8 */
+            case 0x2C: case 0x2D: case 0x30: case 0x31:     /* D16, F16 */
+                /* A shadow map: the texel is the comparison of r/q with the
+                 * stored depth, by SHADOWFUNC (a D3DCMP_*: NEVER 0x200 up to
+                 * ALWAYS 0x207), r/q in the format's depth units. */
+                d->ff.stage_misc[s][3] = 8 | (int32_t)((RS(RS_SHADOWFUNC) - 0x200) & 7)
+                    | (ti.format == 0x2C || ti.format == 0x2D || ti.format >= 0x30 ? 0 : 16);
+                {
+                    static uint32_t logged_func;
+                    if (RS(RS_SHADOWFUNC) != logged_func) {
+                        logged_func = RS(RS_SHADOWFUNC);
+                        SDL_Log("d3d: shadow map at 0x%08x (format 0x%02x) compared with SHADOWFUNC 0x%x",
+                                MEM32(t + 4), ti.format, logged_func);
+                    }
+                }
                 break;
             }
             d->tex[s].data = MEM32(t + 4);

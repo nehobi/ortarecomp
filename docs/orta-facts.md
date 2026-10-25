@@ -143,6 +143,18 @@ virtual addresses in the USA `default.xbe`.
 - Episode 2 water uses bump environment mapping (V8U8 textures, texture
   modes BUMPENVMAP and BUMPENVMAP_LUM).
 
+- Shadow map: each frame starts with a depth-only pass (a colour surface
+  without memory, 512x512, depth surface LIN_D16 at 0x00718000 in episode
+  1, polygon offset 256 16-bit units) and then samples that depth surface
+  as a texture on stage 1 of the scene's pixel shaders. The coordinates
+  come from the fixed-function texture transform: s, t in texels, r in
+  16-bit depth units, q 0. SHADOWFUNC (render state 156, set by
+  SetRenderState_ShadowFunc 0x002AFA50, which also sends NV2A method
+  0x1E6C the D3DCMP minus 0x200) is GREATER, and the texel is the stored
+  depth compared with r/q in that order: lit reads 1. The pixel shader
+  takes T1 + 0.5 (1 - T1) and multiplies diffuse and specular by it, so a
+  shadow halves the light.
+
 ## Compared with JSRF (player notes)
 
 - Not cel-shaded: no inverted-hull outlines to get right.

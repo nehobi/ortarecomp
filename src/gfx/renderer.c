@@ -325,7 +325,7 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     pi.target_info.num_color_targets = 1;
     pi.target_info.depth_stencil_format = depth_format;
     pi.target_info.has_depth_stencil_target = true;
-    pi.multisample_state.sample_count = sample_count;
+    pi.multisample_state.sample_count = ps->single_sample ? SDL_GPU_SAMPLECOUNT_1 : sample_count;
 
     p = SDL_CreateGPUGraphicsPipeline(dev, &pi);
     if (!p) {
@@ -416,10 +416,13 @@ typedef struct rtarget {
     uint32_t pw, ph;          /* ours: times rscale */
     SDL_GPUTexture *color, *depth, *ms;
     bool stale;
+    bool depth_only;          /* a shadow map: keyed by its depth surface,
+                                 single-sampled, depth readable by shaders */
 } rtarget;
 
 static rtarget targets[MAX_TARGETS];
 static int ntargets;
+static bool no_shadows;     /* captures only: shadow maps read as lit */
 
 static uint32_t phys(uint32_t data)
 {
@@ -450,10 +453,11 @@ static rtarget *find_target(uint32_t data, uint32_t w, uint32_t h)
 
 /* A target's textures at our size: the sampled colour, depth, and with
  * multisampling the multisampled colour (depth is multisampled then too). */
-static bool make_target(Uint32 w, Uint32 h, SDL_GPUTexture **color, SDL_GPUTexture **depth,
-                        SDL_GPUTexture **ms)
+static bool make_target_as(Uint32 w, Uint32 h, SDL_GPUTexture **color, SDL_GPUTexture **depth,
+                           SDL_GPUTexture **ms, bool depth_only)
 {
     SDL_GPUTextureCreateInfo ti;
+    int n = depth_only ? 1 : nsamples;
 
     SDL_zero(ti);
     ti.type = SDL_GPU_TEXTURETYPE_2D;
@@ -465,22 +469,30 @@ static bool make_target(Uint32 w, Uint32 h, SDL_GPUTexture **color, SDL_GPUTextu
     ti.num_levels = 1;
     *color = SDL_CreateGPUTexture(dev, &ti);
     *ms = NULL;
-    if (nsamples > 1) {
+    if (n > 1) {
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
         ti.sample_count = sample_count;
         *ms = SDL_CreateGPUTexture(dev, &ti);
     }
     ti.format = depth_format;
     ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-    ti.sample_count = sample_count;
+    if (depth_only)
+        ti.usage |= SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.sample_count = n > 1 ? sample_count : SDL_GPU_SAMPLECOUNT_1;
     *depth = SDL_CreateGPUTexture(dev, &ti);
-    if (*color && *depth && (nsamples == 1 || *ms))
+    if (*color && *depth && (n == 1 || *ms))
         return true;
     SDL_ReleaseGPUTexture(dev, *color);
     SDL_ReleaseGPUTexture(dev, *depth);
     SDL_ReleaseGPUTexture(dev, *ms);
     *color = *depth = *ms = NULL;
     return false;
+}
+
+static bool make_target(Uint32 w, Uint32 h, SDL_GPUTexture **color, SDL_GPUTexture **depth,
+                        SDL_GPUTexture **ms)
+{
+    return make_target_as(w, h, color, depth, ms, false);
 }
 
 /* Clear a new target to black, its multisampled buffer too. */
@@ -508,9 +520,17 @@ static void clear_texture(SDL_GPUTexture *t, SDL_GPUTexture *ms)
  * (data 0 with no format is the back buffer). */
 #define NO_COLOUR_DATA 0x7FFFF000u
 
-static rtarget *target_for_surface(const pdo_surface *s);
+static rtarget *target_for_surface_as(const pdo_surface *s, bool depth_only);
 
-static rtarget *target_of(const pdo_surface *s)
+static rtarget *target_for_surface(const pdo_surface *s)
+{
+    return target_for_surface_as(s, false);
+}
+
+/* With a depth surface (z data not 0), a depth-only pass gets a target of
+ * its own, keyed by that surface's memory: two shadow maps of one size
+ * stay apart, and a texture over the depth surface finds it. */
+static rtarget *target_of(const pdo_surface *s, const pdo_surface *z)
 {
     pdo_surface scratch;
 
@@ -519,11 +539,15 @@ static rtarget *target_of(const pdo_surface *s)
     if (!s->format_word)
         return NULL;
     scratch = *s;
+    if (z && z->data) {
+        scratch.data = z->data;
+        return target_for_surface_as(&scratch, true);
+    }
     scratch.data = NO_COLOUR_DATA;
     return target_for_surface(&scratch);
 }
 
-static rtarget *target_for_surface(const pdo_surface *s)
+static rtarget *target_for_surface_as(const pdo_surface *s, bool depth_only)
 {
     rtarget *r;
     int w, h;
@@ -558,15 +582,24 @@ static rtarget *target_for_surface(const pdo_surface *s)
     r->h = (uint32_t)h;
     r->pw = r->w * (uint32_t)rscale;
     r->ph = r->h * (uint32_t)rscale;
-    if (!make_target(r->pw, r->ph, &r->color, &r->depth, &r->ms)) {
+    r->depth_only = depth_only;
+    if (!make_target_as(r->pw, r->ph, &r->color, &r->depth, &r->ms, depth_only)) {
         SDL_Log("gfx: cannot create a %ux%u render target (%s)", r->pw, r->ph, SDL_GetError());
         return NULL;
     }
     clear_texture(r->color, r->ms);
-    SDL_Log("gfx: render target %ux%u at 0x%08x (%s)", r->w, r->h, r->data,
-            pdo_xtex_format_name((s->format_word >> 8) & 0xFF));
+    SDL_Log("gfx: render target %ux%u at 0x%08x (%s)%s", r->w, r->h, r->data,
+            pdo_xtex_format_name((s->format_word >> 8) & 0xFF),
+            depth_only ? ", depth only: a shadow map" : "");
     ntargets++;
     return r;
+}
+
+static pdo_surface cur_depth_surface;
+
+void pdo_gfx_set_depth(const pdo_surface *depth)
+{
+    cur_depth_surface = *depth;
 }
 
 void pdo_gfx_set_target(const pdo_surface *color)
@@ -574,7 +607,8 @@ void pdo_gfx_set_target(const pdo_surface *color)
     command *c = new_command();
     c->kind = CMD_TARGET;
     c->surf = *color;
-    target_of(color);
+    c->surf2 = cur_depth_surface;
+    target_of(color, &cur_depth_surface);
 }
 
 void pdo_gfx_copy_rect(const pdo_surface *src, const pdo_surface *dst,
@@ -617,17 +651,17 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
     {
         rtarget *r = find_target(t->data, info.width, info.height);
         if (r)
-            return r->color;
+            return r->depth_only ? (no_shadows ? white : r->depth) : r->color;
     }
     if (info.format >= 0x2A && info.format <= 0x31) {
-        /* Depth textures (D24S8, F24S8, D16, F16, swizzled and linear): a
-         * shadow map, sampled with a depth compare. Shadow maps are not
-         * drawn yet, so read it as fully lit rather than as black texels. */
+        /* Depth textures (D24S8, F24S8, D16, F16, swizzled and linear) are
+         * shadow maps, compared in the shader (ff.frag, shadow_stage). One
+         * that no depth-only pass drew reads as fully lit. */
         static bool noted;
         if (!noted) {
             noted = true;
-            SDL_Log("gfx: depth texture (format 0x%02x) sampled: shadow maps not implemented, drawn lit",
-                    info.format);
+            SDL_Log("gfx: depth texture (format 0x%02x) at 0x%08x sampled before any pass drew it: lit",
+                    info.format, t->data);
         }
         return white;
     }
@@ -822,7 +856,7 @@ static void apply_quality(void)
         r->pw = r->w * (uint32_t)rscale;
         r->ph = r->h * (uint32_t)rscale;
         r->stale = false;
-        if (!make_target(r->pw, r->ph, &r->color, &r->depth, &r->ms)) {
+        if (!make_target_as(r->pw, r->ph, &r->color, &r->depth, &r->ms, r->depth_only)) {
             targets[i--] = targets[--ntargets];
             continue;
         }
@@ -1503,7 +1537,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             if (pass)
                 SDL_EndGPURenderPass(pass);
             pass = NULL;
-            cur_target = target_of(&c->surf);
+            cur_target = target_of(&c->surf, &c->surf2);
             continue;
         }
         if (c->kind == CMD_COPY) {
@@ -1515,7 +1549,11 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         }
         if (!pass)
             pass = begin_pass(cmd, NULL);
-        p = get_pipeline(&c->draw.ps);
+        {
+            pdo_pipeline_state ps = c->draw.ps;
+            ps.single_sample = cur_target && cur_target->depth_only;
+            p = get_pipeline(&ps);
+        }
         if (!p)
             continue;
         SDL_BindGPUGraphicsPipeline(pass, p);
@@ -1615,6 +1653,36 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
 
     snprintf(path, sizeof path, "%s/%s_%05llu.bmp", dir, name, (unsigned long long)frames);
     save_texture(cmdp, output, frame_w * rscale, frame_h * rscale, path);
+}
+
+/* PDO_CAPTURE_NOSHADOW=1: at the capture frame, save the frame's last
+ * target twice, with its shadow maps and with each read as lit
+ * (capture_<frame>_shadow.bmp, capture_<frame>_noshadow.bmp). */
+static void capture_shadows(void)
+{
+    const char *e = getenv("PDO_CAPTURE_NOSHADOW");
+
+    if (!e || !atoi(e))
+        return;
+    replay_keep = true;
+    for (int k = 0; k < 2; k++) {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+        char path[64];
+        Uint32 w, h;
+
+        if (!cmd)
+            break;
+        no_shadows = k == 1;
+        replay(cmd);
+        cur_size(&w, &h);
+        snprintf(path, sizeof path, "capture_%05llu_%s.bmp", (unsigned long long)frames,
+                 k ? "noshadow" : "shadow");
+        save_texture(&cmd, cur_color(), (int)w, (int)h, path);
+        if (cmd)
+            SDL_SubmitGPUCommandBuffer(cmd);
+    }
+    no_shadows = false;
+    replay_keep = false;
 }
 
 static void capture_steps(void)
@@ -1787,8 +1855,10 @@ bool pdo_gfx_present(void)
     if (!dev)
         return keep_going;
 
-    if (frames == capture_frame)
+    if (frames == capture_frame) {
         capture_steps();
+        capture_shadows();
+    }
     {
         /* PDO_NO_DRAW=1: drop the frame's commands unless it is captured or
          * screenshotted, so a debugging run reaches a stage at the game's
