@@ -17,10 +17,13 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
   texture coordinate generation (episode 1 rain: finer now, confirmed;
   it comes and goes in the original too; the player's dragon is shiny
   again, confirmed).
-- xboxrecomp v0.13.1 + patches 0001-0022: 0020-0021 give threads the stack
+- xboxrecomp v0.13.1 + patches 0001-0024: 0020-0021 give threads the stack
   they ask for (an exhausted pool deadlocked the cutscene before the
   episode 1 boss); 0022 stops an ID that looks like an address from
-  splitting a function (it dropped the boss music).
+  splitting a function (it dropped the boss music); 0023 is the guest CPU
+  lock's yield and cooperative suspend; 0024 gives every branch out of a
+  lifted body an entry (254 jumps, mostly loop back-edges, went to stubs;
+  59 remain, none at a decoded instruction).
 
 ## To check with the player (built, untested on Windows)
 
@@ -39,8 +42,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 2. Sound effects feel loud against the music. The game sets them itself
    (music -26.0 dB, most effects -22.5 dB at equal option levels); no
    reverb yet (I3DL2, DSP image, effect mixbins), which the original adds.
-3. Lifter: ~120 call targets in generated code are unresolved stubs; audit
-   them. `_fixup_icall_esp_save` can take argument pushes of callee-saved
+3. Episode 4 crashes after event st04_ev81 (the callback list walked by
+   0x00044A20 holds nodes pointing into .rdata); retest with patch 0024.
+   Lifter: the remaining stub calls and jumps; audit them. `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
 4. Reverb (I3DL2, the DSP image, effect mixbins) is accepted but silent.
 

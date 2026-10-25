@@ -62,6 +62,12 @@ virtual addresses in the USA `default.xbe`.
   0x00111990's tables. Undetected, every call to it failed from the start
   of episode 2's second boss fight, and the boss was not drawn. `recomp.py`
   seeds such addresses too (6 functions).
+- Alias entries (a tail jump into the middle of a function) are lifted as
+  their own body from the entry to the enclosing function's end. 224 of
+  Orta's had a loop back-edge to before the entry (0x000B7082 loops to
+  0x000B7050 in sub_000B6EA0), which became a call to a stub: the loop ran
+  once and esp came back 4 bytes off. Patch 0024 makes such targets
+  aliases too, until no new one turns up.
 
 - Orta's threads assume one CPU. Run truly in parallel, the sound request
   processor (0x000692C0) walked a list (0x0021E570, 0x00220520) another
@@ -123,3 +129,4 @@ virtual addresses in the USA `default.xbe`.
 
 - Not cel-shaded: no inverted-hull outlines to get right.
 - Runs well on xemu: use it for reference screenshots and audio.
+
