@@ -67,7 +67,12 @@ virtual addresses in the USA `default.xbe`.
   Orta's had a loop back-edge to before the entry (0x000B7082 loops to
   0x000B7050 in sub_000B6EA0), which became a call to a stub: the loop ran
   once and esp came back 4 bytes off. Patch 0024 makes such targets
-  aliases too, until no new one turns up.
+  aliases too, until no new one turns up, including from aliases in a gap
+  once their end is measured: 0x0015EB10 (vtable 0x003207F8 +0x38, called
+  through the thunk 0x0017BA10 as a render callback) was cut at a false
+  start 0x0015EBAC after its first ret, and its `jle` to its own
+  epilogue 0x0015EBBE skipped `pop esi; pop ecx`. That was the episode 4
+  crash.
 
 - Render callbacks: 0x00044830(list, func, arg, key) takes a 0x50-byte
   node (func +0, arg +4, next +8, key +0xC, matrix +0x10) from a pool of

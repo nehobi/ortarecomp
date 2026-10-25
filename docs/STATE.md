@@ -23,7 +23,7 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
   splitting a function (it dropped the boss music); 0023 is the guest CPU
   lock's yield and cooperative suspend; 0024 gives every branch out of a
   lifted body an entry (254 jumps, mostly loop back-edges, went to stubs;
-  59 remain, none at a decoded instruction).
+  42 remain, all from data decoded as code).
 
 ## To check with the player (built, untested on Windows)
 
@@ -42,13 +42,14 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 2. Sound effects feel loud against the music. The game sets them itself
    (music -26.0 dB, most effects -22.5 dB at equal option levels); no
    reverb yet (I3DL2, DSP image, effect mixbins), which the original adds.
-3. Episode 4 crashes a few seconds into play after event st04_ev81: the
-   render callback walk 0x00044A20 reaches heap objects although every
-   list is whole when it starts (and the pool is never handed out again,
-   as far as the [POOL] checks see). guest_manual.c now does that walk
-   itself, keeps the node in C, and logs a callback that returns with esi
-   or esp changed; RtlAllocateHeap/RtlFreeHeap report the pool's memory.
-   Lifter: the remaining stub calls and jumps; audit them. `_fixup_icall_esp_save` can take argument pushes of callee-saved
+3. Episode 4 crash a few seconds into play after event st04_ev81: fixed
+   (player got past it with the C walk; root cause fixed in patch 0024,
+   retest). A virtual function (0x0015EB10) cut short by a false start
+   jumped to a stub instead of its own `pop esi; pop ecx; ret`, and the
+   render callback walk 0x00044A20 then followed esi into heap objects.
+   0x00044A20 stays in C and logs any callback that changes esi or esp.
+   Lifter: 42 jumps still go to stubs, all from data decoded as code.
+   `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
 4. Reverb (I3DL2, the DSP image, effect mixbins) is accepted but silent.
 
