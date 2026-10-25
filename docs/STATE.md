@@ -1,7 +1,7 @@
 # Current state
 
-Panzer Dragoon Orta plays through episodes 1 and 2 on Windows (player's
-PC, full disc), with music, movies, saves and both bosses. Bring-up notes
+Panzer Dragoon Orta plays through episodes 1 to 4 and into 5 on Windows
+(player's PC, full disc), with music, movies, saves and bosses. Bring-up notes
 are in `docs/archive/state-bring-up.md`; facts about the game in
 `docs/orta-facts.md`.
 
@@ -42,11 +42,10 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 2. Sound effects feel loud against the music. The game sets them itself
    (music -26.0 dB, most effects -22.5 dB at equal option levels); no
    reverb yet (I3DL2, DSP image, effect mixbins), which the original adds.
-3. Episode 4 crash a few seconds into play after event st04_ev81: fixed
-   (player got past it with the C walk; root cause fixed in patch 0024,
-   retest). A virtual function (0x0015EB10) cut short by a false start
-   jumped to a stub instead of its own `pop esi; pop ecx; ret`, and the
-   render callback walk 0x00044A20 then followed esi into heap objects.
+3. Episode 4 crash after event st04_ev81: fixed and confirmed (episode 4
+   beaten, no [POOL] reports). A virtual function (0x0015EB10) cut short
+   by a false start jumped to a stub instead of its own epilogue, and the
+   render callback walk 0x00044A20 followed esi into heap objects.
    0x00044A20 stays in C and logs any callback that changes esi or esp.
    Lifter: 42 jumps still go to stubs, all from data decoded as code.
    `_fixup_icall_esp_save` can take argument pushes of callee-saved
