@@ -18,8 +18,9 @@
  * Objects handed to the game are small blocks of guest memory holding a tag
  * and our ids; the game treats them as opaque interface pointers.
  *
- * Not implemented yet, accepted and recorded: 3D positioning, envelopes
- * (SetEG), LFOs, filters, I3DL2 reverb and DSP effects. PDO_DSOUND_TRACE=1
+ * Not implemented yet, accepted and recorded: envelopes (SetEG), LFOs,
+ * filters, I3DL2 source HF levels, obstruction and occlusion, and the DSP
+ * image's own effects (its I3DL2 reverb is ours, in src/audio/reverb.c). PDO_DSOUND_TRACE=1
  * logs every call.
  */
 
@@ -274,6 +275,7 @@ void sub_002C2446(void)
     uint32_t pp = ARG(4);
 
     note_once("DSP effects image (reverb)");
+    TRACE("DownloadEffectsImage %u bytes at 0x%08x, image loc 0x%08x", ARG(2), ARG(1), ARG(3));
     if (!fx_desc) {
         fx_desc = guest_alloc(8 + FX_COUNT * 32);
         if (!fx_desc)
@@ -314,6 +316,7 @@ void sub_002C246D(void)
 void sub_002C2494(void)
 {
     uint32_t dst = fx_state(ARG(1), ARG(2), ARG(4)), src = ARG(3), n = ARG(4);
+    TRACE("SetEffectData effect %u offset %u, %u bytes", ARG(1), ARG(2), n);
     if (!dst || !src)
         RETURN(24, DSERR_INVALIDCALL);
     for (uint32_t i = 0; i < n; i++)
@@ -445,7 +448,34 @@ void sub_002C44A4(void)
     RETURN(12, DS_OK);
 }
 void sub_002C44C8(void) { RETURN(20, DS_OK); }  /* SetVelocity */
-void sub_002C44FD(void) { note_once("I3DL2 reverb"); RETURN(12, DS_OK); }  /* SetI3DL2Listener */
+/* IDirectSound_SetI3DL2Listener(pDS, pds3dl, dwApply). DSI3DL2LISTENER:
+ * lRoom, lRoomHF, flRoomRolloffFactor, flDecayTime, flDecayHFRatio,
+ * lReflections, flReflectionsDelay, lReverb, flReverbDelay, flDiffusion,
+ * flDensity, flHFReference. */
+void sub_002C44FD(void)
+{
+    uint32_t p = ARG(1);
+
+    if (p) {
+        pdo_i3dl2 env = {
+            .room = (int32_t)MEM32(p), .room_hf = (int32_t)MEM32(p + 4),
+            .room_rolloff = fval(MEM32(p + 8)), .decay_time = fval(MEM32(p + 12)),
+            .decay_hf_ratio = fval(MEM32(p + 16)), .reflections = (int32_t)MEM32(p + 20),
+            .reflections_delay = fval(MEM32(p + 24)), .reverb = (int32_t)MEM32(p + 28),
+            .reverb_delay = fval(MEM32(p + 32)), .diffusion = fval(MEM32(p + 36)),
+            .density = fval(MEM32(p + 40)), .hf_reference = fval(MEM32(p + 44)),
+        };
+        pdo_mixer_set_i3dl2(&env);
+    }
+    if (p)
+        TRACE("SetI3DL2Listener room %d hf %d rolloff %.2f decay %.2f s hf ratio %.2f "
+              "reflections %d delay %.3f reverb %d delay %.3f diffusion %.0f density %.0f "
+              "hf ref %.0f", (int32_t)MEM32(p), (int32_t)MEM32(p + 4), fval(MEM32(p + 8)),
+              fval(MEM32(p + 12)), fval(MEM32(p + 16)), (int32_t)MEM32(p + 20),
+              fval(MEM32(p + 24)), (int32_t)MEM32(p + 28), fval(MEM32(p + 32)),
+              fval(MEM32(p + 36)), fval(MEM32(p + 40)), fval(MEM32(p + 44)));
+    RETURN(12, DS_OK);
+}
 
 /* ── IDirectSoundBuffer ───────────────────────────────────────────────── */
 
@@ -711,7 +741,25 @@ void sub_002C3908(void) { RETURN(20, DS_OK); }  /* SetVelocity */
 void sub_002C393D(void) { RETURN(12, DS_OK); }  /* SetDistanceFactor */
 void sub_002C3961(void) { RETURN(12, DS_OK); }  /* SetDopplerFactor */
 void sub_002C3985(void) { RETURN(12, DS_OK); }  /* SetRolloffFactor */
-void sub_002C39A9(void) { RETURN(12, DS_OK); }  /* SetI3DL2Source */
+/* SetI3DL2Source(pBuf, pds3db, dwApply). DSI3DL2BUFFER: lDirect, lDirectHF,
+ * lRoom, lRoomHF, flRoomRolloffFactor, Obstruction {lHFLevel, flLFRatio},
+ * Occlusion {lHFLevel, flLFRatio}. */
+static void trace_i3dl2_source(const char *what, uint32_t obj, uint32_t p)
+{
+    if (p)
+        TRACE("%s 0x%08x direct %d hf %d room %d hf %d rolloff %.2f obstruction %d %.2f "
+              "occlusion %d %.2f", what, obj, (int32_t)MEM32(p), (int32_t)MEM32(p + 4),
+              (int32_t)MEM32(p + 8), (int32_t)MEM32(p + 12), fval(MEM32(p + 16)),
+              (int32_t)MEM32(p + 20), fval(MEM32(p + 24)), (int32_t)MEM32(p + 28),
+              fval(MEM32(p + 32)));
+}
+void sub_002C39A9(void)  /* IDirectSoundBuffer_SetI3DL2Source */
+{
+    trace_i3dl2_source("buffer SetI3DL2Source", ARG(0), ARG(1));
+    if (ARG(1))
+        pdo_voice_set_i3dl2(voice_of(ARG(0)), (int32_t)MEM32(ARG(1)), (int32_t)MEM32(ARG(1) + 8));
+    RETURN(12, DS_OK);
+}
 
 /* ── Calls Orta makes that JSRF did not ───────────────────────────────── */
 
@@ -1097,4 +1145,11 @@ void sub_002C3A64(void) { RETURN(20, DS_OK); }  /* SetVelocity */
 void sub_002C3A8D(void) { RETURN(12, DS_OK); }  /* SetDistanceFactor */
 void sub_002C3AA5(void) { RETURN(12, DS_OK); }  /* SetDopplerFactor */
 void sub_002C3ABD(void) { RETURN(12, DS_OK); }  /* SetRolloffFactor */
-void sub_002C3AD5(void) { RETURN(12, DS_OK); }  /* SetI3DL2Source */
+void sub_002C3AD5(void)  /* IDirectSoundStream_SetI3DL2Source */
+{
+    trace_i3dl2_source("stream SetI3DL2Source", ARG(0), ARG(1));
+    if (ARG(1) && stream_of(ARG(0)))
+        pdo_voice_set_i3dl2(stream_of(ARG(0))->voice, (int32_t)MEM32(ARG(1)),
+                            (int32_t)MEM32(ARG(1) + 8));
+    RETURN(12, DS_OK);
+}

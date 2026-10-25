@@ -11,6 +11,8 @@
  * asked for rather than what a stereo buffer "usually" means.
  */
 
+#include "audio/reverb.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -25,6 +27,7 @@ enum {
     PDO_BIN_BACK_LEFT = 4,
     PDO_BIN_BACK_RIGHT = 5,
     PDO_BIN_SPEAKERS = 6,
+    PDO_BIN_I3DL2 = 10,         /* the I3DL2 reverb send */
 };
 
 typedef enum pdo_format {
@@ -79,6 +82,13 @@ void pdo_voice_set_bins(int id, const pdo_voice_bin *bins, int count);
 /* Extra gains from 3D positioning (DSBCAPS_CTRL3D voices), left and right;
  * 1, 1 means none. Applied on top of the mixbin volumes. */
 void pdo_voice_set_3d(int id, float left, float right);
+
+/* I3DL2 source levels, hundredths of a dB (SetI3DL2Source): the direct
+ * path's and the reverb send's. A 3D voice sends to the reverb at `room`
+ * unless its mixbins say otherwise, as on the Xbox. */
+void pdo_voice_set_i3dl2(int id, int32_t direct, int32_t room);
+/* The listener's environment (SetI3DL2Listener). */
+void pdo_mixer_set_i3dl2(const pdo_i3dl2 *env);
 
 uint32_t pdo_voice_block_align(int id);
 

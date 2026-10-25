@@ -148,3 +148,14 @@ virtual addresses in the USA `default.xbe`.
 - Not cel-shaded: no inverted-hull outlines to get right.
 - Runs well on xemu: use it for reference screenshots and audio.
 
+## Sound
+
+- Every DirectSound buffer is created with no mixbins (DirectSound's
+  default routing). 3D buffers (flags 0x40010) are most of the effects;
+  the game calls SetI3DL2Source on them with direct 0, room 0 (full reverb
+  send), occlusion LF ratio 0.25.
+- SetI3DL2Listener: room -10000 (reverb off) through episode 1's stage;
+  the I3DL2 Bathroom preset (-1000, -1200, 0, 1.49 s, 0.54, -370, 0.007,
+  1030, 0.011, 100, 60, 5000 Hz) from the boss cutscene (event
+  st01_ev5b) through the fight. DownloadEffectsImage gets a 30,720-byte
+  image each stage; SetEffectData is not called.

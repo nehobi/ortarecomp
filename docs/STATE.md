@@ -40,8 +40,7 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    recomp.py now seeds). Tentacles confirmed right; some enemies white (a missing
    texture in a fixed-function draw gives white).
 2. Sound effects feel loud against the music. The game sets them itself
-   (music -26.0 dB, most effects -22.5 dB at equal option levels); no
-   reverb yet (I3DL2, DSP image, effect mixbins), which the original adds.
+   (music -26.0 dB, most effects -22.5 dB at equal option levels).
 3. Episode 4 crash after event st04_ev81: fixed and confirmed (episode 4
    beaten, no [POOL] reports). A virtual function (0x0015EB10) cut short
    by a false start jumped to a stub instead of its own epilogue, and the
@@ -50,11 +49,14 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    Lifter: 42 jumps still go to stubs, all from data decoded as code.
    `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
-4. Reverb (I3DL2, the DSP image, effect mixbins) is accepted but silent.
+4. Reverb: I3DL2 is ours now (src/audio/reverb.c, untested on Windows).
+   3D voices send at their SetI3DL2Source room level; the game turns it
+   on per scene (episode 1 boss: the Bathroom preset) and off in stages.
+   Not done: source HF levels, obstruction/occlusion, other DSP effects.
 
 ## Options overlay
 
-F1, or Back+Start on a controller: resolution scale 1-4x, anti-aliasing
+Confirmed on Windows. F1, or Back+Start on a controller: resolution scale 1-4x, anti-aliasing
 (MSAA up to what the GPU takes), 4:3 or stretch, TV softening, master
 volume, FPS counter. The game waits in Swap and the sound holds while it
 is open; settings go to ortarecomp.ini when it closes.

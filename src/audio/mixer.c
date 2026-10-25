@@ -20,6 +20,9 @@
 #define BLOCK_FRAMES   256
 #define XADPCM_BLOCK   36      /* bytes per channel per block */
 #define MAX_PACKETS    64
+/* Mixing columns: the speaker bins, then the reverb send. */
+#define SEND           PDO_BIN_SPEAKERS
+#define COLUMNS        (PDO_BIN_SPEAKERS + 1)
 
 typedef struct packet {
     uint32_t addr, bytes, tag;
@@ -35,8 +38,9 @@ typedef struct voice {
     uint32_t       loop_start, loop_len;/* frames; len 0 = whole buffer */
     float          volume, headroom;    /* linear */
     float          g3d[2];              /* 3D left/right gains */
+    float          direct, room;        /* I3DL2 source levels, linear */
     double         step;                /* frames per output frame */
-    float          gain[2][PDO_BIN_SPEAKERS];
+    float          gain[2][COLUMNS];
     /* ADPCM: the last decoded block, both channels */
     int32_t        cached_block;
     int16_t        cache[2][72];
@@ -131,15 +135,23 @@ static float side_gain(const voice *v, uint32_t bin)
     return 0.5f * (v->g3d[0] + v->g3d[1]);
 }
 
+/* The reverb send leaves out the 3D gains: they are the direct path's
+ * distance and pan, and the room path's own distance rolloff
+ * (flRoomRolloffFactor) is 0 wherever Orta sets it. */
 static void update_gains(voice *v)
 {
+    bool sends = false;
+
     memset(v->gain, 0, sizeof v->gain);
     for (int i = 0; i < v->desc.bin_count; i++) {
         int ch = v->desc.channels == 1 ? 0 : i % v->desc.channels;
         uint32_t bin = v->desc.bins[i].bin;
         if (bin < PDO_BIN_SPEAKERS)
-            v->gain[ch][bin] = db100_to_gain(v->desc.bins[i].volume) * side_gain(v, bin);
-        else {
+            v->gain[ch][bin] = db100_to_gain(v->desc.bins[i].volume) * side_gain(v, bin) * v->direct;
+        else if (bin == PDO_BIN_I3DL2) {
+            v->gain[ch][SEND] = db100_to_gain(v->desc.bins[i].volume) * v->room;
+            sends = true;
+        } else {
             static uint32_t seen;
             if (bin < 32 && !(seen & (1u << bin))) {
                 seen |= 1u << bin;
@@ -147,6 +159,10 @@ static void update_gains(voice *v)
             }
         }
     }
+    /* A 3D voice given no mixbins of its own feeds the reverb too. */
+    if (v->desc.positional && !sends)
+        for (int ch = 0; ch < v->desc.channels; ch++)
+            v->gain[ch][SEND] = v->room / (float)v->desc.channels;
 }
 
 /* ── Xbox ADPCM ───────────────────────────────────────────────────────────
@@ -252,7 +268,7 @@ static void pop_head(voice *v, bool flushed)
 /* A packet-queue voice: play the head packet, moving to the next one at its
  * end without a gap (the fraction of a frame carries over). Interpolation
  * does not look across a packet boundary. */
-static void mix_queue(voice *v, float bins[][PDO_BIN_SPEAKERS], int frames)
+static void mix_queue(voice *v, float bins[][COLUMNS], int frames)
 {
     float g = v->volume * v->headroom;
 
@@ -276,14 +292,14 @@ static void mix_queue(voice *v, float bins[][PDO_BIN_SPEAKERS], int frames)
             float s = sample_at(v, ch, f0);
             s += (sample_at(v, ch, f1) - s) * t;
             s *= g;
-            for (int b = 0; b < PDO_BIN_SPEAKERS; b++)
+            for (int b = 0; b < COLUMNS; b++)
                 bins[i][b] += s * v->gain[ch][b];
         }
         v->pos += v->step;
     }
 }
 
-static void mix_voice(voice *v, float bins[][PDO_BIN_SPEAKERS], int frames)
+static void mix_voice(voice *v, float bins[][COLUMNS], int frames)
 {
     uint32_t total = total_frames(v);
     uint32_t ls, le;
@@ -322,7 +338,7 @@ static void mix_voice(voice *v, float bins[][PDO_BIN_SPEAKERS], int frames)
             float s = sample_at(v, ch, f0);
             s += (sample_at(v, ch, f1) - s) * t;
             s *= g;
-            for (int b = 0; b < PDO_BIN_SPEAKERS; b++)
+            for (int b = 0; b < COLUMNS; b++)
                 bins[i][b] += s * v->gain[ch][b];
         }
         v->pos += v->step;
@@ -353,7 +369,8 @@ static void write_dump_header(void)
 
 static void mix_block(float *out, int frames)
 {
-    static float bins[BLOCK_FRAMES][PDO_BIN_SPEAKERS];
+    static float bins[BLOCK_FRAMES][COLUMNS];
+    static float send[BLOCK_FRAMES];
     const float k = 0.70710678f;
 
     memset(bins, 0, sizeof(bins[0]) * (size_t)frames);
@@ -368,14 +385,20 @@ static void mix_block(float *out, int frames)
             else
                 mix_voice(&voices[i], bins, frames);
         }
-    SDL_UnlockMutex(lock);
 
     /* Fold the speaker bins to stereo. LFE is not folded in, as a stereo
-     * receiver would drop it too. */
+     * receiver would drop it too. Then the reverb on the send. */
     for (int i = 0; i < frames; i++) {
         float *b = bins[i];
-        float l = b[PDO_BIN_FRONT_LEFT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_LEFT];
-        float r = b[PDO_BIN_FRONT_RIGHT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_RIGHT];
+        out[i * 2] = b[PDO_BIN_FRONT_LEFT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_LEFT];
+        out[i * 2 + 1] = b[PDO_BIN_FRONT_RIGHT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_RIGHT];
+        send[i] = b[SEND];
+    }
+    pdo_reverb_process(send, out, frames, PDO_MIX_RATE);
+    SDL_UnlockMutex(lock);
+
+    for (int i = 0; i < frames; i++) {
+        float l = out[i * 2], r = out[i * 2 + 1];
 
         if (stats) {
             float m = fmaxf(fabsf(l), fabsf(r));
@@ -536,6 +559,7 @@ int pdo_voice_create(const pdo_voice_desc *desc)
             v->volume = 1.0f;
             v->headroom = 1.0f;
             v->g3d[0] = v->g3d[1] = 1.0f;
+            v->direct = v->room = 1.0f;
             v->cached_block = -1;
             update_step(v, 0);
             update_gains(v);
@@ -613,6 +637,18 @@ void pdo_voice_set_loop_region(int id, uint32_t start, uint32_t length)
 void pdo_voice_set_3d(int id, float left, float right)
 {
     WITH_VOICE(id, v->g3d[0] = left; v->g3d[1] = right; update_gains(v));
+}
+
+void pdo_voice_set_i3dl2(int id, int32_t direct, int32_t room)
+{
+    WITH_VOICE(id, v->direct = db100_to_gain(direct); v->room = db100_to_gain(room); update_gains(v));
+}
+
+void pdo_mixer_set_i3dl2(const pdo_i3dl2 *env)
+{
+    SDL_LockMutex(lock);
+    pdo_reverb_set(env);
+    SDL_UnlockMutex(lock);
 }
 
 void pdo_voice_set_volume(int id, int32_t hundredths_db)
