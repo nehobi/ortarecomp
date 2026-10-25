@@ -212,37 +212,115 @@ void sub_00044830(void)
 }
 
 /*
- * 0x00044A20 calls every node of a list (head at +0, tail at +4). Every
- * node comes from the pool above, so a pointer to anywhere else means the
- * chain was overwritten: report where, and end the list at the last good
- * node rather than call into whatever it points at.
+ * 0x00044A20 calls every node of a list (head at +0, tail at +4):
+ *
+ *     push esi; esi = head; call 0x002AC930
+ *     while (esi) { ecx = esi + 0x10; call 0x002AC080 (load the matrix);
+ *                   push [esi+4]; call [esi]; esi = [esi+8]; add esp, 4 }
+ *     pop esi; jmp 0x002AC9C0
+ *
+ * The same walk, with the node kept here rather than only in esi, and each
+ * node checked before it is called: in the pool, on a node boundary, calling
+ * code. Episode 4 lists were whole when the walk began and still the walk
+ * reached heap objects (vtables in .rdata where a function should be), so
+ * something it called came back with esi changed. Say which, and carry on
+ * from the node that was really next.
  */
-extern void sub_00044A20_gen(void);
+extern recomp_func_t recomp_lookup(uint32_t xbox_va);
+extern void sub_002AC930(void);
+extern void sub_002AC080(void);
+extern void sub_002AC9C0(void);
 
 void sub_00044A20(void)
 {
-    static int reported;
+    static int reported, clobbers;
+    static uint32_t shown_base;
     uint32_t list = MEM32(g_esp + 4);
     uint32_t base = MEM32(0x419FBC), end = base + MEM32(0x419FB0) * 0x50;
-    uint32_t prev = 0, node = MEM32(list), n = 0;
+    uint32_t node = MEM32(list);
 
-    for (; node; prev = node, node = MEM32(node + 8), n++) {
-        if (node >= base && node < end && (node - base) % 0x50 == 0)
-            continue;
-        if (reported++ < 8)
-            fprintf(stderr, "[POOL] callback list 0x%08X: node %u at 0x%08X is outside the "
-                    "pool 0x%08X-0x%08X (%u of %u used); list cut there. Previous node "
-                    "0x%08X: func 0x%08X arg 0x%08X key 0x%08X\n",
-                    list, n, node, base, end, MEM32(0x419FB4), MEM32(0x419FB0), prev,
-                    prev ? MEM32(prev) : 0, prev ? MEM32(prev + 4) : 0, prev ? MEM32(prev + 0xC) : 0);
-        if (prev) {
-            MEM32(prev + 8) = 0;
-            MEM32(list + 4) = prev;
-        } else {
-            MEM32(list) = 0;
-            MEM32(list + 4) = 0;
-        }
-        break;
+    if (base != shown_base) {
+        shown_base = base;
+        fprintf(stderr, "[POOL] render callback pool at 0x%08X-0x%08X\n", base, end);
     }
-    sub_00044A20_gen();
+    PUSH32(g_esp, g_esi);
+    PUSH32(g_esp, 0x00044A2Cu);
+    sub_002AC930();
+    while (node) {
+        uint32_t func = MEM32(node), next, sp;
+
+        if (!(node >= base && node < end && (node - base) % 0x50 == 0
+                && func >= 0x11000 && func < 0x30C8A0)) {
+            if (reported++ < 8)
+                fprintf(stderr, "[POOL] callback list 0x%08X: node 0x%08X (func 0x%08X arg "
+                        "0x%08X next 0x%08X) is not a live node of the pool 0x%08X-0x%08X "
+                        "(%u of %u used); list cut there\n",
+                        list, node, func, MEM32(node + 4), MEM32(node + 8), base, end,
+                        MEM32(0x419FB4), MEM32(0x419FB0));
+            break;
+        }
+        g_esi = node;
+        g_ecx = node + 0x10;
+        PUSH32(g_esp, 0x00044A38u);
+        sub_002AC080();
+        PUSH32(g_esp, MEM32(node + 4));
+        PUSH32(g_esp, 0x00044A3Eu);
+        sp = g_esp;
+        {
+            recomp_func_t fn = recomp_lookup(func);
+            if (fn)
+                fn();
+            else {
+                recomp_icall_fail_log(func);
+                g_esp += 4;
+            }
+        }
+        if ((g_esi != node || g_esp != sp + 4) && clobbers++ < 16)
+            fprintf(stderr, "[POOL] callback 0x%08X (arg 0x%08X) came back with esi 0x%08X "
+                    "(was 0x%08X) and esp %+d\n", func, MEM32(sp + 4), g_esi, node,
+                    (int)(g_esp - (sp + 4)));
+        g_esp = sp + 8;                 /* add esp, 4 after the callee's ret */
+        next = MEM32(node + 8);
+        node = next;
+    }
+    POP32(g_esp, g_esi);
+    sub_002AC9C0();                     /* jmp: returns to our caller */
+}
+
+/*
+ * Who else is given the pool's memory? RtlAllocateHeap (0x00230435) and
+ * RtlFreeHeap (0x00230BEC), the XAPI heap under the game's allocator, both
+ * stdcall (heap, flags, size or pointer). Report an allocation that overlaps
+ * the live pool and a free inside it, with the caller.
+ */
+extern void sub_00230435_gen(void);
+extern void sub_00230BEC_gen(void);
+
+static int in_pool(uint32_t lo, uint32_t hi)
+{
+    uint32_t base = MEM32(0x419FBC), end = base + MEM32(0x419FB0) * 0x50;
+    return base && lo < end && hi > base - 0x20;
+}
+
+void sub_00230435(void)
+{
+    static int reported;
+    uint32_t ret = MEM32(g_esp), size = MEM32(g_esp + 12);
+
+    sub_00230435_gen();
+    if (g_eax && in_pool(g_eax, g_eax + size) && reported++ < 8)
+        fprintf(stderr, "[POOL] RtlAllocateHeap gave 0x%08X (%u bytes) inside the render "
+                "callback pool 0x%08X; called from 0x%08X\n",
+                g_eax, size, MEM32(0x419FBC), ret);
+}
+
+void sub_00230BEC(void)
+{
+    static int reported;
+    uint32_t ret = MEM32(g_esp), ptr = MEM32(g_esp + 12);
+
+    if (ptr && in_pool(ptr, ptr + 1) && reported++ < 8)
+        fprintf(stderr, "[POOL] RtlFreeHeap of 0x%08X inside the render callback pool "
+                "0x%08X; called from 0x%08X\n", ptr, MEM32(0x419FBC), ret);
+    sub_00230BEC_gen();
 }

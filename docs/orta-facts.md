@@ -76,7 +76,11 @@ virtual addresses in the USA `default.xbe`.
   freed by 0x000447D0) without checking the capacity. Nine lists
   (head/tail pairs from 0x419F68) are sorted by key by 0x00044D50 (a
   merge sort, 0x00044970, through a static array at 0x3F8580) and walked
-  by 0x00044A20. Episode 1 uses at most about 340 nodes a frame.
+  by 0x00044A20, which keeps the node in esi across each callback. Episode
+  1 uses at most about 340 nodes a frame; the pool is allocated once at
+  boot (0x000118FD) and freed only at shutdown. The XAPI heap under the
+  game's allocator: RtlAllocateHeap 0x00230435, RtlFreeHeap 0x00230BEC
+  (both stdcall, 3 arguments), HeapFree wrapper 0x00231597.
 
 - Orta's threads assume one CPU. Run truly in parallel, the sound request
   processor (0x000692C0) walked a list (0x0021E570, 0x00220520) another
