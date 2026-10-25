@@ -69,6 +69,15 @@ virtual addresses in the USA `default.xbe`.
   once and esp came back 4 bytes off. Patch 0024 makes such targets
   aliases too, until no new one turns up.
 
+- Render callbacks: 0x00044830(list, func, arg, key) takes a 0x50-byte
+  node (func +0, arg +4, next +8, key +0xC, matrix +0x10) from a pool of
+  0x2000 nodes (base 0x419FBC, next free 0x419FB8, used 0x419FB4,
+  capacity 0x419FB0; made by 0x00044790, reset every frame by 0x00044800,
+  freed by 0x000447D0) without checking the capacity. Nine lists
+  (head/tail pairs from 0x419F68) are sorted by key by 0x00044D50 (a
+  merge sort, 0x00044970, through a static array at 0x3F8580) and walked
+  by 0x00044A20. Episode 1 uses at most about 340 nodes a frame.
+
 - Orta's threads assume one CPU. Run truly in parallel, the sound request
   processor (0x000692C0) walked a list (0x0021E570, 0x00220520) another
   thread was reallocating and called through a stale entry (a crash after

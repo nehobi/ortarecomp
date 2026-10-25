@@ -42,8 +42,11 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 2. Sound effects feel loud against the music. The game sets them itself
    (music -26.0 dB, most effects -22.5 dB at equal option levels); no
    reverb yet (I3DL2, DSP image, effect mixbins), which the original adds.
-3. Episode 4 crashes after event st04_ev81 (the callback list walked by
-   0x00044A20 holds nodes pointing into .rdata); retest with patch 0024.
+3. Episode 4 crashes after event st04_ev81: the render callback list
+   walked by 0x00044A20 leads out of its node pool into heap objects
+   (patch 0024 did not change it). guest_manual.c now drops nodes past the
+   pool's capacity and cuts the list at the first node outside the pool,
+   logging `[POOL]` lines: their numbers say which of the two it is.
    Lifter: the remaining stub calls and jumps; audit them. `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
 4. Reverb (I3DL2, the DSP image, effect mixbins) is accepted but silent.

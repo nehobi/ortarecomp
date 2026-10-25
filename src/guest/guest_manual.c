@@ -175,3 +175,74 @@ void sub_00233CB0(void)
     }
     sub_00233CB0_gen();         /* sees the flag: ends the thread */
 }
+
+/* ── The render callback pool ────────────────────────────────────────── */
+
+/*
+ * 0x00044830 adds a node (function, argument, a word, a matrix: 0x50 bytes)
+ * to a callback list from a pool of MEM32(0x419FB0) nodes (0x2000, set up
+ * by 0x00044790, emptied every frame by 0x00044800, freed by 0x000447D0),
+ * and never checks that the pool has room. A node written past its end, or
+ * into the pool after it is freed, lands in some other heap block; the
+ * block's owner then writes its own fields over the node, and the walk
+ * (0x00044A20) calls a vtable and follows the object's pointers as if they
+ * were nodes: the ICALL failures returning to 0x00044A3E early in episode
+ * 4, then a crash. Drop what does not fit, and say so.
+ */
+extern void sub_00044830_gen(void);
+
+void sub_00044830(void)
+{
+    static uint32_t high;
+    static int dropped;
+    uint32_t used = MEM32(0x419FB4), cap = MEM32(0x419FB0);
+
+    if (used >= cap) {
+        if (dropped++ < 8)
+            fprintf(stderr, "[POOL] render callback dropped: %u of %u nodes used, "
+                    "func 0x%08X from 0x%08X\n", used, cap, MEM32(g_esp + 8), MEM32(g_esp));
+        g_esp += 4;                 /* ret (cdecl) */
+        return;
+    }
+    if (used >= high + 512) {
+        high = used;
+        fprintf(stderr, "[POOL] render callbacks: %u of %u nodes in a frame\n", used, cap);
+    }
+    sub_00044830_gen();
+}
+
+/*
+ * 0x00044A20 calls every node of a list (head at +0, tail at +4). Every
+ * node comes from the pool above, so a pointer to anywhere else means the
+ * chain was overwritten: report where, and end the list at the last good
+ * node rather than call into whatever it points at.
+ */
+extern void sub_00044A20_gen(void);
+
+void sub_00044A20(void)
+{
+    static int reported;
+    uint32_t list = MEM32(g_esp + 4);
+    uint32_t base = MEM32(0x419FBC), end = base + MEM32(0x419FB0) * 0x50;
+    uint32_t prev = 0, node = MEM32(list), n = 0;
+
+    for (; node; prev = node, node = MEM32(node + 8), n++) {
+        if (node >= base && node < end && (node - base) % 0x50 == 0)
+            continue;
+        if (reported++ < 8)
+            fprintf(stderr, "[POOL] callback list 0x%08X: node %u at 0x%08X is outside the "
+                    "pool 0x%08X-0x%08X (%u of %u used); list cut there. Previous node "
+                    "0x%08X: func 0x%08X arg 0x%08X key 0x%08X\n",
+                    list, n, node, base, end, MEM32(0x419FB4), MEM32(0x419FB0), prev,
+                    prev ? MEM32(prev) : 0, prev ? MEM32(prev + 4) : 0, prev ? MEM32(prev + 0xC) : 0);
+        if (prev) {
+            MEM32(prev + 8) = 0;
+            MEM32(list + 4) = prev;
+        } else {
+            MEM32(list) = 0;
+            MEM32(list + 4) = 0;
+        }
+        break;
+    }
+    sub_00044A20_gen();
+}
