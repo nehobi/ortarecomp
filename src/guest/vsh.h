@@ -70,6 +70,7 @@ typedef struct pdo_vsh_program {
     pdo_vsh_input input[PDO_VSH_INPUTS];
     uint16_t      inputs_read;                   /* v registers the program reads */
     bool          writes_constants;              /* then vertices must run in order */
+    int32_t       gpu_program;                   /* renderer's copy (pdo_gfx_vsh_program), -1: none yet */
 } pdo_vsh_program;
 
 /* Outputs by NV2A output address: 0 oPos, 3 oD0, 4 oD1, 5 oFog, 6 oPts,
@@ -92,6 +93,11 @@ void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
  * program that writes constants runs them one after another, in order. */
 void pdo_vsh_run4(const pdo_vsh_program *p, const float in[4][PDO_VSH_INPUTS][4],
                   float c[PDO_VSH_CONSTANTS][4], float out[4][VSH_OUTPUTS][4]);
+
+/* The program for shaders/vsh.vert: 8 words an instruction, into out
+ * (8 * p->count words). A program that writes constants has no GPU form;
+ * returns false for it. */
+bool pdo_vsh_gpu_code(const pdo_vsh_program *p, uint32_t *out);
 
 /* Run fn(ctx, first, end) over [0, count) split across worker threads (the
  * calling thread takes a share too). Returns when all parts are done. */

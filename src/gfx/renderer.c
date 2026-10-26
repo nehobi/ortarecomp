@@ -33,7 +33,7 @@ static SDL_GPUTexture *frame_color, *frame_depth, *white;
 static SDL_GPUTextureFormat depth_format;
 static int frame_w, frame_h;
 static uint64_t frames;
-static SDL_GPUShader *vs, *fs;
+static SDL_GPUShader *vs, *fs, *vsh_vs;
 
 /* Overlay settings in force: every render target is rscale times the game's
  * size (viewports and copies scaled to match), drawn with nsamples samples
@@ -83,6 +83,15 @@ typedef struct command {
     /* draw */
     pdo_draw draw;
     uint32_t first_index, index_count;
+    /* a vertex-program draw on the GPU (pdo_gfx_draw_vsh); has_cpu: the CPU
+     * interpreter's vertices are recorded too, at first_index */
+    bool     vsh, has_cpu;
+    uint32_t vsh_first_index, vsh_index_count;
+    struct vsh_uniforms {
+        int32_t info[4];                /* program base, count, constant base, - */
+        int32_t inputs[16][4];          /* byte base in the stream blob, stride, offset, type */
+        float   scale[4], offset[4];
+    } vu;
 } command;
 
 static pdo_vertex *verts;
@@ -92,6 +101,18 @@ static uint32_t nindices, cap_indices;
 static command *cmds;
 static uint32_t ncmds, cap_cmds;
 
+/* Vertex-program draws: this frame's stream bytes and constant sets, and
+ * every program compiled so far (kept, uploaded again when one is added). */
+static uint8_t *blob;
+static uint32_t nblob, cap_blob;
+static float (*vconsts)[4];
+static uint32_t nvconsts, cap_vconsts;
+static int32_t last_consts = -1;
+static uint32_t *progs;
+static uint32_t nprogs, cap_progs;
+static bool progs_dirty;
+static bool cpu_vsh;        /* captures only: vertex programs drawn from the CPU's vertices */
+
 static void *grow(void *p, uint32_t *cap, uint32_t need, size_t elem)
 {
     if (need <= *cap)
@@ -99,6 +120,14 @@ static void *grow(void *p, uint32_t *cap, uint32_t need, size_t elem)
     while (*cap < need)
         *cap = *cap ? *cap * 2 : 1024;
     return SDL_realloc(p, (size_t)*cap * elem);
+}
+
+/* Forget the frame's commands and what they recorded. */
+static void drop_frame(void)
+{
+    nverts = nindices = ncmds = 0;
+    nblob = nvconsts = 0;
+    last_consts = -1;
 }
 
 static command *new_command(void)
@@ -165,6 +194,93 @@ void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
     c->index_count = ni;
     nverts += nv;
     nindices += ni;
+}
+
+int32_t pdo_gfx_vsh_program(const uint32_t *code, uint32_t count)
+{
+    uint32_t base = nprogs / 4;     /* in uvec4 */
+
+    if (!count || !vsh_vs)
+        return -1;
+    progs = grow(progs, &cap_progs, nprogs + count * 8, sizeof *progs);
+    memcpy(progs + nprogs, code, (size_t)count * 32);
+    nprogs += count * 8;
+    progs_dirty = true;
+    return (int32_t)base;
+}
+
+void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
+                      const uint32_t *idx, uint32_t ni, const pdo_vertex *cpu)
+{
+    uint32_t sbase[16] = { 0 };
+    int32_t consts;
+    command *c;
+
+    if (!nv || !ni || g->program < 0)
+        return;
+    if (cpu) {
+        pdo_gfx_draw(d, cpu, nv, idx, ni);
+        c = &cmds[ncmds - 1];
+        c->has_cpu = true;
+    } else {
+        c = new_command();
+        c->draw = *d;
+    }
+    c->vsh = true;
+
+    /* The streams, 4-aligned; 8 bytes of slack past the end for the
+     * shader's word reads. */
+    for (int k = 0; k < 16; k++) {
+        uint32_t n = g->stream_bytes[k];
+        if (!n || !g->stream_data[k])
+            continue;
+        nblob = (nblob + 3) & ~3u;
+        blob = grow(blob, &cap_blob, nblob + n + 8, 1);
+        memcpy(blob + nblob, g->stream_data[k], n);
+        sbase[k] = nblob;
+        nblob += n;
+    }
+    blob = grow(blob, &cap_blob, nblob + 8, 1);
+    memset(blob + nblob, 0, 8);
+
+    /* The constants, shared with the draw before when they are the same. */
+    if (last_consts >= 0 && !memcmp(vconsts[last_consts], g->constants, 192 * 16)) {
+        consts = last_consts;
+    } else {
+        vconsts = grow(vconsts, &cap_vconsts, nvconsts + 192, sizeof *vconsts);
+        memcpy(vconsts[nvconsts], g->constants, 192 * 16);
+        consts = (int32_t)nvconsts;
+        last_consts = consts;
+        nvconsts += 192;
+    }
+
+    c->vu.info[0] = g->program;
+    c->vu.info[1] = (int32_t)g->count;
+    c->vu.info[2] = consts;
+    for (int r = 0; r < 16; r++) {
+        int32_t st = g->input[r][0];
+        if (st < 0 || st > 15 || !g->input[r][3] || !g->stream_bytes[st]) {
+            memset(c->vu.inputs[r], 0, sizeof c->vu.inputs[r]);
+            continue;
+        }
+        c->vu.inputs[r][0] = (int32_t)sbase[st];
+        c->vu.inputs[r][1] = g->input[r][1];
+        c->vu.inputs[r][2] = g->input[r][2];
+        c->vu.inputs[r][3] = g->input[r][3];
+    }
+    memcpy(c->vu.scale, g->vp_scale, sizeof c->vu.scale);
+    memcpy(c->vu.offset, g->vp_offset, sizeof c->vu.offset);
+
+    indices = grow(indices, &cap_indices, nindices + ni, sizeof *indices);
+    memcpy(indices + nindices, idx, ni * sizeof *idx);
+    c->vsh_first_index = nindices;
+    c->vsh_index_count = ni;
+    nindices += ni;
+}
+
+bool pdo_gfx_capturing(void)
+{
+    return frames + 1 == capture_frame;
 }
 
 /* ── Pipelines and samplers ───────────────────────────────────────────── */
@@ -285,12 +401,14 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
         ((cw & 0xFF000000u) ? SDL_GPU_COLORCOMPONENT_A : 0));
 
     SDL_zero(pi);
-    pi.vertex_shader = vs;
+    pi.vertex_shader = ps->gpu_vsh ? vsh_vs : vs;
     pi.fragment_shader = fs;
-    pi.vertex_input_state.vertex_buffer_descriptions = &vb;
-    pi.vertex_input_state.num_vertex_buffers = 1;
-    pi.vertex_input_state.vertex_attributes = attrs;
-    pi.vertex_input_state.num_vertex_attributes = 8;
+    if (!ps->gpu_vsh) {         /* vsh.vert reads its streams from storage buffers */
+        pi.vertex_input_state.vertex_buffer_descriptions = &vb;
+        pi.vertex_input_state.num_vertex_buffers = 1;
+        pi.vertex_input_state.vertex_attributes = attrs;
+        pi.vertex_input_state.num_vertex_attributes = 8;
+    }
     pi.primitive_type = ps->topology == 1 ? SDL_GPU_PRIMITIVETYPE_LINELIST
                       : ps->topology == 2 ? SDL_GPU_PRIMITIVETYPE_POINTLIST
                       : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
@@ -773,8 +891,8 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
 
 /* ── Init ─────────────────────────────────────────────────────────────── */
 
-static SDL_GPUShader *make_shader(const uint8_t *code, size_t len, SDL_GPUShaderStage stage,
-                                  Uint32 samplers_n, Uint32 uniforms_n)
+static SDL_GPUShader *make_shader_sb(const uint8_t *code, size_t len, SDL_GPUShaderStage stage,
+                                     Uint32 samplers_n, Uint32 uniforms_n, Uint32 storage_n)
 {
     SDL_GPUShaderCreateInfo si;
     SDL_zero(si);
@@ -785,7 +903,14 @@ static SDL_GPUShader *make_shader(const uint8_t *code, size_t len, SDL_GPUShader
     si.stage = stage;
     si.num_samplers = samplers_n;
     si.num_uniform_buffers = uniforms_n;
+    si.num_storage_buffers = storage_n;
     return SDL_CreateGPUShader(dev, &si);
+}
+
+static SDL_GPUShader *make_shader(const uint8_t *code, size_t len, SDL_GPUShaderStage stage,
+                                  Uint32 samplers_n, Uint32 uniforms_n)
+{
+    return make_shader_sb(code, len, stage, samplers_n, uniforms_n, 0);
 }
 
 static SDL_GPUShader *screen_vs, *screen_fs;
@@ -1087,6 +1212,9 @@ bool pdo_gfx_init(int width, int height)
 
     vs = make_shader(ff_vert_spv, sizeof ff_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    vsh_vs = make_shader_sb(vsh_vert_spv, sizeof vsh_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 3);
+    if (!vsh_vs)
+        SDL_Log("gfx: no GPU vertex programs (%s); they run on the CPU", SDL_GetError());
     if (!vs || !fs) {
         SDL_Log("gfx: shader creation failed (%s)", SDL_GetError());
         return false;
@@ -1200,8 +1328,24 @@ uint64_t pdo_gfx_frame_count(void)
 
 /* ── Replay ───────────────────────────────────────────────────────────── */
 
-static SDL_GPUBuffer *vbuf, *ibuf;
-static Uint32 vbuf_size, ibuf_size;
+static SDL_GPUBuffer *vbuf, *ibuf, *blob_buf, *const_buf, *prog_buf;
+static Uint32 vbuf_size, ibuf_size, blob_buf_size, const_buf_size, prog_buf_size;
+
+/* A draw's vertices: the vertex buffer, or for a vertex program on the GPU
+ * its streams, programs and constants. */
+static void bind_geometry(SDL_GPURenderPass *pass, bool gpu)
+{
+    SDL_GPUBufferBinding ib = { ibuf, 0 };
+
+    if (gpu) {
+        SDL_GPUBuffer *sb[3] = { blob_buf, prog_buf, const_buf };
+        SDL_BindGPUVertexStorageBuffers(pass, 0, sb, 3);
+    } else {
+        SDL_GPUBufferBinding vb = { vbuf, 0 };
+        SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+    }
+    SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+}
 
 static SDL_GPUBuffer *ensure_buffer(SDL_GPUBuffer *b, Uint32 *size, Uint32 need, SDL_GPUBufferUsageFlags usage)
 {
@@ -1353,7 +1497,10 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
                 t->data, t->format_word, t->size_word, pdo_xtex_format_name(ti.format), ti.width, ti.height,
                 what);
     }
-    for (uint32_t k = 0; k < 3 && k < c->index_count; k++) {
+    if (c->vsh)
+        SDL_Log("capture:     vertex program on the GPU: %d instructions at %d, constants at %d%s",
+                c->vu.info[1], c->vu.info[0], c->vu.info[2], c->has_cpu ? "; the CPU's vertices:" : "");
+    for (uint32_t k = 0; k < 3 && k < c->index_count && (!c->vsh || c->has_cpu); k++) {
         const pdo_vertex *v = &verts[indices[c->first_index + k]];
         SDL_Log("capture:     v pos %.3f %.3f %.3f %.3f d %08x s %08x t0 %.3f %.3f %.3f %.3f "
                 "t1 %.3f %.3f %.3f %.3f fog %.2f",
@@ -1491,6 +1638,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     uint32_t staging_len = 0;
     SDL_GPURenderPass *pass = NULL;
     Uint32 vbytes = nverts * (Uint32)sizeof *verts, ibytes = nindices * 4;
+    Uint32 bbytes = nblob ? (nblob + 8 + 3) & ~3u : 0, cbytes = nvconsts * 16, pbytes;
 
     /* Resolve every texture first: decoding fills the staging area. */
     Uint64 tex_t0 = SDL_GetTicksNS();
@@ -1502,17 +1650,28 @@ static void replay(SDL_GPUCommandBuffer *cmd)
                                                  &staging_cap, ups, &nups);
     texture_ns += SDL_GetTicksNS() - tex_t0;
 
-    if (vbytes || staging_len) {
+    /* A new program buffer (more programs than fit) needs them all again. */
+    if (nprogs && (!prog_buf || prog_buf_size < nprogs * 4))
+        progs_dirty = true;
+    pbytes = progs_dirty ? nprogs * 4 : 0;
+    if (vbytes || ibytes || staging_len || bbytes || cbytes || pbytes) {
         SDL_GPUTransferBufferCreateInfo tbi;
         SDL_GPUTransferBuffer *tb;
         SDL_GPUCopyPass *copy;
         uint8_t *map;
-        Uint32 tex_off = vbytes + ibytes;
+        Uint32 boff = vbytes + ibytes, coff = boff + bbytes, poff = coff + cbytes;
+        Uint32 tex_off = poff + pbytes;
 
-        if (vbytes) {
+        if (vbytes)
             vbuf = ensure_buffer(vbuf, &vbuf_size, vbytes, SDL_GPU_BUFFERUSAGE_VERTEX);
+        if (ibytes)
             ibuf = ensure_buffer(ibuf, &ibuf_size, ibytes, SDL_GPU_BUFFERUSAGE_INDEX);
-        }
+        if (bbytes)
+            blob_buf = ensure_buffer(blob_buf, &blob_buf_size, bbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
+        if (cbytes)
+            const_buf = ensure_buffer(const_buf, &const_buf_size, cbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
+        if (pbytes)
+            prog_buf = ensure_buffer(prog_buf, &prog_buf_size, pbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
         SDL_zero(tbi);
         tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         tbi.size = tex_off + staging_len;
@@ -1520,18 +1679,25 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         map = SDL_MapGPUTransferBuffer(dev, tb, false);
         memcpy(map, verts, vbytes);
         memcpy(map + vbytes, indices, ibytes);
+        memcpy(map + boff, blob, nblob + 8 < bbytes ? nblob + 8 : bbytes);
+        memcpy(map + coff, vconsts, cbytes);
+        memcpy(map + poff, progs, pbytes);
         memcpy(map + tex_off, staging, staging_len);
         SDL_UnmapGPUTransferBuffer(dev, tb);
 
         copy = SDL_BeginGPUCopyPass(cmd);
-        if (vbytes) {
-            SDL_GPUTransferBufferLocation src = { tb, 0 };
-            SDL_GPUBufferRegion dst = { vbuf, 0, vbytes };
-            SDL_UploadToGPUBuffer(copy, &src, &dst, true);
-            src.offset = vbytes;
-            dst.buffer = ibuf;
-            dst.size = ibytes;
-            SDL_UploadToGPUBuffer(copy, &src, &dst, true);
+        {
+            struct { SDL_GPUBuffer *b; Uint32 off, n; } up[5] = {
+                { vbuf, 0, vbytes }, { ibuf, vbytes, ibytes }, { blob_buf, boff, bbytes },
+                { const_buf, coff, cbytes }, { prog_buf, poff, pbytes },
+            };
+            for (int k = 0; k < 5; k++)
+                if (up[k].n && up[k].b) {
+                    SDL_GPUTransferBufferLocation src = { tb, up[k].off };
+                    SDL_GPUBufferRegion dst = { up[k].b, 0, up[k].n };
+                    SDL_UploadToGPUBuffer(copy, &src, &dst, true);
+                }
+            progs_dirty = false;
         }
         for (int i = 0; i < nups; i++) {
             SDL_GPUTextureTransferInfo src;
@@ -1557,6 +1723,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         SDL_GPUGraphicsPipeline *p;
         SDL_GPUTextureSamplerBinding tsb[4];
         SDL_GPUViewport vp;
+        bool gpu;
 
         if (i >= replay_limit)
             break;
@@ -1583,11 +1750,15 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             copy_rect(cmd, c);
             continue;
         }
+        gpu = c->vsh && !(cpu_vsh && c->has_cpu) && vsh_vs && prog_buf && blob_buf && const_buf;
+        if (c->vsh && !gpu && !c->has_cpu)
+            continue;           /* no vertices to draw it with */
         if (!pass)
             pass = begin_pass(cmd, NULL);
         {
             pdo_pipeline_state ps = c->draw.ps;
             ps.single_sample = cur_target && cur_target->depth_only;
+            ps.gpu_vsh = gpu;
             p = get_pipeline(&ps);
         }
         if (!p)
@@ -1600,11 +1771,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         vp.min_depth = c->draw.viewport[4];
         vp.max_depth = c->draw.viewport[5];
         SDL_SetGPUViewport(pass, &vp);
-        {
-            SDL_GPUBufferBinding vb = { vbuf, 0 }, ib = { ibuf, 0 };
-            SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-            SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-        }
+        bind_geometry(pass, gpu);
         for (int s = 0; s < 4; s++) {
             tsb[s].texture = cmd_tex[i * 4 + s];
             tsb[s].sampler = get_sampler(&c->draw.tex[s]);
@@ -1617,24 +1784,25 @@ static void replay(SDL_GPUCommandBuffer *cmd)
                 pass = begin_pass(cmd, NULL);
                 SDL_BindGPUGraphicsPipeline(pass, p);
                 SDL_SetGPUViewport(pass, &vp);
-                {
-                    SDL_GPUBufferBinding vb = { vbuf, 0 }, ib = { ibuf, 0 };
-                    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-                    SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                }
+                bind_geometry(pass, gpu);
             }
         }
         SDL_BindGPUFragmentSamplers(pass, 0, tsb, 4);
         SDL_PushGPUFragmentUniformData(cmd, 0, &c->draw.ff, sizeof c->draw.ff);
         if (c->draw.ps.stencil_enable)
             SDL_SetGPUStencilReference(pass, c->draw.stencil_ref);
-        SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, 0, 0);
+        if (gpu) {
+            SDL_PushGPUVertexUniformData(cmd, 0, &c->vu, sizeof c->vu);
+            SDL_DrawGPUIndexedPrimitives(pass, c->vsh_index_count, 1, c->vsh_first_index, 0, 0);
+        } else {
+            SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, 0, 0);
+        }
     }
     if (pass)
         SDL_EndGPURenderPass(pass);
 
     if (!replay_keep)
-        nverts = nindices = ncmds = 0;
+        drop_frame();
 }
 
 /* Read the frame target back and write it as a BMP. Slow; debugging only. */
@@ -1718,6 +1886,37 @@ static void capture_shadows(void)
             SDL_SubmitGPUCommandBuffer(cmd);
     }
     no_shadows = false;
+    replay_keep = false;
+}
+
+/* PDO_CAPTURE_CPUVSH=1: at the capture frame, save the frame's last target
+ * with its vertex programs run on the GPU and on the CPU
+ * (capture_<frame>_gpuvsh.bmp, capture_<frame>_cpuvsh.bmp); d3d_hle records
+ * both for that frame. */
+static void capture_vsh(void)
+{
+    const char *e = getenv("PDO_CAPTURE_CPUVSH");
+
+    if (!e || !atoi(e))
+        return;
+    replay_keep = true;
+    for (int k = 0; k < 2; k++) {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+        char path[64];
+        Uint32 w, h;
+
+        if (!cmd)
+            break;
+        cpu_vsh = k == 1;
+        replay(cmd);
+        cur_size(&w, &h);
+        snprintf(path, sizeof path, "capture_%05llu_%s.bmp", (unsigned long long)frames,
+                 k ? "cpuvsh" : "gpuvsh");
+        save_texture(&cmd, cur_color(), (int)w, (int)h, path);
+        if (cmd)
+            SDL_SubmitGPUCommandBuffer(cmd);
+    }
+    cpu_vsh = false;
     replay_keep = false;
 }
 
@@ -1896,6 +2095,7 @@ bool pdo_gfx_present(void)
     if (frames == capture_frame) {
         capture_steps();
         capture_shadows();
+        capture_vsh();
     }
     {
         /* PDO_NO_DRAW=1: drop the frame's commands unless it is captured or
@@ -1906,7 +2106,7 @@ bool pdo_gfx_present(void)
         if (no_draw < 0)
             no_draw = getenv("PDO_NO_DRAW") && atoi(getenv("PDO_NO_DRAW")) != 0;
         if (no_draw && !shot && frames != capture_frame) {
-            nverts = nindices = ncmds = 0;
+            drop_frame();
             return keep_going;
         }
     }

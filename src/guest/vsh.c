@@ -122,6 +122,32 @@ static void compile(const pdo_vsh_op *o, pdo_vsh_fop *f)
 
 static void setup_fast(void);
 
+static uint32_t gpu_src(const pdo_vsh_fsrc *f)
+{
+    return f->row | (uint32_t)f->is_const << 8 | (uint32_t)f->neg << 9 | (uint32_t)f->swz[0] << 12
+           | (uint32_t)f->swz[1] << 14 | (uint32_t)f->swz[2] << 16 | (uint32_t)f->swz[3] << 18;
+}
+
+bool pdo_vsh_gpu_code(const pdo_vsh_program *p, uint32_t *out)
+{
+    if (p->writes_constants)
+        return false;
+    for (uint32_t i = 0; i < p->count; i++) {
+        const pdo_vsh_fop *f = &p->fop[i];
+        uint32_t *w = out + 8 * i;
+        w[0] = f->mac | (uint32_t)f->ilu << 4 | (uint32_t)f->use << 8 | (uint32_t)f->rel << 12
+               | (uint32_t)f->cidx << 16 | (uint32_t)f->out_mux << 24;
+        w[1] = f->mac_row | (uint32_t)f->ilu_row << 8 | (uint32_t)(f->o_kind == 3 ? 0 : f->o_kind) << 16
+               | (uint32_t)f->o_index << 24;
+        w[2] = f->mac_mask | (uint32_t)f->ilu_mask << 4 | (uint32_t)f->o_mask << 8;
+        w[3] = gpu_src(&f->src[0]);
+        w[4] = gpu_src(&f->src[1]);
+        w[5] = gpu_src(&f->src[2]);
+        w[6] = w[7] = 0;
+    }
+    return true;
+}
+
 /* ── Declaration and function parsing ─────────────────────────────────── */
 
 uint32_t pdo_vsh_type_size(uint8_t type)
@@ -144,6 +170,7 @@ bool pdo_vsh_parse(pdo_vsh_program *p, const uint32_t *function, uint32_t functi
 
     setup_fast();
     memset(p, 0, sizeof *p);
+    p->gpu_program = -1;
     if (!function || function_words < 1)
         return false;
     head = function[0];

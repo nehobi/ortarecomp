@@ -89,6 +89,7 @@ typedef struct pdo_pipeline_state {
     uint8_t  cull;              /* 0 none, 1 cull clockwise, 2 counter-clockwise */
     uint8_t  single_sample;     /* renderer only: the target is a shadow map */
     uint16_t z_func;
+    uint8_t  gpu_vsh;           /* renderer only: vertices from shaders/vsh.vert */
     uint32_t color_write;       /* Xbox D3DCOLORWRITEENABLE_* bits */
     /* Polygon offset (D3DRS_ZBIAS sets these): constant in depth-buffer
      * units, and slope scale. Decals rely on it to win against the wall. */
@@ -137,6 +138,37 @@ void pdo_gfx_set_target(const pdo_surface *color);
  * target keyed by this surface, and a depth-format texture over the same
  * memory samples that target's depth: a shadow map. */
 void pdo_gfx_set_depth(const pdo_surface *depth);
+
+/* ── Vertex programs on the GPU (shaders/vsh.vert) ───────────────────────
+ * Instead of vertices, such a draw carries the program, its constants and
+ * the game's vertex streams as raw bytes; the shader runs the program per
+ * vertex as src/guest/vsh.c does on the CPU. */
+
+/* A compiled program in the shader's form (pdo_vsh_gpu_code: 8 words an
+ * instruction). Returns its place for pdo_gpu_vsh.program, or -1. Programs
+ * are kept for the session. */
+int32_t pdo_gfx_vsh_program(const uint32_t *code, uint32_t count);
+
+typedef struct pdo_gpu_vsh {
+    int32_t  program;                  /* pdo_gfx_vsh_program */
+    uint32_t count;                    /* instructions */
+    const float (*constants)[4];       /* the 192 the program reads */
+    const uint8_t *stream_data[16];    /* host pointer at the draw's first vertex */
+    uint32_t stream_bytes[16];         /* 0: stream unused */
+    int32_t  input[16][4];             /* per v register: stream, stride, offset,
+                                        * D3DVSDT type (0: absent, reads 0, 0, 0, 1) */
+    float    vp_scale[4], vp_offset[4];/* the program's viewport transform; offset w:
+                                        * the depth scale */
+} pdo_gpu_vsh;
+
+/* A draw of nv vertices made by g; idx index them from 0. cpu, if not
+ * NULL, is the same vertices from the CPU interpreter: a capture can then
+ * draw the frame both ways (PDO_CAPTURE_CPUVSH=1). */
+void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
+                      const uint32_t *idx, uint32_t ni, const pdo_vertex *cpu);
+
+/* The frame being recorded will be captured (F12 or PDO_CAPTURE). */
+bool pdo_gfx_capturing(void);
 
 /* Nanoseconds spent finding, hashing and decoding textures since the last
  * call (the game thread's timing log, d3d_hle.c). */

@@ -11,7 +11,7 @@
 
 static char data_dir[PDO_PATH_MAX];
 
-static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, false, 100, false };
+static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, false, 100, false, false };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -88,6 +88,8 @@ bool pdo_config_load(pdo_config *cfg)
             settings.master_volume = clamp_int(SDL_atoi(eq + 1), 0, 100);
         else if (strcmp(line, "show_fps") == 0)
             settings.show_fps = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "gpu_vertex") == 0)
+            settings.gpu_vertex = SDL_atoi(eq + 1) != 0;
     }
     SDL_free(text);
     return true;
@@ -107,10 +109,11 @@ bool pdo_config_save(const pdo_config *cfg)
                  "aspect=%s\n"
                  "soft_filter=%d\n"
                  "master_volume=%d\n"
-                 "show_fps=%d\n",
+                 "show_fps=%d\n"
+                 "gpu_vertex=%d\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
                  settings.aspect == PDO_ASPECT_STRETCH ? "stretch" : "4:3", settings.soft_filter,
-                 settings.master_volume, settings.show_fps);
+                 settings.master_volume, settings.show_fps, settings.gpu_vertex);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
     return SDL_SaveFile(path, text, (size_t)n);

@@ -17,6 +17,7 @@ typedef struct pdo_settings {
     bool soft_filter;       /* TV-like vertical softening at presentation */
     int  master_volume;     /* 0-100 % */
     bool show_fps;
+    bool gpu_vertex;        /* vertex programs on the GPU (shaders/vsh.vert), not the CPU */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_STRETCH, PDO_ASPECT_COUNT };

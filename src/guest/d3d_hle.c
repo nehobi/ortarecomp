@@ -14,6 +14,7 @@
 
 #include "recomp_types.h"
 
+#include "config.h"
 #include "gfx/renderer.h"
 #include "gfx/xtex.h"
 #include "guest/vsh.h"
@@ -825,7 +826,7 @@ void sub_002B1B10(void)
 #define MAX_PROGRAMS 256
 static struct { uint32_t handle; pdo_vsh_program *prog; } programs[MAX_PROGRAMS];
 
-static const pdo_vsh_program *find_program(uint32_t handle)
+static pdo_vsh_program *find_program(uint32_t handle)
 {
     for (int i = 0; i < MAX_PROGRAMS; i++)
         if (programs[i].handle == handle && programs[i].prog)
@@ -1538,11 +1539,12 @@ static void vsh_range(void *ctx, uint32_t lo, uint32_t hi)
  * clip.xyz / w * c[58] + c[59] (D3D's c[-38]/c[-37]), which the hardware
  * mirrors from the viewport. We supply those two constants and undo the
  * transform to get the clip-space position the renderer takes. */
-static bool fetch_vsh(const pdo_vsh_program *p, uint32_t base, uint32_t stride,
-                      uint32_t first, uint32_t count, pdo_vertex *out)
+/* The constant file a program runs with: the game's (the library's shadow
+ * of it), and in c[58] and c[59] the viewport transform the XDK ends every
+ * program with, as the hardware mirrors it from the viewport. Returns that
+ * transform's scale and offset, and the depth scale to undo it with. */
+static void vsh_constants(float scale[3], float offset[3], float *zs_out)
 {
-    vsh_job j;
-    uint64_t t0;
     float x = 0, y = 0, w = 640, h = 480, zs = 16777215.0f, zo = 0;
     int rtw, rth;
 
@@ -1555,17 +1557,84 @@ static bool fetch_vsh(const pdo_vsh_program *p, uint32_t base, uint32_t stride,
     } else {
         w = (float)rtw; h = (float)rth;
     }
+    scale[0] = w * 0.5f; scale[1] = -h * 0.5f; scale[2] = zs;
+    offset[0] = x + w * 0.5f + 0.53125f; offset[1] = y + h * 0.5f + 0.53125f; offset[2] = zo;
+    for (int k = 0; k < 3; k++) {
+        vconst[58][k] = scale[k];
+        vconst[59][k] = offset[k];
+    }
+    *zs_out = zs != 0.0f ? zs : 1.0f;
+}
+
+/* The same draw for shaders/vsh.vert: the constants, the viewport
+ * transform, and the streams the program reads as the game's bytes from
+ * the draw's first vertex on. */
+static void vsh_gpu_job(const pdo_vsh_program *p, uint32_t base, uint32_t stride, uint32_t first,
+                        uint32_t count, pdo_gpu_vsh *g)
+{
+    uint32_t sbase[16], sstride[16];
+    float zs;
+
+    memset(g, 0, sizeof *g);
+    vsh_constants(g->vp_scale, g->vp_offset, &zs);
+    g->vp_offset[3] = zs;
+    g->constants = (const float (*)[4])vconst;
+    g->program = p->gpu_program;
+    g->count = p->count;
+    for (int s = 0; s < 16; s++) {
+        sbase[s] = st.vbs[s] ? MEM32(st.vbs[s] + 4) | 0x80000000u : 0;
+        sstride[s] = st.strides[s];
+    }
+    sbase[0] = base;
+    sstride[0] = stride;
+    for (int r = 0; r < PDO_VSH_INPUTS; r++) {
+        const pdo_vsh_input *in = &p->input[r];
+        uint32_t s = in->stream & 15;
+        g->input[r][0] = -1;
+        if (!(p->inputs_read & (1u << r)) || !in->present || !sbase[s])
+            continue;
+        if (!g->stream_bytes[s]) {
+            g->stream_data[s] = (const uint8_t *)XBOX_PTR(sbase[s] + first * sstride[s]);
+            /* the last vertex's attributes may run past its stride */
+            g->stream_bytes[s] = count * sstride[s] + 64;
+        }
+        g->input[r][0] = (int32_t)s;
+        g->input[r][1] = (int32_t)sstride[s];
+        g->input[r][2] = in->offset;
+        g->input[r][3] = in->type;
+    }
+}
+
+/* Vertex programs go to the GPU when the setting asks for it, and the
+ * program can (it does not write constants) and has been handed over. */
+static bool use_gpu_vsh(pdo_vsh_program *p)
+{
+    if (!pdo_settings_get()->gpu_vertex || p->writes_constants)
+        return false;
+    if (p->gpu_program < 0) {
+        static uint32_t code[8 * PDO_VSH_MAX_INSNS];
+        if (!pdo_vsh_gpu_code(p, code))
+            return false;
+        p->gpu_program = pdo_gfx_vsh_program(code, p->count);
+        if (p->gpu_program < 0) {
+            p->gpu_program = -2;        /* the renderer cannot */
+            return false;
+        }
+    }
+    return p->gpu_program >= 0;
+}
+
+static bool fetch_vsh(const pdo_vsh_program *p, uint32_t base, uint32_t stride,
+                      uint32_t first, uint32_t count, pdo_vertex *out)
+{
+    vsh_job j;
+    uint64_t t0;
+
+    vsh_constants(j.scale, j.offset, &j.zs);
     j.p = p;
     j.handle = st.vshader;
     j.first = first;
     j.out = out;
-    j.scale[0] = w * 0.5f; j.scale[1] = -h * 0.5f; j.scale[2] = zs;
-    j.offset[0] = x + w * 0.5f + 0.53125f; j.offset[1] = y + h * 0.5f + 0.53125f; j.offset[2] = zo;
-    for (int k = 0; k < 3; k++) {
-        vconst[58][k] = j.scale[k];
-        vconst[59][k] = j.offset[k];
-    }
-    j.zs = zs != 0.0f ? zs : 1.0f;
     for (int s = 0; s < 16; s++) {
         j.sbase[s] = st.vbs[s] ? MEM32(st.vbs[s] + 4) | 0x80000000u : 0;
         j.sstride[s] = st.strides[s];
@@ -1702,6 +1771,8 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
     pdo_draw d;
     bool pre;
     uint32_t ni;
+    const pdo_vsh_program *gpu_p = NULL;    /* the program, when it runs on the GPU */
+    bool cpu_too = true;                    /* and the CPU makes the vertices as well */
 
     state_init();
     if (count > vcap) {
@@ -1713,7 +1784,7 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
         ibuf = SDL_realloc(ibuf, icap * sizeof *ibuf);
     }
     if (st.vshader & 1) {
-        const pdo_vsh_program *p = find_program(st.vshader);
+        pdo_vsh_program *p = find_program(st.vshader);
         if (!p) {
             static int warned;
             if (!warned++)
@@ -1723,7 +1794,14 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
         }
         {
             Uint64 t = SDL_GetTicksNS();
-            fetch_vsh(p, base, stride, first, count, vbuf);
+            if (type != 1 && use_gpu_vsh(p)) {
+                gpu_p = p;
+                /* A capture keeps the CPU's vertices too, to log and to
+                 * draw the frame both ways (PDO_CAPTURE_CPUVSH). */
+                cpu_too = pdo_gfx_capturing();
+            }
+            if (cpu_too)
+                fetch_vsh(p, base, stride, first, count, vbuf);
             perf_ns[PERF_VSH] += SDL_GetTicksNS() - t;
         }
         pre = false;
@@ -1763,7 +1841,7 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
             const char *e = getenv("PDO_PS_DEBUG");
             dbg = e ? atol(e) : -1;
         }
-        if (dbg >= 0 && (long)pdo_gfx_frame_count() == dbg && st.pshader) {
+        if (dbg >= 0 && (long)pdo_gfx_frame_count() == dbg && st.pshader && cpu_too) {
             SDL_Log("ps draw: ps 0x%08x vs 0x%08x %u verts; v0 diffuse %08x spec %08x",
                     st.pshader, st.vshader, count, vbuf[0].diffuse, vbuf[0].specular);
             for (int s = 0; s < 4; s++) {
@@ -1798,7 +1876,13 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
         return;
     }
     ni = build_indices(type, order, n, ibuf, &d.ps.topology);
-    pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
+    if (gpu_p) {
+        pdo_gpu_vsh g;
+        vsh_gpu_job(gpu_p, base, stride, first, count, &g);
+        pdo_gfx_draw_vsh(&d, &g, count, ibuf, ni, cpu_too ? vbuf : NULL);
+    } else {
+        pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
+    }
     SDL_AddAtomicInt(&draws_drawn, 1);
 }
 
