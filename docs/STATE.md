@@ -52,6 +52,11 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    Lifter: 42 jumps still go to stubs, all from data decoded as code.
    `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
+4. Reverb: I3DL2 is ours (src/audio/reverb.c); sounds right in the
+   episode 1 canyon on Windows. 3D voices send at their SetI3DL2Source
+   room level; the game picks a room per scene (0x00012930 with entries
+   1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
+   in open stages. Not done: source HF levels, obstruction/occlusion.
 5. Hang skipping the cutscenes after episode 1 (Start): the game thread
    waits forever in a stream destructor (0x0029FB40: signal stop, resume,
    wait for the worker 0x0029F570 to end) while 12 stream workers sit in
@@ -60,11 +65,6 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    thread being waited for is still running; next report says which.
    PsCreateSystemThreadEx also ignores CreateSuspended (CRI's threads ask
    for it; the stream workers do not).
-4. Reverb: I3DL2 is ours (src/audio/reverb.c); sounds right in the
-   episode 1 canyon on Windows. 3D voices send at their SetI3DL2Source
-   room level; the game picks a room per scene (0x00012930 with entries
-   1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
-   in open stages. Not done: source HF levels, obstruction/occlusion.
 
 ## Performance
 
