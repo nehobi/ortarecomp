@@ -1407,73 +1407,100 @@ typedef struct vsh_job {
     pdo_vertex *out;
 } vsh_job;
 
-/* Vertices [lo, hi) of a job: fetch the inputs, run the program, unpack. */
+/* One vertex's inputs, as its declaration describes them. */
+static void vsh_inputs(const vsh_job *j, uint32_t i, float in[PDO_VSH_INPUTS][4])
+{
+    const pdo_vsh_program *p = j->p;
+
+    for (int r = 0; r < PDO_VSH_INPUTS; r++) {
+        const pdo_vsh_input *in_r = &p->input[r];
+        if (!(p->inputs_read & (1u << r)))
+            continue;
+        if (in_r->present && j->sbase[in_r->stream]) {
+            uint32_t va = j->sbase[in_r->stream] + (j->first + i) * j->sstride[in_r->stream] + in_r->offset;
+            pdo_vsh_fetch(in_r->type, (const uint8_t *)XBOX_PTR(va), in[r]);
+        } else {
+            in[r][0] = in[r][1] = in[r][2] = 0.0f;
+            in[r][3] = 1.0f;
+        }
+    }
+}
+
+/* One vertex's outputs into the renderer's vertex. */
+static void vsh_unpack(const vsh_job *j, uint32_t i, float in[PDO_VSH_INPUTS][4], float o[VSH_OUTPUTS][4])
+{
+    const pdo_vsh_program *p = j->p;
+    pdo_vertex *v = &j->out[i];
+    float cw = o[VSH_OPOS][3];
+
+    {   /* PDO_VSH_BAD=n: for the first n vertices that land far outside
+         * the screen, log the inputs and re-run with an instruction trace. */
+        static int budget = -1;
+        static SDL_AtomicInt left;
+        float x = (o[VSH_OPOS][0] - j->offset[0]) / j->scale[0];
+        if (budget < 0) {
+            budget = getenv("PDO_VSH_BAD") ? atoi(getenv("PDO_VSH_BAD")) : 0;
+            SDL_SetAtomicInt(&left, budget);
+        }
+        if (budget > 0 && (fabsf(x) > 50.0f || !(cw == cw)) && SDL_AddAtomicInt(&left, -1) > 0) {
+            static SDL_Mutex *mx;
+            float o2[VSH_OUTPUTS][4];
+            if (!mx) mx = SDL_CreateMutex();
+            SDL_LockMutex(mx);
+            SDL_Log("vsh bad: program 0x%08x vertex %u (%u insns) oPos %g %g %g %g frame %llu", j->handle,
+                    j->first + i, p->count, o[VSH_OPOS][0], o[VSH_OPOS][1], o[VSH_OPOS][2], o[VSH_OPOS][3],
+                    (unsigned long long)pdo_gfx_frame_count());
+            for (int r = 0; r < PDO_VSH_INPUTS; r++)
+                if (p->inputs_read & (1u << r))
+                    SDL_Log("vsh bad:   v%d type 0x%02x stream %u +%u = %g %g %g %g", r, p->input[r].type,
+                            p->input[r].stream, p->input[r].offset, in[r][0], in[r][1], in[r][2], in[r][3]);
+            pdo_vsh_trace = true;
+            pdo_vsh_run(p, (const float (*)[4])in, vconst, o2);
+            pdo_vsh_trace = false;
+            SDL_UnlockMutex(mx);
+        }
+    }
+    v->pos[0] = (o[VSH_OPOS][0] - j->offset[0]) / j->scale[0] * cw;
+    v->pos[1] = (o[VSH_OPOS][1] - j->offset[1]) / j->scale[1] * cw;
+    v->pos[2] = (o[VSH_OPOS][2] - j->offset[2]) / j->zs * cw;
+    v->pos[3] = cw;
+    v->diffuse = pack_color(o[VSH_OD0]);
+    v->specular = pack_color(o[VSH_OD1]);
+    v->fog = o[VSH_OFOG][0];
+    v->psize = point_size(o[VSH_OPTS][0], 0.0f, false);
+    for (int t = 0; t < 4; t++)
+        memcpy(v->tc[t], o[VSH_OT0 + t], sizeof v->tc[t]);
+}
+
+/* Vertices [lo, hi) of a job: fetch the inputs, run the program, unpack.
+ * Four at a time (pdo_vsh_run4), the last group padded with its last
+ * vertex; a program that writes constants one by one, in order. */
 static void vsh_range(void *ctx, uint32_t lo, uint32_t hi)
 {
     const vsh_job *j = ctx;
     const pdo_vsh_program *p = j->p;
-    float in[PDO_VSH_INPUTS][4], o[VSH_OUTPUTS][4];
+    float in[4][PDO_VSH_INPUTS][4], o[4][VSH_OUTPUTS][4];
 
-    for (int r = 0; r < PDO_VSH_INPUTS; r++) {
-        in[r][0] = in[r][1] = in[r][2] = 0.0f;
-        in[r][3] = 1.0f;
-    }
-    for (uint32_t i = lo; i < hi; i++) {
-        pdo_vertex *v = &j->out[i];
-        float cw;
-
+    for (int l = 0; l < 4; l++)
         for (int r = 0; r < PDO_VSH_INPUTS; r++) {
-            const pdo_vsh_input *in_r = &p->input[r];
-            if (!(p->inputs_read & (1u << r)))
-                continue;
-            if (in_r->present && j->sbase[in_r->stream]) {
-                uint32_t va = j->sbase[in_r->stream] + (j->first + i) * j->sstride[in_r->stream] + in_r->offset;
-                pdo_vsh_fetch(in_r->type, (const uint8_t *)XBOX_PTR(va), in[r]);
-            } else {
-                in[r][0] = in[r][1] = in[r][2] = 0.0f;
-                in[r][3] = 1.0f;
-            }
+            in[l][r][0] = in[l][r][1] = in[l][r][2] = 0.0f;
+            in[l][r][3] = 1.0f;
         }
-        pdo_vsh_run(p, (const float (*)[4])in, vconst, o);
-
-        cw = o[VSH_OPOS][3];
-        {   /* PDO_VSH_BAD=n: for the first n vertices that land far outside
-             * the screen, log the inputs and re-run with an instruction trace. */
-            static int budget = -1;
-            static SDL_AtomicInt left;
-            float x = (o[VSH_OPOS][0] - j->offset[0]) / j->scale[0];
-            if (budget < 0) {
-                budget = getenv("PDO_VSH_BAD") ? atoi(getenv("PDO_VSH_BAD")) : 0;
-                SDL_SetAtomicInt(&left, budget);
-            }
-            if (budget > 0 && (fabsf(x) > 50.0f || !(cw == cw)) && SDL_AddAtomicInt(&left, -1) > 0) {
-                static SDL_Mutex *mx;
-                float o2[VSH_OUTPUTS][4];
-                if (!mx) mx = SDL_CreateMutex();
-                SDL_LockMutex(mx);
-                SDL_Log("vsh bad: program 0x%08x vertex %u (%u insns) oPos %g %g %g %g frame %llu", j->handle,
-                        j->first + i, p->count, o[VSH_OPOS][0], o[VSH_OPOS][1], o[VSH_OPOS][2], o[VSH_OPOS][3],
-                        (unsigned long long)pdo_gfx_frame_count());
-                for (int r = 0; r < PDO_VSH_INPUTS; r++)
-                    if (p->inputs_read & (1u << r))
-                        SDL_Log("vsh bad:   v%d type 0x%02x stream %u +%u = %g %g %g %g", r, p->input[r].type,
-                                p->input[r].stream, p->input[r].offset, in[r][0], in[r][1], in[r][2], in[r][3]);
-                pdo_vsh_trace = true;
-                pdo_vsh_run(p, (const float (*)[4])in, vconst, o2);
-                pdo_vsh_trace = false;
-                SDL_UnlockMutex(mx);
-            }
+    if (p->writes_constants) {
+        for (uint32_t i = lo; i < hi; i++) {
+            vsh_inputs(j, i, in[0]);
+            pdo_vsh_run(p, (const float (*)[4])in[0], vconst, o[0]);
+            vsh_unpack(j, i, in[0], o[0]);
         }
-        v->pos[0] = (o[VSH_OPOS][0] - j->offset[0]) / j->scale[0] * cw;
-        v->pos[1] = (o[VSH_OPOS][1] - j->offset[1]) / j->scale[1] * cw;
-        v->pos[2] = (o[VSH_OPOS][2] - j->offset[2]) / j->zs * cw;
-        v->pos[3] = cw;
-        v->diffuse = pack_color(o[VSH_OD0]);
-        v->specular = pack_color(o[VSH_OD1]);
-        v->fog = o[VSH_OFOG][0];
-        v->psize = point_size(o[VSH_OPTS][0], 0.0f, false);
-        for (int t = 0; t < 4; t++)
-            memcpy(v->tc[t], o[VSH_OT0 + t], sizeof v->tc[t]);
+        return;
+    }
+    for (uint32_t i = lo; i < hi; i += 4) {
+        uint32_t n = hi - i < 4 ? hi - i : 4;
+        for (uint32_t l = 0; l < 4; l++)
+            vsh_inputs(j, i + (l < n ? l : n - 1), in[l]);
+        pdo_vsh_run4(p, (const float (*)[PDO_VSH_INPUTS][4])in, vconst, o);
+        for (uint32_t l = 0; l < n; l++)
+            vsh_unpack(j, i + l, in[l], o[l]);
     }
 }
 

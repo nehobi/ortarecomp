@@ -41,10 +41,32 @@ typedef struct pdo_vsh_op {
     pdo_vsh_src src[3];
 } pdo_vsh_op;
 
+/* The fast path's form of an instruction (vsh.c, compile): every operand
+ * a row of one per-vertex register file (r0-r11, oPos as r12, v0-v15, a
+ * row of zeros) or a constant, its swizzle classified, every destination a
+ * row, an output or a constant. */
+typedef struct pdo_vsh_fsrc {
+    uint8_t row;                      /* register-file row (unused for C) */
+    uint8_t is_const;
+    uint8_t kind;                     /* 0 any swizzle, 1 xyzw, 2 one component */
+    uint8_t neg;
+    uint8_t swz[4];
+    uint8_t slot[4];                  /* row * 4 + swizzle: the four-lane file */
+} pdo_vsh_fsrc;
+
+typedef struct pdo_vsh_fop {
+    uint8_t mac, ilu, use, rel, cidx;
+    uint8_t mac_row, ilu_row;         /* 255: not written */
+    uint8_t mac_mask, ilu_mask, o_mask, out_mux;
+    uint8_t o_kind, o_index;          /* 0 none, 1 file row, 2 output, 3 constant */
+    pdo_vsh_fsrc src[3];
+} pdo_vsh_fop;
+
 typedef struct pdo_vsh_program {
     uint32_t      count;                         /* instructions */
     uint32_t      insn[PDO_VSH_MAX_INSNS][4];
     pdo_vsh_op    op[PDO_VSH_MAX_INSNS];
+    pdo_vsh_fop   fop[PDO_VSH_MAX_INSNS];
     pdo_vsh_input input[PDO_VSH_INPUTS];
     uint16_t      inputs_read;                   /* v registers the program reads */
     bool          writes_constants;              /* then vertices must run in order */
@@ -65,6 +87,11 @@ bool pdo_vsh_parse(pdo_vsh_program *p, const uint32_t *function, uint32_t functi
  * also write. out[] is filled with the outputs, defaults first. */
 void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
                  float c[PDO_VSH_CONSTANTS][4], float out[VSH_OUTPUTS][4]);
+
+/* The same for four vertices at once (the fast path's best case). A
+ * program that writes constants runs them one after another, in order. */
+void pdo_vsh_run4(const pdo_vsh_program *p, const float in[4][PDO_VSH_INPUTS][4],
+                  float c[PDO_VSH_CONSTANTS][4], float out[4][VSH_OUTPUTS][4]);
 
 /* Run fn(ctx, first, end) over [0, count) split across worker threads (the
  * calling thread takes a share too). Returns when all parts are done. */

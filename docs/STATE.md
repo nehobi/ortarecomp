@@ -58,6 +58,15 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
    in open stages. Not done: source HF levels, obstruction/occlusion.
 
+## Performance
+
+Vertex programs run on the CPU (src/guest/vsh.c): compiled once per
+program and run four vertices at a time with SSE2, bit-identical to the
+reference interpreter (PDO_VSH_CHECK=1 runs both and reports any
+difference; none through episode 1). About 5x the old interpreter; the
+episode 1 boss went from 42 to 55 fps average on a 4-core test machine.
+Next if needed: vertex programs on the GPU.
+
 ## Options overlay
 
 Confirmed on Windows. F1, or Back+Start on a controller: resolution scale 1-4x, anti-aliasing

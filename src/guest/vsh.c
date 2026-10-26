@@ -72,6 +72,56 @@ static void decode(const uint32_t *w, pdo_vsh_op *o)
     o->use = (uint8_t)(mac_use[o->mac] | (o->ilu != ILU_NOP ? 4 : 0));
 }
 
+/* The fast path's register file: r0-r11, oPos (r12), v0-v15, zeros. */
+enum { ROW_OPOS = 12, ROW_V = 13, ROW_ZERO = 29, FILE_ROWS = 30 };
+
+static void compile_src(const pdo_vsh_src *sr, uint32_t vidx, pdo_vsh_fsrc *f)
+{
+    memset(f, 0, sizeof *f);
+    f->neg = sr->neg;
+    memcpy(f->swz, sr->swz, 4);
+    switch (sr->mux) {
+    case MUX_R: f->row = (uint8_t)(sr->reg <= 12 ? sr->reg : ROW_ZERO); break;
+    case MUX_V: f->row = (uint8_t)(ROW_V + (vidx & 15)); break;
+    case MUX_C: f->is_const = 1; break;
+    default:    f->row = ROW_ZERO; break;
+    }
+    for (int k = 0; k < 4; k++)
+        f->slot[k] = (uint8_t)(f->row * 4 + sr->swz[k]);
+    if (sr->swz[0] == 0 && sr->swz[1] == 1 && sr->swz[2] == 2 && sr->swz[3] == 3)
+        f->kind = 1;
+    else if (sr->swz[0] == sr->swz[1] && sr->swz[1] == sr->swz[2] && sr->swz[2] == sr->swz[3])
+        f->kind = 2;
+}
+
+static void compile(const pdo_vsh_op *o, pdo_vsh_fop *f)
+{
+    memset(f, 0, sizeof *f);
+    f->mac = o->mac;
+    f->ilu = o->ilu;
+    f->use = o->use;
+    f->rel = o->rel;
+    f->cidx = o->cidx;
+    for (int k = 0; k < 3; k++)
+        compile_src(&o->src[k], o->vidx, &f->src[k]);
+    f->mac_row = (o->mac != MAC_NOP && o->mac != MAC_ARL && o->mac_mask && o->out_r <= 12) ? o->out_r : 255;
+    f->ilu_row = (o->ilu != ILU_NOP && o->ilu_mask && o->ilu_r <= 12) ? o->ilu_r : 255;
+    f->mac_mask = o->mac_mask;
+    f->ilu_mask = o->ilu_mask;
+    f->o_mask = o->o_mask;
+    f->out_mux = o->out_mux;
+    if (o->o_mask) {
+        if (o->orb) {
+            if (o->addr == VSH_OPOS) { f->o_kind = 1; f->o_index = ROW_OPOS; }
+            else if (o->addr < VSH_OUTPUTS) { f->o_kind = 2; f->o_index = o->addr; }
+        } else if (o->addr < PDO_VSH_CONSTANTS) {
+            f->o_kind = 3; f->o_index = o->addr;
+        }
+    }
+}
+
+static void setup_fast(void);
+
 /* ── Declaration and function parsing ─────────────────────────────────── */
 
 uint32_t pdo_vsh_type_size(uint8_t type)
@@ -92,6 +142,7 @@ bool pdo_vsh_parse(pdo_vsh_program *p, const uint32_t *function, uint32_t functi
 {
     uint32_t head, slots, stream = 0, offset[16] = {0};
 
+    setup_fast();
     memset(p, 0, sizeof *p);
     if (!function || function_words < 1)
         return false;
@@ -106,6 +157,7 @@ bool pdo_vsh_parse(pdo_vsh_program *p, const uint32_t *function, uint32_t functi
     memcpy(p->insn, function + 1, slots * 16);
     for (uint32_t i = 0; i < slots; i++) {
         decode(p->insn[i], &p->op[i]);
+        compile(&p->op[i], &p->fop[i]);
         for (int k = 0; k < 3; k++)
             if ((p->op[i].use & (1u << k)) && p->op[i].src[k].mux == 2)
                 p->inputs_read |= (uint16_t)(1u << p->op[i].vidx);
@@ -252,8 +304,8 @@ static float rcc(float x)
  * (PDO_VSH_BAD in d3d_hle.c); single-threaded use only. */
 _Thread_local bool pdo_vsh_trace;
 
-void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
-                 float c[PDO_VSH_CONSTANTS][4], float out[VSH_OUTPUTS][4])
+static void run_ref(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
+                    float c[PDO_VSH_CONSTANTS][4], float out[VSH_OUTPUTS][4])
 {
     vm m;
 
@@ -373,6 +425,446 @@ void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
             }
         }
     }
+}
+
+/* ── The fast path ────────────────────────────────────────────────────────
+ * The same program from its compiled form (compile above), four lanes at a
+ * time with SSE2, giving the same results as run_ref bit for bit: x * 0 is
+ * 0, dot products add in the same order, nothing is fused. PDO_VSH_CHECK=1
+ * runs both on every vertex and logs the first differences. */
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define VSH_FAST 1
+#include <emmintrin.h>
+
+#ifdef _MSC_VER
+#define VSH_INLINE static __forceinline
+#else
+#define VSH_INLINE static inline __attribute__((always_inline))
+#endif
+
+static __m128 mask_of[16];
+static __m128 sign_bits, ones;
+
+static void fast_init(void)
+{
+    for (int m = 0; m < 16; m++) {
+        uint32_t w[4];
+        for (int i = 0; i < 4; i++)
+            w[i] = (m & (8 >> i)) ? 0xFFFFFFFFu : 0;
+        memcpy(&mask_of[m], w, 16);
+    }
+    sign_bits = _mm_set1_ps(-0.0f);
+    ones = _mm_set1_ps(1.0f);
+}
+
+static inline __m128 fetch_src(float (*file)[4], float (*c)[4], const pdo_vsh_fsrc *s, int cidx)
+{
+    const float *b = s->is_const ? c[cidx] : file[s->row];
+    __m128 v;
+
+    if (s->kind == 1)
+        v = _mm_loadu_ps(b);
+    else if (s->kind == 2)
+        v = _mm_set1_ps(b[s->swz[0]]);
+    else
+        v = _mm_setr_ps(b[s->swz[0]], b[s->swz[1]], b[s->swz[2]], b[s->swz[3]]);
+    return s->neg ? _mm_xor_ps(v, sign_bits) : v;
+}
+
+VSH_INLINE __m128 mulz4(__m128 a, __m128 b)
+{
+    __m128 z = _mm_setzero_ps();
+    __m128 keep = _mm_and_ps(_mm_cmpneq_ps(a, z), _mm_cmpneq_ps(b, z));
+    return _mm_and_ps(_mm_mul_ps(a, b), keep);
+}
+
+static inline void store_masked(float *dst, __m128 v, uint32_t mask)
+{
+    __m128 m = mask_of[mask & 15];
+    _mm_storeu_ps(dst, _mm_or_ps(_mm_and_ps(m, v), _mm_andnot_ps(m, _mm_loadu_ps(dst))));
+}
+
+static void run_fast(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
+                     float c[PDO_VSH_CONSTANTS][4], float out[VSH_OUTPUTS][4])
+{
+    float file[FILE_ROWS][4];
+    int a0 = 0;
+
+    memset(file, 0, sizeof file);
+    file[ROW_OPOS][3] = 1.0f;
+    for (int r = 0; r < PDO_VSH_INPUTS; r++)
+        if (p->inputs_read & (1u << r))
+            memcpy(file[ROW_V + r], in[r], 16);
+    memset(out, 0, VSH_OUTPUTS * sizeof out[0]);
+    for (int i = 0; i < 4; i++) {
+        out[VSH_OD0][i] = 1.0f;
+        out[VSH_OB0][i] = 1.0f;
+        out[VSH_OFOG][i] = 1.0f;
+    }
+    out[VSH_OPTS][0] = 1.0f;
+
+    for (uint32_t pc = 0; pc < p->count; pc++) {
+        const pdo_vsh_fop *op = &p->fop[pc];
+        int cidx = op->cidx;
+        __m128 a = ones, b = ones, cc = ones, mr = _mm_setzero_ps(), ir = _mm_setzero_ps();
+
+        if (op->rel) {
+            cidx += a0;
+            cidx = cidx < 0 ? 0 : cidx > 191 ? 191 : cidx;
+        }
+        if (op->use & 1) a = fetch_src(file, c, &op->src[0], cidx);
+        if (op->use & 2) b = fetch_src(file, c, &op->src[1], cidx);
+        if (op->use & 4) cc = fetch_src(file, c, &op->src[2], cidx);
+
+        switch (op->mac) {
+        case MAC_MOV: mr = a; break;
+        case MAC_MUL: mr = mulz4(a, b); break;
+        case MAC_ADD: mr = _mm_add_ps(a, cc); break;
+        case MAC_MAD: mr = _mm_add_ps(mulz4(a, b), cc); break;
+        case MAC_DP3: case MAC_DPH: case MAC_DP4: {
+            float t[4], bb[4], d;
+            _mm_storeu_ps(t, mulz4(a, b));
+            d = t[0] + t[1] + t[2];
+            if (op->mac == MAC_DP4)
+                d += t[3];
+            else if (op->mac == MAC_DPH) {
+                _mm_storeu_ps(bb, b);
+                d += bb[3];
+            }
+            mr = _mm_set1_ps(d);
+            break;
+        }
+        case MAC_DST: {
+            float aa[4], bb[4], m1;
+            _mm_storeu_ps(aa, a);
+            _mm_storeu_ps(bb, b);
+            m1 = (aa[1] == 0.0f || bb[1] == 0.0f) ? 0.0f : aa[1] * bb[1];
+            mr = _mm_setr_ps(1.0f, m1, aa[2], bb[3]);
+            break;
+        }
+        case MAC_MIN: mr = _mm_min_ps(a, b); break;
+        case MAC_MAX: mr = _mm_max_ps(a, b); break;
+        case MAC_SLT: mr = _mm_and_ps(_mm_cmplt_ps(a, b), ones); break;
+        case MAC_SGE: mr = _mm_and_ps(_mm_cmpge_ps(a, b), ones); break;
+        case MAC_ARL: a0 = (int)floorf(_mm_cvtss_f32(a)); break;
+        default: break;
+        }
+
+        if (op->ilu != ILU_NOP) {
+            float x[4], r[4] = { 0, 0, 0, 0 };
+            _mm_storeu_ps(x, cc);
+            switch (op->ilu) {
+            case ILU_MOV: memcpy(r, x, sizeof r); break;
+            case ILU_RCP: r[0] = r[1] = r[2] = r[3] = rcp(x[0]); break;
+            case ILU_RCC: r[0] = r[1] = r[2] = r[3] = rcc(x[0]); break;
+            case ILU_RSQ: r[0] = r[1] = r[2] = r[3] = 1.0f / sqrtf(fabsf(x[0])); break;
+            case ILU_EXP: {
+                float f = floorf(x[0]);
+                r[0] = exp2f(f); r[1] = x[0] - f; r[2] = exp2f(x[0]); r[3] = 1.0f;
+                break;
+            }
+            case ILU_LOG: {
+                float v = fabsf(x[0]);
+                if (v == 0.0f) {
+                    r[0] = r[1] = r[2] = -INFINITY;
+                } else {
+                    int e;
+                    float mant = frexpf(v, &e);
+                    r[0] = (float)(e - 1); r[1] = mant * 2.0f; r[2] = log2f(v);
+                }
+                r[3] = 1.0f;
+                break;
+            }
+            case ILU_LIT: {
+                float d = x[0] > 0 ? x[0] : 0, sp = x[1] > 0 ? x[1] : 0;
+                float e = x[3] < -127.9961f ? -127.9961f : x[3] > 127.9961f ? 127.9961f : x[3];
+                r[0] = 1.0f; r[1] = d; r[2] = x[0] > 0 ? powf(sp, e) : 0.0f; r[3] = 1.0f;
+                break;
+            }
+            default: break;
+            }
+            ir = _mm_loadu_ps(r);
+        }
+
+        /* Writes, after both units have computed. */
+        if (op->mac_row != 255)
+            store_masked(file[op->mac_row], mr, op->mac_mask);
+        if (op->ilu_row != 255)
+            store_masked(file[op->ilu_row], ir, op->ilu_mask);
+        if (op->o_kind) {
+            __m128 v = op->out_mux ? ir : mr;
+            float *dst = op->o_kind == 1 ? file[op->o_index]
+                       : op->o_kind == 2 ? out[op->o_index] : c[op->o_index];
+            store_masked(dst, v, op->o_mask);
+        }
+    }
+    memcpy(out[VSH_OPOS], file[ROW_OPOS], 16);
+}
+
+/* Four vertices at once, one per lane (structure of arrays): register
+ * R[row][component] holds that component of four vertices, so a swizzle
+ * only picks which component to read, and every operation is the scalar
+ * one done four times, giving the same bits per vertex. */
+/* An operand for four lanes: from the file, four loads at precomputed
+ * slots; from a constant, each component broadcast, or with a relative
+ * index (a0 per lane) gathered. */
+VSH_INLINE void fetch4(const __m128 *F, float (*c)[4], const pdo_vsh_fsrc *s, int cidx,
+                       const int ci[4], bool rel, __m128 o[4])
+{
+    if (!s->is_const) {
+        o[0] = F[s->slot[0]]; o[1] = F[s->slot[1]];
+        o[2] = F[s->slot[2]]; o[3] = F[s->slot[3]];
+    } else if (!rel) {
+        const float *k = c[cidx];
+        o[0] = _mm_set1_ps(k[s->swz[0]]); o[1] = _mm_set1_ps(k[s->swz[1]]);
+        o[2] = _mm_set1_ps(k[s->swz[2]]); o[3] = _mm_set1_ps(k[s->swz[3]]);
+    } else {
+        for (int k = 0; k < 4; k++) {
+            int w = s->swz[k];
+            o[k] = _mm_setr_ps(c[ci[0]][w], c[ci[1]][w], c[ci[2]][w], c[ci[3]][w]);
+        }
+    }
+    if (s->neg) {
+        o[0] = _mm_xor_ps(o[0], sign_bits); o[1] = _mm_xor_ps(o[1], sign_bits);
+        o[2] = _mm_xor_ps(o[2], sign_bits); o[3] = _mm_xor_ps(o[3], sign_bits);
+    }
+}
+
+/* Components under a write mask (8 x, 4 y, 2 z, 1 w); all four is common. */
+VSH_INLINE void write4(__m128 *dst, const __m128 *v, uint32_t mask)
+{
+    if (mask == 15) {
+        dst[0] = v[0]; dst[1] = v[1]; dst[2] = v[2]; dst[3] = v[3];
+        return;
+    }
+    if (mask & 8) dst[0] = v[0];
+    if (mask & 4) dst[1] = v[1];
+    if (mask & 2) dst[2] = v[2];
+    if (mask & 1) dst[3] = v[3];
+}
+
+static float lane_rcc(float x) { return rcc(x); }
+
+static void run_fast4(const pdo_vsh_program *p, const float in[4][PDO_VSH_INPUTS][4],
+                      float c[PDO_VSH_CONSTANTS][4], float out[4][VSH_OUTPUTS][4])
+{
+    __m128 F[FILE_ROWS * 4], O[VSH_OUTPUTS][4];
+    __m128 (*R)[4] = (__m128 (*)[4])F;
+    int a0[4] = { 0, 0, 0, 0 };
+    const __m128 zero = _mm_setzero_ps();
+
+    for (int r = 0; r < FILE_ROWS * 4; r++)
+        F[r] = zero;
+    R[ROW_OPOS][3] = ones;
+    for (int r = 0; r < PDO_VSH_INPUTS; r++)
+        if (p->inputs_read & (1u << r)) {
+            __m128 x = _mm_loadu_ps(in[0][r]), y = _mm_loadu_ps(in[1][r]);
+            __m128 z = _mm_loadu_ps(in[2][r]), w = _mm_loadu_ps(in[3][r]);
+            _MM_TRANSPOSE4_PS(x, y, z, w);
+            R[ROW_V + r][0] = x; R[ROW_V + r][1] = y; R[ROW_V + r][2] = z; R[ROW_V + r][3] = w;
+        }
+    for (int o = 0; o < VSH_OUTPUTS; o++)
+        for (int k = 0; k < 4; k++)
+            O[o][k] = zero;
+    for (int k = 0; k < 4; k++) {
+        O[VSH_OD0][k] = ones;
+        O[VSH_OB0][k] = ones;
+        O[VSH_OFOG][k] = ones;
+    }
+    O[VSH_OPTS][0] = ones;
+
+    for (uint32_t pc = 0; pc < p->count; pc++) {
+        const pdo_vsh_fop *op = &p->fop[pc];
+        __m128 A[4], B[4], C[4], M[4], I[4];
+        int ci[4] = { op->cidx, op->cidx, op->cidx, op->cidx };
+
+        if (op->rel)
+            for (int l = 0; l < 4; l++) {
+                int x = op->cidx + a0[l];
+                ci[l] = x < 0 ? 0 : x > 191 ? 191 : x;
+            }
+        if (op->use & 1) fetch4(F, c, &op->src[0], op->cidx, ci, op->rel, A);
+        if (op->use & 2) fetch4(F, c, &op->src[1], op->cidx, ci, op->rel, B);
+        if (op->use & 4) fetch4(F, c, &op->src[2], op->cidx, ci, op->rel, C);
+        M[0] = M[1] = M[2] = M[3] = zero;
+        I[0] = I[1] = I[2] = I[3] = zero;
+
+        switch (op->mac) {
+        case MAC_MOV: for (int k = 0; k < 4; k++) M[k] = A[k]; break;
+        case MAC_MUL: for (int k = 0; k < 4; k++) M[k] = mulz4(A[k], B[k]); break;
+        case MAC_ADD: for (int k = 0; k < 4; k++) M[k] = _mm_add_ps(A[k], C[k]); break;
+        case MAC_MAD: for (int k = 0; k < 4; k++) M[k] = _mm_add_ps(mulz4(A[k], B[k]), C[k]); break;
+        case MAC_DP3: case MAC_DPH: case MAC_DP4: {
+            __m128 d = _mm_add_ps(_mm_add_ps(mulz4(A[0], B[0]), mulz4(A[1], B[1])), mulz4(A[2], B[2]));
+            if (op->mac == MAC_DP4) d = _mm_add_ps(d, mulz4(A[3], B[3]));
+            else if (op->mac == MAC_DPH) d = _mm_add_ps(d, B[3]);
+            M[0] = M[1] = M[2] = M[3] = d;
+            break;
+        }
+        case MAC_DST:
+            M[0] = ones; M[1] = mulz4(A[1], B[1]); M[2] = A[2]; M[3] = B[3];
+            break;
+        case MAC_MIN: for (int k = 0; k < 4; k++) M[k] = _mm_min_ps(A[k], B[k]); break;
+        case MAC_MAX: for (int k = 0; k < 4; k++) M[k] = _mm_max_ps(A[k], B[k]); break;
+        case MAC_SLT: for (int k = 0; k < 4; k++) M[k] = _mm_and_ps(_mm_cmplt_ps(A[k], B[k]), ones); break;
+        case MAC_SGE: for (int k = 0; k < 4; k++) M[k] = _mm_and_ps(_mm_cmpge_ps(A[k], B[k]), ones); break;
+        case MAC_ARL: {
+            float x[4];
+            _mm_storeu_ps(x, A[0]);
+            for (int l = 0; l < 4; l++)
+                a0[l] = (int)floorf(x[l]);
+            break;
+        }
+        default: break;
+        }
+
+        switch (op->ilu) {
+        case ILU_NOP: break;
+        case ILU_MOV: for (int k = 0; k < 4; k++) I[k] = C[k]; break;
+        case ILU_RCP:   /* 1 / x, with 1 / 1 = 1 as the reference has it (it is, in IEEE) */
+            I[0] = I[1] = I[2] = I[3] = _mm_div_ps(ones, C[0]);
+            break;
+        case ILU_RSQ:
+            I[0] = I[1] = I[2] = I[3] =
+                _mm_div_ps(ones, _mm_sqrt_ps(_mm_andnot_ps(sign_bits, C[0])));
+            break;
+        default: {      /* RCC, EXP, LOG, LIT: per lane, as the reference */
+            float x[4][4], r[4][4];
+            for (int k = 0; k < 4; k++)
+                _mm_storeu_ps(x[k], C[k]);
+            for (int l = 0; l < 4; l++) {
+                float v0 = x[0][l], v1 = x[1][l], v3 = x[3][l];
+                switch (op->ilu) {
+                case ILU_RCC: r[0][l] = r[1][l] = r[2][l] = r[3][l] = lane_rcc(v0); break;
+                case ILU_EXP: {
+                    float f = floorf(v0);
+                    r[0][l] = exp2f(f); r[1][l] = v0 - f; r[2][l] = exp2f(v0); r[3][l] = 1.0f;
+                    break;
+                }
+                case ILU_LOG: {
+                    float v = fabsf(v0);
+                    if (v == 0.0f) {
+                        r[0][l] = r[1][l] = r[2][l] = -INFINITY;
+                    } else {
+                        int e;
+                        float mant = frexpf(v, &e);
+                        r[0][l] = (float)(e - 1); r[1][l] = mant * 2.0f; r[2][l] = log2f(v);
+                    }
+                    r[3][l] = 1.0f;
+                    break;
+                }
+                case ILU_LIT: {
+                    float d = v0 > 0 ? v0 : 0, sp = v1 > 0 ? v1 : 0;
+                    float e = v3 < -127.9961f ? -127.9961f : v3 > 127.9961f ? 127.9961f : v3;
+                    r[0][l] = 1.0f; r[1][l] = d; r[2][l] = v0 > 0 ? powf(sp, e) : 0.0f; r[3][l] = 1.0f;
+                    break;
+                }
+                default:
+                    r[0][l] = r[1][l] = r[2][l] = r[3][l] = 0.0f;
+                    break;
+                }
+            }
+            for (int k = 0; k < 4; k++)
+                I[k] = _mm_loadu_ps(r[k]);
+            break;
+        }
+        }
+
+        /* Writes, after both units have computed. Mask bits: 8 x .. 1 w. */
+        if (op->mac_row != 255)
+            write4(R[op->mac_row], M, op->mac_mask);
+        if (op->ilu_row != 255)
+            write4(R[op->ilu_row], I, op->ilu_mask);
+        if (op->o_kind == 1 || op->o_kind == 2)
+            write4(op->o_kind == 1 ? R[op->o_index] : O[op->o_index], op->out_mux ? I : M, op->o_mask);
+    }
+    for (int k = 0; k < 4; k++)
+        O[VSH_OPOS][k] = R[ROW_OPOS][k];
+    for (int o = 0; o < VSH_OUTPUTS; o++) {
+        __m128 x = O[o][0], y = O[o][1], z = O[o][2], w = O[o][3];
+        _MM_TRANSPOSE4_PS(x, y, z, w);
+        _mm_storeu_ps(out[0][o], x);
+        _mm_storeu_ps(out[1][o], y);
+        _mm_storeu_ps(out[2][o], z);
+        _mm_storeu_ps(out[3][o], w);
+    }
+}
+#endif
+
+static bool same_bits(const float *a, const float *b, int n)
+{
+    for (int i = 0; i < n; i++)
+        if (memcmp(&a[i], &b[i], 4) && !(a[i] != a[i] && b[i] != b[i]))
+            return false;
+    return true;
+}
+
+static int check_fast;
+
+/* Once, from pdo_vsh_parse on the game's thread, before any program runs. */
+static void setup_fast(void)
+{
+    static bool done;
+
+    if (done)
+        return;
+    done = true;
+#ifdef VSH_FAST
+    fast_init();
+#endif
+    check_fast = SDL_getenv("PDO_VSH_CHECK") && SDL_atoi(SDL_getenv("PDO_VSH_CHECK")) != 0;
+}
+
+void pdo_vsh_run(const pdo_vsh_program *p, const float in[PDO_VSH_INPUTS][4],
+                 float c[PDO_VSH_CONSTANTS][4], float out[VSH_OUTPUTS][4])
+{
+#ifdef VSH_FAST
+    if (pdo_vsh_trace) {
+        run_ref(p, in, c, out);
+        return;
+    }
+    run_fast(p, in, c, out);
+    if (check_fast && !p->writes_constants) {
+        static SDL_AtomicInt reported;
+        float ref[VSH_OUTPUTS][4];
+        run_ref(p, in, c, ref);
+        if (!same_bits(&out[0][0], &ref[0][0], VSH_OUTPUTS * 4) && SDL_AddAtomicInt(&reported, 1) < 16) {
+            for (int o = 0; o < VSH_OUTPUTS; o++)
+                if (!same_bits(out[o], ref[o], 4))
+                    SDL_Log("vsh check: %u insns, output %d fast %g %g %g %g ref %g %g %g %g", p->count, o,
+                            out[o][0], out[o][1], out[o][2], out[o][3], ref[o][0], ref[o][1], ref[o][2], ref[o][3]);
+        }
+    }
+#else
+    run_ref(p, in, c, out);
+#endif
+}
+
+void pdo_vsh_run4(const pdo_vsh_program *p, const float in[4][PDO_VSH_INPUTS][4],
+                  float c[PDO_VSH_CONSTANTS][4], float out[4][VSH_OUTPUTS][4])
+{
+#ifdef VSH_FAST
+    if (!p->writes_constants && !pdo_vsh_trace) {
+        run_fast4(p, in, c, out);
+        if (check_fast) {
+            static SDL_AtomicInt reported;
+            for (int l = 0; l < 4; l++) {
+                float ref[VSH_OUTPUTS][4];
+                run_ref(p, in[l], c, ref);
+                if (!same_bits(&out[l][0][0], &ref[0][0], VSH_OUTPUTS * 4) && SDL_AddAtomicInt(&reported, 1) < 16)
+                    for (int o = 0; o < VSH_OUTPUTS; o++)
+                        if (!same_bits(out[l][o], ref[o], 4))
+                            SDL_Log("vsh check4: %u insns lane %d output %d fast %g %g %g %g ref %g %g %g %g",
+                                    p->count, l, o, out[l][o][0], out[l][o][1], out[l][o][2], out[l][o][3],
+                                    ref[o][0], ref[o][1], ref[o][2], ref[o][3]);
+            }
+        }
+        return;
+    }
+#endif
+    for (int l = 0; l < 4; l++)
+        pdo_vsh_run(p, in[l], c, out[l]);
 }
 
 /* ── Worker pool ──────────────────────────────────────────────────────── */
