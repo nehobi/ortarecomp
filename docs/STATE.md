@@ -65,7 +65,12 @@ program and run four vertices at a time with SSE2, bit-identical to the
 reference interpreter (PDO_VSH_CHECK=1 runs both and reports any
 difference; none through episode 1). About 5x the old interpreter; the
 episode 1 boss went from 42 to 55 fps average on a 4-core test machine.
-Next if needed: vertex programs on the GPU.
+Target: run well on a Snapdragon 865 (Android, Adreno 650). For that:
+1. Vertex work on the GPU: vertex programs and the fixed-function
+   transform and lighting (both on the CPU in d3d_hle.c today); the SSE2
+   path does nothing on ARM. 2. Texture change tracking by writes instead
+   of hashing every texture's mip chain each frame. 3. Measure the
+   recompiled code and the guest CPU lock on ARM.
 
 ## Options overlay
 
