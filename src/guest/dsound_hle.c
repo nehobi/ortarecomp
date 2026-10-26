@@ -753,7 +753,8 @@ static void trace_i3dl2_source(const char *what, uint32_t obj, uint32_t p)
               (int32_t)MEM32(p + 20), fval(MEM32(p + 24)), (int32_t)MEM32(p + 28),
               fval(MEM32(p + 32)));
 }
-void sub_002C39A9(void)  /* IDirectSoundBuffer_SetI3DL2Source */
+/* IDirectSoundBuffer_SetI3DL2Source */
+void sub_002C39A9(void)
 {
     trace_i3dl2_source("buffer SetI3DL2Source", ARG(0), ARG(1));
     if (ARG(1))
@@ -1145,7 +1146,8 @@ void sub_002C3A64(void) { RETURN(20, DS_OK); }  /* SetVelocity */
 void sub_002C3A8D(void) { RETURN(12, DS_OK); }  /* SetDistanceFactor */
 void sub_002C3AA5(void) { RETURN(12, DS_OK); }  /* SetDopplerFactor */
 void sub_002C3ABD(void) { RETURN(12, DS_OK); }  /* SetRolloffFactor */
-void sub_002C3AD5(void)  /* IDirectSoundStream_SetI3DL2Source */
+/* IDirectSoundStream_SetI3DL2Source */
+void sub_002C3AD5(void)
 {
     trace_i3dl2_source("stream SetI3DL2Source", ARG(0), ARG(1));
     if (ARG(1) && stream_of(ARG(0)))

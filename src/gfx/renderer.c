@@ -23,6 +23,7 @@
 
 extern ptrdiff_t g_xbox_mem_offset;
 extern void pdo_dump_threads(void);   /* src/guest/crash_report.c: F11 */
+extern void pdo_dump_guest_waits(void);  /* src/guest/wait_trace.c */
 
 static SDL_GPUDevice *dev;
 static SDL_Window *window;
@@ -1028,6 +1029,7 @@ static int SDLCALL watchdog(void *unused)
             SDL_Log("watchdog: no frame for %d s (frame %llu), dumping threads", still,
                     (unsigned long long)seen);
             pdo_dump_threads();
+            pdo_dump_guest_waits();
             dumped = true;
         }
     }
@@ -1736,8 +1738,10 @@ bool pdo_gfx_pump_events(void)
             keep_going = false;
         if (pdo_overlay_event(&ev))
             continue;
-        if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F11 && !ev.key.repeat)
+        if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F11 && !ev.key.repeat) {
             pdo_dump_threads();
+            pdo_dump_guest_waits();
+        }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
             capture_frame = frames + 1;
             SDL_Log("capture: frame %llu", (unsigned long long)capture_frame);
