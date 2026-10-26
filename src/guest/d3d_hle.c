@@ -90,6 +90,12 @@ static Uint64 vblank_ns(void)
     return ns;
 }
 
+/* Where the game thread's time goes, summed over the fps line's period:
+ * draws (of which vertex programs and fixed-function vertices), the
+ * renderer's frame (of which textures), and waiting for vblank. */
+enum { PERF_DRAWS, PERF_VSH, PERF_FVF, PERF_PRESENT, PERF_VBLANK, PERF_COUNT };
+static Uint64 perf_ns[PERF_COUNT];
+
 int guest_cpu_yield_begin(void);       /* xboxrecomp, patch 0023 */
 void guest_cpu_yield_end(int held);
 
@@ -107,6 +113,7 @@ static Uint64 wait_vblank(void)
         int held = guest_cpu_yield_begin();
         SDL_DelayPrecise(at - now);
         guest_cpu_yield_end(held);
+        perf_ns[PERF_VBLANK] += SDL_GetTicksNS() - now;
     }
     return index;
 }
@@ -233,9 +240,14 @@ void sub_002BAFC0(void)
         last_vblank = current_vblank();
     }
 
-    if (!pdo_gfx_present()) {
-        SDL_Log("d3d: window closed");
-        exit(0);
+    {
+        Uint64 t = SDL_GetTicksNS();
+        bool open = pdo_gfx_present();
+        perf_ns[PERF_PRESENT] += SDL_GetTicksNS() - t;
+        if (!open) {
+            SDL_Log("d3d: window closed");
+            exit(0);
+        }
     }
     n = pdo_gfx_frame_count();
     {
@@ -261,6 +273,18 @@ void sub_002BAFC0(void)
                     (double)(current_vblank() - v0) / (double)(n - f0), (unsigned long long)n,
                     SDL_SetAtomicInt(&draws_called, 0), SDL_SetAtomicInt(&draws_drawn, 0),
                     SDL_SetAtomicInt(&draws_dropped, 0));
+            {
+                double k = 1e-6 * SDL_NS_PER_SECOND / (double)(now - t0);   /* ns -> ms per second */
+                Uint64 tex = pdo_gfx_take_texture_ns();
+                Uint64 known = perf_ns[PERF_DRAWS] + perf_ns[PERF_PRESENT] + perf_ns[PERF_VBLANK];
+                Uint64 span = now - t0;
+                SDL_Log("d3d: ms per second: draws %.0f (vertex programs %.0f, fixed-function vertices %.0f), "
+                        "renderer %.0f (textures %.0f), vblank wait %.0f, the rest (game code) %.0f",
+                        perf_ns[PERF_DRAWS] * k, perf_ns[PERF_VSH] * k, perf_ns[PERF_FVF] * k,
+                        perf_ns[PERF_PRESENT] * k, tex * k, perf_ns[PERF_VBLANK] * k,
+                        span > known ? (span - known) * k : 0.0);
+                memset(perf_ns, 0, sizeof perf_ns);
+            }
             t0 = now, f0 = n, v0 = current_vblank();
             peek_guest();
         }
@@ -1658,11 +1682,20 @@ static void draw_points(pdo_draw *d, const pdo_vertex *v, const uint32_t *order,
     pdo_gfx_draw(d, qv, n * 4, qi, n * 6);
 }
 
+static bool timed_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
+                      pdo_vertex *out, bool *pre)
+{
+    Uint64 t = SDL_GetTicksNS();
+    bool ok = fetch_fvf(fvf, base, stride, first, count, out, pre);
+    perf_ns[PERF_FVF] += SDL_GetTicksNS() - t;
+    return ok;
+}
+
 /* The shared part of every draw: vertices [first, first+count) of stream
  * data at 'base', primitive order given by 'order' (n entries, relative to
  * first). */
-static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
-                   const uint32_t *order, uint32_t n)
+static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
+                        const uint32_t *order, uint32_t n)
 {
     static pdo_vertex *vbuf;
     static uint32_t *ibuf, vcap, icap;
@@ -1688,7 +1721,11 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
             SDL_AddAtomicInt(&draws_dropped, 1);
             return;
         }
-        fetch_vsh(p, base, stride, first, count, vbuf);
+        {
+            Uint64 t = SDL_GetTicksNS();
+            fetch_vsh(p, base, stride, first, count, vbuf);
+            perf_ns[PERF_VSH] += SDL_GetTicksNS() - t;
+        }
         pre = false;
         {   /* How many program draws also have a pixel shader (not drawn yet). */
             static uint32_t draws, with_ps;
@@ -1701,7 +1738,7 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
                 last = pdo_gfx_frame_count();
             }
         }
-    } else if (!fetch_fvf(st.vshader, base, stride, first, count, vbuf, &pre)) {
+    } else if (!timed_fvf(st.vshader, base, stride, first, count, vbuf, &pre)) {
         static int warned;
         if (!warned++)
             SDL_Log("d3d: FVF 0x%x not handled", st.vshader);
@@ -1763,6 +1800,14 @@ static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first
     ni = build_indices(type, order, n, ibuf, &d.ps.topology);
     pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
     SDL_AddAtomicInt(&draws_drawn, 1);
+}
+
+static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
+                   const uint32_t *order, uint32_t n)
+{
+    Uint64 t = SDL_GetTicksNS();
+    submit_draw(type, base, stride, first, count, order, n);
+    perf_ns[PERF_DRAWS] += SDL_GetTicksNS() - t;
 }
 
 static uint32_t *sequential(uint32_t n)

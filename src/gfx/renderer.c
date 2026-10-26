@@ -423,6 +423,14 @@ typedef struct rtarget {
 static rtarget targets[MAX_TARGETS];
 static int ntargets;
 static bool no_shadows;     /* captures only: shadow maps read as lit */
+static Uint64 texture_ns;   /* time resolving textures, for the timing log */
+
+uint64_t pdo_gfx_take_texture_ns(void)
+{
+    Uint64 t = texture_ns;
+    texture_ns = 0;
+    return t;
+}
 
 static uint32_t phys(uint32_t data)
 {
@@ -1459,12 +1467,14 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     Uint32 vbytes = nverts * (Uint32)sizeof *verts, ibytes = nindices * 4;
 
     /* Resolve every texture first: decoding fills the staging area. */
+    Uint64 tex_t0 = SDL_GetTicksNS();
     cmd_tex = grow(cmd_tex, &cmd_tex_cap, ncmds * 4 + 4, sizeof *cmd_tex);
     for (uint32_t i = 0; i < ncmds; i++)
         if (cmds[i].kind == CMD_DRAW)
             for (int s = 0; s < 4; s++)
                 cmd_tex[i * 4 + s] = texture_for(&cmds[i].draw.tex[s], &staging, &staging_len,
                                                  &staging_cap, ups, &nups);
+    texture_ns += SDL_GetTicksNS() - tex_t0;
 
     if (vbytes || staging_len) {
         SDL_GPUTransferBufferCreateInfo tbi;

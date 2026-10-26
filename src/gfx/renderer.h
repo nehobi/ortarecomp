@@ -138,6 +138,10 @@ void pdo_gfx_set_target(const pdo_surface *color);
  * memory samples that target's depth: a shadow map. */
 void pdo_gfx_set_depth(const pdo_surface *depth);
 
+/* Nanoseconds spent finding, hashing and decoding textures since the last
+ * call (the game thread's timing log, d3d_hle.c). */
+uint64_t pdo_gfx_take_texture_ns(void);
+
 /* D3DDevice_CopyRects, one rectangle: src (x, y, w, h) to dst at (dx, dy),
  * clipped to both surfaces. Either may be the back buffer. */
 void pdo_gfx_copy_rect(const pdo_surface *src, const pdo_surface *dst,
