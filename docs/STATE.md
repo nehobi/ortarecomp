@@ -60,7 +60,7 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 5. Hang skipping the cutscenes after episode 1 (Start): the game thread
    waits forever in a stream destructor (0x0029FB40: signal stop, resume,
    wait for the worker 0x0029F570 to end) while 12 stream workers sit in
-   their wait. src/guest/wait_trace.c now reports, at the watchdog (15 s
+   their wait. src/guest/wait_trace.c now reports, at the watchdog (8 s
    without a frame) or F11, what each guest thread waits on and whether a
    thread being waited for is still running; next report says which.
    PsCreateSystemThreadEx also ignores CreateSuspended (CRI's threads ask
