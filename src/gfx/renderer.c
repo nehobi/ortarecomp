@@ -394,11 +394,35 @@ typedef struct gtex {
 static gtex textures[MAX_TEXTURES];
 static int ntextures;
 
+/* A texture's bytes, to notice when the game rewrites them: it runs over
+ * every texture in use every frame, so it has to be fast more than strong.
+ * Four independent 64-bit lanes take 32 bytes a step (the byte-at-a-time
+ * FNV-1a this replaced cost the player's PC about 300 ms a second). */
+static uint64_t rotl64(uint64_t x, int r)
+{
+    return (x << r) | (x >> (64 - r));
+}
+
 static uint64_t hash_bytes(const uint8_t *p, size_t n)
 {
-    uint64_t h = 1469598103934665603ull;
-    for (size_t i = 0; i < n; i++)
+    const uint64_t k = 0x9E3779B97F4A7C15ull;
+    uint64_t a = k, b = k ^ 0x5bd1e995u, c = ~k, d = rotl64(k, 17), h;
+    size_t i = 0;
+
+    for (; i + 32 <= n; i += 32) {
+        uint64_t w[4];
+        memcpy(w, p + i, 32);
+        a = rotl64((a ^ w[0]) * k, 31);
+        b = rotl64((b ^ w[1]) * k, 31);
+        c = rotl64((c ^ w[2]) * k, 31);
+        d = rotl64((d ^ w[3]) * k, 31);
+    }
+    h = rotl64(a, 1) ^ rotl64(b, 7) ^ rotl64(c, 12) ^ rotl64(d, 18) ^ (uint64_t)n;
+    for (; i < n; i++)
         h = (h ^ p[i]) * 1099511628211ull;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdull;
+    h ^= h >> 33;
     return h;
 }
 

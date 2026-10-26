@@ -73,6 +73,9 @@ program and run four vertices at a time with SSE2, bit-identical to the
 reference interpreter (PDO_VSH_CHECK=1 runs both and reports any
 difference; none through episode 1). About 5x the old interpreter; the
 episode 1 boss went from 42 to 55 fps average on a 4-core test machine.
+Player's PC in play (timing lines, ms/s): renderer 425 of which textures
+299 (now an 8x faster hash), draws 241 (fixed-function 127, vertex
+programs 81), game code 232.
 Target: run well on a Snapdragon 865 (Android, Adreno 650). For that:
 1. Vertex work on the GPU: vertex programs and the fixed-function
    transform and lighting (both on the CPU in d3d_hle.c today); the SSE2
