@@ -17,7 +17,7 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
   texture coordinate generation (episode 1 rain: finer now, confirmed;
   it comes and goes in the original too; the player's dragon is shiny
   again, confirmed).
-- Shadow maps (built, untested on Windows): the depth-only pass into a
+- Shadow maps (look right on Windows so far): the depth-only pass into a
   512x512 LIN_D16 surface, compared in ff.frag (stored GREATER r/q, 2x2
   filtered); in episode 1 they shade the player's dragon.
 - xboxrecomp v0.13.1 + patches 0001-0024: 0020-0021 give threads the stack
@@ -52,10 +52,11 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    Lifter: 42 jumps still go to stubs, all from data decoded as code.
    `_fixup_icall_esp_save` can take argument pushes of callee-saved
    registers for saves, so a failed ICALL leaks its arguments.
-4. Reverb: I3DL2 is ours now (src/audio/reverb.c, untested on Windows).
-   3D voices send at their SetI3DL2Source room level; the game turns it
-   on per scene (episode 1 boss: the Bathroom preset) and off in stages.
-   Not done: source HF levels, obstruction/occlusion, other DSP effects.
+4. Reverb: I3DL2 is ours (src/audio/reverb.c); sounds right in the
+   episode 1 canyon on Windows. 3D voices send at their SetI3DL2Source
+   room level; the game picks a room per scene (0x00012930 with entries
+   1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
+   in open stages. Not done: source HF levels, obstruction/occlusion.
 
 ## Options overlay
 
