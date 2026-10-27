@@ -454,6 +454,17 @@ static void warm_pipelines(void)
     SDL_free(data);
 }
 
+/* Per-frame GPU work counts for the timing log: render passes begun,
+ * multisample seeds (the resolved image drawn back into the samples),
+ * snapshots (copies of the target for draws that sample it), copies. */
+static uint32_t n_passes, n_seeds, n_snapshots, n_copies;
+
+void pdo_gfx_take_pass_counts(uint32_t out[4])
+{
+    out[0] = n_passes; out[1] = n_seeds; out[2] = n_snapshots; out[3] = n_copies;
+    n_passes = n_seeds = n_snapshots = n_copies = 0;
+}
+
 static Uint64 swap_wait_ns;              /* waiting for a swapchain image, for the timing log */
 
 uint64_t pdo_gfx_take_swap_wait_ns(void)
@@ -1344,7 +1355,12 @@ bool pdo_gfx_init(int width, int height)
         SDL_Log("gfx: rendering without a window (%s)", SDL_GetError());
 
     vs = make_shader(ff_vert_spv, sizeof ff_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
-    fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    if (getenv("PDO_TEST_SIMPLE_FS")) {     /* a test: how much of the GPU time is ff.frag */
+        SDL_Log("gfx: PDO_TEST_SIMPLE_FS: the cheapest fragment shader instead of ff.frag; pictures are wrong");
+        fs = make_shader(ff_test_frag_spv, sizeof ff_test_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    } else {
+        fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    }
     vsh_vs = make_shader_sb(vsh_vert_spv, sizeof vsh_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 3);
     if (!vsh_vs)
         SDL_Log("gfx: no GPU vertex programs (%s); they run on the CPU", SDL_GetError());
@@ -1562,6 +1578,8 @@ static SDL_GPURenderPass *begin_pass(SDL_GPUCommandBuffer *cmd, const command *c
         }
     }
     pass = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+    n_passes++;
+    n_seeds += seed != NULL;
     if (pass && seed && seed_pipeline) {
         SDL_GPUTextureSamplerBinding tsb = { seed, nearest };
         float params[4] = { 0, 0, 0, 0 };
@@ -1715,6 +1733,7 @@ static SDL_GPUTexture *snapshot(SDL_GPUCommandBuffer *cmd)
     }
     if (!tex)
         return white;
+    n_snapshots++;
     SDL_zero(src);
     src.texture = cur_color();
     SDL_zero(dst);
@@ -1759,6 +1778,7 @@ static void copy_rect(SDL_GPUCommandBuffer *cmd, const command *c)
     copy = SDL_BeginGPUCopyPass(cmd);
     SDL_CopyGPUTextureToTexture(copy, &src, &dst, (Uint32)w, (Uint32)h, 1, false);
     SDL_EndGPUCopyPass(copy);
+    n_copies++;
     if (rd)
         rd->stale = rd->ms != NULL;
     else

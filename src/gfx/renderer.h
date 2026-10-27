@@ -213,6 +213,8 @@ uint64_t pdo_gfx_take_texture_ns(void);
 uint64_t pdo_gfx_take_pipeline_ns(uint32_t *made);
 /* Time spent waiting for a swapchain image (the GPU behind) since the last call. */
 uint64_t pdo_gfx_take_swap_wait_ns(void);
+/* Render passes, multisample seeds, snapshots and copies since the last call. */
+void pdo_gfx_take_pass_counts(uint32_t out[4]);
 
 /* D3DDevice_CopyRects, one rectangle: src (x, y, w, h) to dst at (dx, dy),
  * clipped to both surfaces. Either may be the back buffer. */

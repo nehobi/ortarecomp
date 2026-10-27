@@ -289,6 +289,14 @@ void sub_002BAFC0(void)
                         span > known ? (span - known) * k : 0.0);
                 if (made)
                     SDL_Log("d3d: %u new pipelines made in the last %.1f s", made, (double)span / 1e9);
+                {
+                    uint32_t pc[4];
+                    double fr = (double)(n - f0);
+                    pdo_gfx_take_pass_counts(pc);
+                    if (fr > 0)
+                        SDL_Log("d3d: per frame: %.1f render passes, %.1f multisample seeds, %.1f snapshots, "
+                                "%.1f copies", pc[0] / fr, pc[1] / fr, pc[2] / fr, pc[3] / fr);
+                }
                 memset(perf_ns, 0, sizeof perf_ns);
             }
             t0 = now, f0 = n, v0 = current_vblank();
