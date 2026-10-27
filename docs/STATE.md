@@ -57,14 +57,14 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    room level; the game picks a room per scene (0x00012930 with entries
    1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
    in open stages. Not done: source HF levels, obstruction/occlusion.
-5. Hang skipping the cutscenes after episode 1 (Start): the game thread
-   waits forever in a stream destructor (0x0029FB40: signal stop, resume,
-   wait for the worker 0x0029F570 to end) while 12 stream workers sit in
-   their wait. src/guest/wait_trace.c now reports, at the watchdog (8 s
-   without a frame) or F11, what each guest thread waits on and whether a
-   thread being waited for is still running; next report says which.
-   PsCreateSystemThreadEx also ignores CreateSuspended (CRI's threads ask
-   for it; the stream workers do not).
+5. Hang skipping the cutscenes after episode 1 (Start): fix to confirm.
+   The wait tracer caught it: the main thread, stopping a worker
+   (0x00225B80, worker routine 0x002266B0), asked "am I that worker?" and
+   got yes, then waited on an event only the worker's own path sees set.
+   Every thread shared one fake thread object, so GetCurrentThreadId was
+   the same everywhere, and PsCreateSystemThreadEx never wrote ThreadId.
+   Patch 0025 gives each thread its own object and id. Still open:
+   PsCreateSystemThreadEx ignores CreateSuspended (CRI's threads ask).
 
 ## Performance
 

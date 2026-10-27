@@ -1,0 +1,94 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -457,8 +457,41 @@
+ struct bridge_thread_start {
+     recomp_func_t fn;
+     uint32_t ctx1, ctx2, stack_top;
++    uint32_t kthread;           /* its thread object; see bridge_new_kthread */
+ };
+ 
++/* The thread object fs:[0x28] points to (KPCR.PrcbData.CurrentThread).
++ *
++ * Every thread used to share the one the loader built, so XAPI's
++ * GetCurrentThreadId -- [[fs:[0x28]] + 0x12C], ETHREAD.UniqueThread -- gave
++ * every thread the same answer, and PsCreateSystemThreadEx never wrote the
++ * ThreadId it was asked for. A title that asks "am I that worker?" before
++ * waiting for it could get yes on the wrong thread: Panzer Dragoon Orta,
++ * stopping a stream worker on the main thread, then waited for an event only
++ * the worker's own path would see set, and hung.
++ *
++ * Each thread now gets a copy of the main thread's object (so the fields the
++ * loader filled in, TlsData among them, read as before) with its own id. */
++#define KTHREAD_COPY_SIZE  0x200
++#define KTHREAD_UNIQUE_ID  0x12C
++static volatile LONG g_next_thread_id = 0x100;
++static RECOMP_TLS uint32_t g_spawn_kthread;     /* for the next bridge_spawn_thread */
++
++static uint32_t bridge_new_kthread(uint32_t *id_out)
++{
++    uint32_t from = BRIDGE_MEM32(XBOX_TIB_MAIN + 0x28);
++    uint32_t kt = xbox_HeapAlloc(KTHREAD_COPY_SIZE, 16);
++    uint32_t id = (uint32_t)InterlockedExchangeAdd(&g_next_thread_id, 4) + 4;
++
++    *id_out = id;
++    if (!kt)
++        return 0;
++    for (uint32_t o = 0; o < KTHREAD_COPY_SIZE; o += 4)
++        BRIDGE_MEM32(kt + o) = from ? BRIDGE_MEM32(from + o) : 0;
++    BRIDGE_MEM32(kt + KTHREAD_UNIQUE_ID) = id;
++    return kt;
++}
++
+ static void bridge_write_handle(uint32_t handle_va, HANDLE h);
+ 
+ /* A guest callback a bridge runs (an APC, an exception handler, a DPC) holds
+@@ -485,7 +518,7 @@
+ {
+     struct bridge_thread_start *s = (struct bridge_thread_start *)param;
+     recomp_func_t fn = s->fn;
+-    uint32_t ctx1 = s->ctx1, ctx2 = s->ctx2;
++    uint32_t ctx1 = s->ctx1, ctx2 = s->ctx2, kthread = s->kthread;
+ 
+     /* Own register set (RECOMP_TLS), own simulated stack -- and own TIB.
+      *
+@@ -504,6 +537,8 @@
+             fprintf(stderr, "  [KERNEL] worker thread has no TIB of its own;"
+                             " it shares the main thread's\n");
+     }
++    if (kthread && g_fs_base != XBOX_TIB_MAIN)
++        BRIDGE_MEM32(g_fs_base + 0x28) = kthread;
+     free(s);
+ 
+     guest_cpu_join();
+@@ -527,6 +562,8 @@
+ 
+     if (!s) return NULL;
+     s->fn = fn; s->ctx1 = ctx1; s->ctx2 = ctx2; s->stack_top = stack_top;
++    s->kthread = g_spawn_kthread;
++    g_spawn_kthread = 0;
+ 
+     th = CreateThread(NULL, 0, bridge_thread_main, s, 0, NULL);
+     if (!th) free(s);
+@@ -573,6 +610,21 @@
+         BRIDGE_MEM32(xbox_handle_ptr) = 0xBEEF0001;  /* fake handle */
+     }
+ 
++    /* The new thread's object and id, the id where the caller asked for it
++     * (arg4), before the thread can run. The first call is the game's main
++     * thread, running on this one: it takes its object now. */
++    if (start_routine) {
++        uint32_t id, kt = bridge_new_kthread(&id);
++        if (STACK_ARG(4))
++            BRIDGE_MEM32(STACK_ARG(4)) = id;
++        if (is_first_call) {
++            if (kt)
++                BRIDGE_MEM32(g_fs_base + 0x28) = kt;
++        } else {
++            g_spawn_kthread = kt;
++        }
++    }
++
+     /* Call the start routine synchronously through the recomp dispatch.
+      * Xbox thread start routines receive two parameters:
+      *   void ThreadRoutine(PVOID StartContext1, PVOID StartContext2)
