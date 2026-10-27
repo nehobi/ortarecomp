@@ -18,6 +18,7 @@ typedef struct pdo_settings {
     int  master_volume;     /* 0-100 % */
     bool show_fps;
     bool gpu_vertex;        /* vertex programs on the GPU (shaders/vsh.vert), not the CPU */
+    bool gpu_fixed;         /* fixed-function vertices on the GPU (shaders/fvf.vert) */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_STRETCH, PDO_ASPECT_COUNT };

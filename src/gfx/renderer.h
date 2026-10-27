@@ -89,7 +89,8 @@ typedef struct pdo_pipeline_state {
     uint8_t  cull;              /* 0 none, 1 cull clockwise, 2 counter-clockwise */
     uint8_t  single_sample;     /* renderer only: the target is a shadow map */
     uint16_t z_func;
-    uint8_t  gpu_vsh;           /* renderer only: vertices from shaders/vsh.vert */
+    uint8_t  gpu_vsh;           /* renderer only: vertices from shaders/vsh.vert (1)
+                                 * or shaders/fvf.vert (2) */
     uint32_t color_write;       /* Xbox D3DCOLORWRITEENABLE_* bits */
     /* Polygon offset (D3DRS_ZBIAS sets these): constant in depth-buffer
      * units, and slope scale. Decals rely on it to win against the wall. */
@@ -165,6 +166,41 @@ typedef struct pdo_gpu_vsh {
  * NULL, is the same vertices from the CPU interpreter: a capture can then
  * draw the frame both ways (PDO_CAPTURE_CPUVSH=1). */
 void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
+                      const uint32_t *idx, uint32_t ni, const pdo_vertex *cpu);
+
+/* ── Fixed-function vertices on the GPU (shaders/fvf.vert) ──────────────
+ * The same idea for FVF draws: the game's vertex bytes and the draw's
+ * transform, texture-stage and lighting state; the shader does what
+ * fetch_fvf and light_vertex (d3d_hle.c) do per vertex. The layout is the
+ * shader's uniform block, std140: every member 16 bytes or a multiple. */
+typedef struct pdo_fvf_uniforms {
+    int32_t layout0[4];          /* byte base (the renderer's), stride, flags, coordinate sets */
+    int32_t offs[4];             /* normal, diffuse, specular offsets */
+    int32_t tc_off[4], tc_n[4];  /* per coordinate set */
+    int32_t stage_set[4], stage_gen[4], stage_tt[4];
+    int32_t light_info[4];       /* lights, COLORVERTEX */
+    int32_t mat_src[4];          /* diffuse, ambient, specular, emissive material source */
+    float   rt[4];               /* target width, height */
+    float   wvp[16], wv[16], world[16];
+    float   tex[4][16];
+    float   material[4][4];      /* diffuse, ambient, specular, emissive */
+    float   ambient[4];
+    float   light[8][7][4];      /* see shaders/fvf.vert */
+} pdo_fvf_uniforms;
+
+enum { PDO_FVF_PRE = 1, PDO_FVF_DIFFUSE = 2, PDO_FVF_SPECULAR = 4, PDO_FVF_NORMAL = 8,
+       PDO_FVF_LIT = 16, PDO_FVF_FOGTABLE = 32 };
+
+typedef struct pdo_gpu_fvf {
+    const uint8_t *data;         /* host pointer at the draw's first vertex */
+    uint32_t bytes;
+    pdo_fvf_uniforms u;
+} pdo_gpu_fvf;
+
+/* A draw of nv fixed-function vertices made by fvf.vert from g; idx index
+ * them from 0. cpu: the CPU's vertices too, as for pdo_gfx_draw_vsh.
+ * Returns false (nothing recorded) when the renderer cannot. */
+bool pdo_gfx_draw_fvf(const pdo_draw *d, const pdo_gpu_fvf *g, uint32_t nv,
                       const uint32_t *idx, uint32_t ni, const pdo_vertex *cpu);
 
 /* The frame being recorded will be captured (F12 or PDO_CAPTURE). */

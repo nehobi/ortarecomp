@@ -1271,41 +1271,49 @@ static float point_size(float size, float d, bool scale)
     return size;
 }
 
-/* Fetch vertices [first, first + count) of an FVF stream into our layout. */
-static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
-                      pdo_vertex *out, bool *pretransformed)
-{
-    uint32_t pos = fvf & 0x00E, off = 0, ntc = (fvf >> 8) & 0xF, tc_off[4] = {0}, tc_n[4] = {0};
-    uint32_t diffuse_off = 0, specular_off = 0, normal_off = 0, psize_off = 0, set_of[4], gen[4];
-    bool has_diffuse = (fvf & 0x40) != 0, has_specular = (fvf & 0x80) != 0, has_normal = (fvf & 0x10) != 0;
-    bool lit, scale;
-    uint32_t lights[8];
-    int nlights = 0;
-    float wvp[16], wv[16];
-    int rtw, rth;
+/* Where an FVF puts each element in a vertex. */
+typedef struct fvf_layout {
+    bool     pre, has_diffuse, has_specular, has_normal;
+    uint32_t normal_off, psize_off, diffuse_off, specular_off, size;
+    uint32_t ntc, tc_off[4], tc_n[4];
+} fvf_layout;
 
-    *pretransformed = pos == 0x004;
+static bool layout_fvf(uint32_t fvf, fvf_layout *l)
+{
+    uint32_t pos = fvf & 0x00E, off;
+
+    memset(l, 0, sizeof *l);
+    l->pre = pos == 0x004;
+    l->has_diffuse = (fvf & 0x40) != 0;
+    l->has_specular = (fvf & 0x80) != 0;
+    l->has_normal = (fvf & 0x10) != 0;
+    l->ntc = (fvf >> 8) & 0xF;
     if (pos == 0x002) off = 12;
     else if (pos == 0x004) off = 16;
     else if (pos >= 0x006 && pos <= 0x00C) off = 12 + 4 * ((pos - 0x004) / 2);
     else return false;
-    if (fvf & 0x010) { normal_off = off; off += 12; }   /* normal */
-    if (fvf & 0x020) { psize_off = off; off += 4; }   /* point size */
-    if (has_diffuse) { diffuse_off = off; off += 4; }
-    if (has_specular) { specular_off = off; off += 4; }
-    for (uint32_t i = 0; i < ntc && i < 4; i++) {
+    if (fvf & 0x010) { l->normal_off = off; off += 12; }   /* normal */
+    if (fvf & 0x020) { l->psize_off = off; off += 4; }     /* point size */
+    if (l->has_diffuse) { l->diffuse_off = off; off += 4; }
+    if (l->has_specular) { l->specular_off = off; off += 4; }
+    for (uint32_t i = 0; i < l->ntc && i < 4; i++) {
         static const uint32_t sizes[4] = { 2, 3, 4, 1 };
-        tc_n[i] = sizes[(fvf >> (16 + 2 * i)) & 3];
-        tc_off[i] = off;
-        off += 4 * tc_n[i];
+        l->tc_n[i] = sizes[(fvf >> (16 + 2 * i)) & 3];
+        l->tc_off[i] = off;
+        off += 4 * l->tc_n[i];
     }
-    if (!stride)
-        stride = off;
-    /* D3DTSS_TEXCOORDINDEX: the coordinate set in the low word; the high
-     * word asks for generated coordinates instead (D3DTSS_TCI_*). */
+    l->size = off;
+    return true;
+}
+
+/* D3DTSS_TEXCOORDINDEX: the coordinate set in the low word; the high word
+ * asks for generated coordinates instead (D3DTSS_TCI_*): 1 camera-space
+ * normal, 2 camera-space position; others are not handled (0). */
+static void stage_coords(bool pre, uint32_t set_of[4], uint32_t gen[4])
+{
     for (int s = 0; s < 4; s++) {
         set_of[s] = TS(s, TSS_TEXCOORDINDEX) & 0xFFFF;
-        gen[s] = *pretransformed ? 0 : TS(s, TSS_TEXCOORDINDEX) >> 16;
+        gen[s] = pre ? 0 : TS(s, TSS_TEXCOORDINDEX) >> 16;
         if (gen[s] > 2) {
             static uint32_t warned;
             if (!(warned & (1u << (gen[s] & 31)))) {
@@ -1315,6 +1323,32 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
             gen[s] = 0;
         }
     }
+}
+
+/* Fetch vertices [first, first + count) of an FVF stream into our layout. */
+static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
+                      pdo_vertex *out, bool *pretransformed)
+{
+    fvf_layout l;
+    uint32_t ntc, *tc_off = l.tc_off, *tc_n = l.tc_n;
+    uint32_t diffuse_off, specular_off, normal_off, psize_off, set_of[4], gen[4];
+    bool has_diffuse, has_specular, has_normal;
+    bool lit, scale;
+    uint32_t lights[8];
+    int nlights = 0;
+    float wvp[16], wv[16];
+    int rtw, rth;
+
+    if (!layout_fvf(fvf, &l))
+        return false;
+    *pretransformed = l.pre;
+    ntc = l.ntc;
+    diffuse_off = l.diffuse_off; specular_off = l.specular_off;
+    normal_off = l.normal_off; psize_off = l.psize_off;
+    has_diffuse = l.has_diffuse; has_specular = l.has_specular; has_normal = l.has_normal;
+    if (!stride)
+        stride = l.size;
+    stage_coords(l.pre, set_of, gen);
 
     target_size(&rtw, &rth);
     lit = !*pretransformed && RS(RS_LIGHTING);
@@ -1402,6 +1436,95 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
             if (!*pretransformed && set < ntc && set < 4)
                 texture_transform(s, tc_n[set], o->tc[s]);
         }
+    }
+    return true;
+}
+
+/* The same draw for shaders/fvf.vert: the layout, transforms, texture
+ * stages, material and lights as uniforms, and the game's vertex bytes
+ * from the draw's first vertex on. False for an FVF fetch_fvf rejects. */
+static bool fvf_gpu_job(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
+                        pdo_gpu_fvf *g)
+{
+    static const int src_rs[4] = { RS_DIFFUSEMATERIALSOURCE, RS_AMBIENTMATERIALSOURCE,
+                                   RS_SPECULARMATERIALSOURCE, RS_EMISSIVEMATERIALSOURCE };
+    pdo_fvf_uniforms *u = &g->u;
+    fvf_layout l;
+    uint32_t set_of[4], gen[4], lights[8];
+    int rtw, rth, flags = 0, nlights = 0;
+
+    if (!layout_fvf(fvf, &l))
+        return false;
+    if (!stride)
+        stride = l.size;
+    memset(g, 0, sizeof *g);
+    g->data = (const uint8_t *)XBOX_PTR(base + first * stride);
+    g->bytes = count * stride + 64;     /* as for vertex programs */
+
+    if (l.pre) flags |= PDO_FVF_PRE;
+    if (l.has_diffuse) flags |= PDO_FVF_DIFFUSE;
+    if (l.has_specular) flags |= PDO_FVF_SPECULAR;
+    if (l.has_normal) flags |= PDO_FVF_NORMAL;
+    if (!l.pre && RS(RS_LIGHTING)) flags |= PDO_FVF_LIT;
+    if (!l.pre && RS(RS_FOGTABLEMODE)) flags |= PDO_FVF_FOGTABLE;
+    u->layout0[1] = (int32_t)stride;
+    u->layout0[2] = flags;
+    u->layout0[3] = (int32_t)l.ntc;
+    u->offs[0] = (int32_t)l.normal_off;
+    u->offs[1] = (int32_t)l.diffuse_off;
+    u->offs[2] = (int32_t)l.specular_off;
+    stage_coords(l.pre, set_of, gen);
+    for (int s = 0; s < 4; s++) {
+        u->tc_off[s] = (int32_t)l.tc_off[s];
+        u->tc_n[s] = (int32_t)l.tc_n[s];
+        u->stage_set[s] = (int32_t)set_of[s];
+        u->stage_gen[s] = (int32_t)gen[s];
+        u->stage_tt[s] = (int32_t)TS(s, TSS_TEXTURETRANSFORMFLAGS);
+        memcpy(u->tex[s], st.mat[TS_TEXTURE0 + s], sizeof u->tex[s]);
+    }
+    target_size(&rtw, &rth);
+    u->rt[0] = (float)rtw;
+    u->rt[1] = (float)rth;
+    mat_mul(st.mat[TS_WORLD], st.mat[TS_VIEW], u->wv);
+    mat_mul(u->wv, st.mat[TS_PROJECTION], u->wvp);
+    memcpy(u->world, st.mat[TS_WORLD], sizeof u->world);
+    if (!(flags & PDO_FVF_LIT))
+        return true;
+
+    memcpy(u->material, st.material, sizeof u->material);
+    for (int k = 0; k < 4; k++)
+        u->mat_src[k] = (int32_t)RS(src_rs[k]);
+    unpack_d3dcolor(RS(RS_AMBIENT), u->ambient);
+    nlights = enabled_lights(lights);
+    u->light_info[0] = nlights;
+    u->light_info[1] = RS(RS_COLORVERTEX) != 0;
+    for (int i = 0; i < nlights; i++) {
+        float (*o)[4] = u->light[i];
+        uint32_t L[26];
+        float dl;
+
+        /* D3DLIGHT8 in words, as light_vertex reads them */
+        for (int k = 0; k < 26; k++)
+            L[k] = MEM32(lights[i] + 4 * k);
+        dl = sqrtf(lf(L[16]) * lf(L[16]) + lf(L[17]) * lf(L[17]) + lf(L[18]) * lf(L[18]));
+        o[0][0] = (float)L[0];
+        o[0][1] = lf(L[19]);
+        o[0][2] = lf(L[20]);
+        for (int c = 0; c < 3; c++) {
+            o[1][c] = lf(L[1 + c]);
+            o[2][c] = lf(L[9 + c]);
+            o[3][c] = lf(L[13 + c]);
+            o[4][c] = lf(L[16 + c]);
+        }
+        if (L[0] == 3)                  /* directional: unit, towards the light */
+            for (int c = 0; c < 3; c++)
+                o[4][c] = dl > 0 ? -lf(L[16 + c]) / dl : -lf(L[16 + c]);
+        o[5][0] = lf(L[21]);
+        o[5][1] = lf(L[22]);
+        o[5][2] = lf(L[23]);
+        o[5][3] = dl;
+        o[6][0] = cosf(lf(L[24]) * 0.5f);
+        o[6][1] = cosf(lf(L[25]) * 0.5f);
     }
     return true;
 }
@@ -1548,7 +1671,7 @@ static void vsh_constants(float scale[3], float offset[3], float *zs_out)
     float x = 0, y = 0, w = 640, h = 480, zs = 16777215.0f, zo = 0;
     int rtw, rth;
 
-    memcpy(vconst, XBOX_PTR(VSH_SHADOW), sizeof vconst);
+    memcpy(vconst, (const void *)XBOX_PTR(VSH_SHADOW), sizeof vconst);
     target_size(&rtw, &rth);
     if (st.have_viewport) {
         x = (float)st.vp_x; y = (float)st.vp_y; w = (float)st.vp_w; h = (float)st.vp_h;
@@ -1751,6 +1874,14 @@ static void draw_points(pdo_draw *d, const pdo_vertex *v, const uint32_t *order,
     pdo_gfx_draw(d, qv, n * 4, qi, n * 6);
 }
 
+static bool fvf_on_gpu_job(uint32_t base, uint32_t stride, uint32_t first, uint32_t count, pdo_gpu_fvf *g)
+{
+    Uint64 t = SDL_GetTicksNS();
+    bool ok = fvf_gpu_job(st.vshader, base, stride, first, count, g);
+    perf_ns[PERF_FVF] += SDL_GetTicksNS() - t;
+    return ok;
+}
+
 static bool timed_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
                       pdo_vertex *out, bool *pre)
 {
@@ -1772,6 +1903,8 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
     bool pre;
     uint32_t ni;
     const pdo_vsh_program *gpu_p = NULL;    /* the program, when it runs on the GPU */
+    static pdo_gpu_fvf gpu_f;
+    bool fvf_on_gpu = false;                /* or the fixed-function vertices do */
     bool cpu_too = true;                    /* and the CPU makes the vertices as well */
 
     state_init();
@@ -1816,6 +1949,12 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
                 last = pdo_gfx_frame_count();
             }
         }
+    } else if (type != 1 && pdo_settings_get()->gpu_fixed && fvf_on_gpu_job(base, stride, first, count, &gpu_f)) {
+        fvf_on_gpu = true;
+        pre = (gpu_f.u.layout0[2] & PDO_FVF_PRE) != 0;
+        cpu_too = pdo_gfx_capturing();
+        if (cpu_too)
+            timed_fvf(st.vshader, base, stride, first, count, vbuf, &pre);
     } else if (!timed_fvf(st.vshader, base, stride, first, count, vbuf, &pre)) {
         static int warned;
         if (!warned++)
@@ -1880,6 +2019,12 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
         pdo_gpu_vsh g;
         vsh_gpu_job(gpu_p, base, stride, first, count, &g);
         pdo_gfx_draw_vsh(&d, &g, count, ibuf, ni, cpu_too ? vbuf : NULL);
+    } else if (fvf_on_gpu) {
+        if (!pdo_gfx_draw_fvf(&d, &gpu_f, count, ibuf, ni, cpu_too ? vbuf : NULL)) {
+            if (!cpu_too)
+                timed_fvf(st.vshader, base, stride, first, count, vbuf, &pre);
+            pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
+        }
     } else {
         pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
     }

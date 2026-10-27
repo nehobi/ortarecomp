@@ -80,10 +80,14 @@ GPU vertex programs (overlay: "Vertex progs", ini gpu_vertex; on by
 default, confirmed in play on Windows): shaders/vsh.vert runs the compiled program on the
 game's raw stream bytes; same pixels as the CPU in an episode 1 capture
 (PDO_CAPTURE_CPUVSH=1 draws both); vertex programs 91-196 -> 5-10 ms/s
-here. CPU still: points, programs that write constants, fixed-function.
+here. GPU fixed-function vertices (overlay: "Fixed-func", ini gpu_fixed;
+off by default until confirmed in play): shaders/fvf.vert does fetch_fvf
+and light_vertex from the raw bytes and per-draw uniforms; an episode 1
+capture differs from the CPU in 7 pixels by 1 level; fixed-function
+300 -> 5 ms/s here. CPU still: points, programs that write constants.
 Target: run well on a Snapdragon 865 (Android, Adreno 650). For that:
-1. Vertex work on the GPU: vertex programs done (toggle); the
-   fixed-function transform and lighting next (CPU in d3d_hle.c). 2. Texture change tracking by writes instead
+1. Vertex work on the GPU: done behind two toggles; default gpu_fixed on
+   once tested. 2. Texture change tracking by writes instead
    of hashing every texture's mip chain each frame. 3. Measure the
    recompiled code and the guest CPU lock on ARM.
 
@@ -91,7 +95,8 @@ Target: run well on a Snapdragon 865 (Android, Adreno 650). For that:
 
 Confirmed on Windows. F1, or Back+Start on a controller: resolution scale 1-4x, anti-aliasing
 (MSAA up to what the GPU takes), 4:3 or stretch, TV softening, master
-volume, FPS counter. The game waits in Swap and the sound holds while it
+volume, FPS counter, vertex programs and fixed-function vertices on
+CPU or GPU. The game waits in Swap and the sound holds while it
 is open; settings go to ortarecomp.ini when it closes.
 
 ## Testing

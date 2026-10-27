@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_CLOSE, ITEM_COUNT };
 
 static bool open_, dirty = true, swallow;
 static int selected;
@@ -72,6 +72,7 @@ static void change(int dir)
     case ITEM_VOLUME: s->master_volume = SDL_clamp(s->master_volume + 5 * dir, 0, 100); break;
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
+    case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     }
     dirty = true;
@@ -195,6 +196,7 @@ static void draw_menu(void)
     snprintf(lines[ITEM_VOLUME], sizeof lines[0], "%-15s%d%%", "Volume", s->master_volume);
     snprintf(lines[ITEM_FPS], sizeof lines[0], "%-15s%s", "Show FPS", s->show_fps ? "On" : "Off");
     snprintf(lines[ITEM_VSH], sizeof lines[0], "%-15s%s", "Vertex progs", s->gpu_vertex ? "GPU" : "CPU");
+    snprintf(lines[ITEM_FVF], sizeof lines[0], "%-15s%s", "Fixed-func", s->gpu_fixed ? "GPU" : "CPU");
     snprintf(lines[ITEM_CLOSE], sizeof lines[0], "Close");
 
     SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
