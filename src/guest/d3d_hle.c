@@ -277,13 +277,17 @@ void sub_002BAFC0(void)
             {
                 double k = 1e-6 * SDL_NS_PER_SECOND / (double)(now - t0);   /* ns -> ms per second */
                 Uint64 tex = pdo_gfx_take_texture_ns();
+                uint32_t made;
+                Uint64 pipe = pdo_gfx_take_pipeline_ns(&made);
                 Uint64 known = perf_ns[PERF_DRAWS] + perf_ns[PERF_PRESENT] + perf_ns[PERF_VBLANK];
                 Uint64 span = now - t0;
                 SDL_Log("d3d: ms per second: draws %.0f (vertex programs %.0f, fixed-function vertices %.0f), "
-                        "renderer %.0f (textures %.0f), vblank wait %.0f, the rest (game code) %.0f",
+                        "renderer %.0f (textures %.0f, new pipelines %.0f), vblank wait %.0f, the rest (game code) %.0f",
                         perf_ns[PERF_DRAWS] * k, perf_ns[PERF_VSH] * k, perf_ns[PERF_FVF] * k,
-                        perf_ns[PERF_PRESENT] * k, tex * k, perf_ns[PERF_VBLANK] * k,
+                        perf_ns[PERF_PRESENT] * k, tex * k, pipe * k, perf_ns[PERF_VBLANK] * k,
                         span > known ? (span - known) * k : 0.0);
+                if (made)
+                    SDL_Log("d3d: %u new pipelines made in the last %.1f s", made, (double)span / 1e9);
                 memset(perf_ns, 0, sizeof perf_ns);
             }
             t0 = now, f0 = n, v0 = current_vblank();

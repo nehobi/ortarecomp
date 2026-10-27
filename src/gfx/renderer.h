@@ -209,6 +209,8 @@ bool pdo_gfx_capturing(void);
 /* Nanoseconds spent finding, hashing and decoding textures since the last
  * call (the game thread's timing log, d3d_hle.c). */
 uint64_t pdo_gfx_take_texture_ns(void);
+/* Time spent making pipelines mid-game since the last call, and how many. */
+uint64_t pdo_gfx_take_pipeline_ns(uint32_t *made);
 
 /* D3DDevice_CopyRects, one rectangle: src (x, y, w, h) to dst at (dx, dy),
  * clipped to both surfaces. Either may be the back buffer. */

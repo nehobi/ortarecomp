@@ -384,6 +384,85 @@ static SDL_GPUCompareOp compare_op(uint16_t gl)
 static struct { pdo_pipeline_state key; SDL_GPUGraphicsPipeline *p; } pipelines[MAX_PIPELINES];
 static int npipelines;
 
+/* Making a pipeline mid-frame can take the driver tens of milliseconds, a
+ * visible hitch the first time an effect appears. Every state combination
+ * met is appended to pipelines.bin in the data folder, and the next start
+ * (or a change of anti-aliasing) makes them all up front. The file is
+ * only a list of our own keys: a different build or a bad file is ignored. */
+#define PIPELINE_FILE_MAGIC 0x4C505044u /* "DPPL" */
+static bool warming;                     /* making the saved ones: do not save again */
+static Uint64 pipeline_ns;               /* time making them mid-game, for the timing log */
+static uint32_t pipelines_made;
+
+static void pipeline_file(char *path, size_t n)
+{
+    snprintf(path, n, "%spipelines.bin", pdo_data_dir());
+}
+
+static void save_pipeline_key(const pdo_pipeline_state *ps)
+{
+    char path[PDO_PATH_MAX];
+    SDL_PathInfo info;
+    SDL_IOStream *io;
+
+    pipeline_file(path, sizeof path);
+    if (!SDL_GetPathInfo(path, &info) || info.size == 0) {
+        uint32_t head[2] = { PIPELINE_FILE_MAGIC, (uint32_t)sizeof *ps };
+        io = SDL_IOFromFile(path, "wb");
+        if (!io)
+            return;
+        SDL_WriteIO(io, head, sizeof head);
+    } else {
+        io = SDL_IOFromFile(path, "ab");
+        if (!io)
+            return;
+    }
+    SDL_WriteIO(io, ps, sizeof *ps);
+    SDL_CloseIO(io);
+}
+
+static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps);
+
+static void warm_pipelines(void)
+{
+    char path[PDO_PATH_MAX];
+    size_t size = 0;
+    uint8_t *data;
+    Uint64 t0 = SDL_GetTicksNS();
+    int before = npipelines;
+
+    pipeline_file(path, sizeof path);
+    data = SDL_LoadFile(path, &size);
+    if (!data)
+        return;
+    if (size >= 8 && ((uint32_t *)data)[0] == PIPELINE_FILE_MAGIC
+            && ((uint32_t *)data)[1] == sizeof(pdo_pipeline_state)) {
+        warming = true;
+        for (size_t o = 8; o + sizeof(pdo_pipeline_state) <= size && npipelines < MAX_PIPELINES;
+             o += sizeof(pdo_pipeline_state)) {
+            pdo_pipeline_state ps;
+            memcpy(&ps, data + o, sizeof ps);
+            get_pipeline(&ps);
+        }
+        warming = false;
+        SDL_Log("gfx: made %d saved pipelines in %.0f ms", npipelines - before,
+                (double)(SDL_GetTicksNS() - t0) / 1e6);
+    } else {
+        SDL_Log("gfx: %s is from another build; starting it again", path);
+        SDL_RemovePath(path);
+    }
+    SDL_free(data);
+}
+
+uint64_t pdo_gfx_take_pipeline_ns(uint32_t *made)
+{
+    Uint64 t = pipeline_ns;
+    *made = pipelines_made;
+    pipeline_ns = 0;
+    pipelines_made = 0;
+    return t;
+}
+
 static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
 {
     SDL_GPUGraphicsPipelineCreateInfo pi;
@@ -392,12 +471,14 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     SDL_GPUColorTargetDescription ct;
     SDL_GPUGraphicsPipeline *p;
     uint32_t cw = ps->color_write;
+    Uint64 t0;
 
     for (int i = 0; i < npipelines; i++)
         if (!memcmp(&pipelines[i].key, ps, sizeof *ps))
             return pipelines[i].p;
     if (npipelines == MAX_PIPELINES)
         return pipelines[0].p;
+    t0 = SDL_GetTicksNS();
 
     SDL_zero(vb);
     vb.slot = 0;
@@ -491,6 +572,11 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     pipelines[npipelines].key = *ps;
     pipelines[npipelines].p = p;
     npipelines++;
+    if (!warming) {
+        pipeline_ns += SDL_GetTicksNS() - t0;
+        pipelines_made++;
+        save_pipeline_key(ps);
+    }
     return p;
 }
 
@@ -1059,6 +1145,7 @@ static void apply_quality(void)
     }
     output = make_output();
     make_seed_pipeline();
+    warm_pipelines();
     SDL_Log("gfx: rendering at %dx (%dx%d), %d sample%s", rscale, frame_w * rscale, frame_h * rscale,
             nsamples, nsamples > 1 ? "s" : "");
 }
@@ -1309,6 +1396,7 @@ bool pdo_gfx_init(int width, int height)
 
     if (!init_present())
         return false;
+    warm_pipelines();
 
     if (getenv("PDO_CAPTURE"))      /* same as F12 at that frame */
         capture_frame = (uint64_t)atoll(getenv("PDO_CAPTURE"));
