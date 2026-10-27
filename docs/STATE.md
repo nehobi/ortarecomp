@@ -76,8 +76,8 @@ episode 1 boss went from 42 to 55 fps average on a 4-core test machine.
 Player's PC in play (timing lines, ms/s), after the texture hash fix, at
 up to 4x with MSAA: draws 333 (fixed-function 165, vertex programs 122),
 renderer 216 (textures 47), game code 258; 57 fps average.
-GPU vertex programs (overlay: "Vertex progs", ini gpu_vertex, off by
-default until confirmed): shaders/vsh.vert runs the compiled program on the
+GPU vertex programs (overlay: "Vertex progs", ini gpu_vertex; on by
+default, confirmed in play on Windows): shaders/vsh.vert runs the compiled program on the
 game's raw stream bytes; same pixels as the CPU in an episode 1 capture
 (PDO_CAPTURE_CPUVSH=1 draws both); vertex programs 91-196 -> 5-10 ms/s
 here. CPU still: points, programs that write constants, fixed-function.

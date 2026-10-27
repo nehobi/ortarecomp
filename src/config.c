@@ -11,7 +11,7 @@
 
 static char data_dir[PDO_PATH_MAX];
 
-static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, false, 100, false, false };
+static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, false, 100, false, true };
 
 pdo_settings *pdo_settings_get(void)
 {
