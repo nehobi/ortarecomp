@@ -454,6 +454,15 @@ static void warm_pipelines(void)
     SDL_free(data);
 }
 
+static Uint64 swap_wait_ns;              /* waiting for a swapchain image, for the timing log */
+
+uint64_t pdo_gfx_take_swap_wait_ns(void)
+{
+    Uint64 t = swap_wait_ns;
+    swap_wait_ns = 0;
+    return t;
+}
+
 uint64_t pdo_gfx_take_pipeline_ns(uint32_t *made)
 {
     Uint64 t = pipeline_ns;
@@ -1396,6 +1405,8 @@ bool pdo_gfx_init(int width, int height)
 
     if (!init_present())
         return false;
+    SDL_Log("gfx: rendering at %dx (%dx%d), %d sample%s", rscale, frame_w * rscale, frame_h * rscale,
+            nsamples, nsamples == 1 ? "" : "s");
     warm_pipelines();
 
     if (getenv("PDO_CAPTURE"))      /* same as F12 at that frame */
@@ -2156,8 +2167,13 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
             SDL_ReleaseGPUTransferBuffer(dev, tb);
         }
     }
-    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh) || !swap)
-        return;
+    {   /* Blocks while the GPU still has the frames in flight: GPU-bound time. */
+        Uint64 t0 = SDL_GetTicksNS();
+        bool ok = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh);
+        swap_wait_ns += SDL_GetTicksNS() - t0;
+        if (!ok || !swap)
+            return;
+    }
     SDL_zero(vp);
     if (st->aspect == PDO_ASPECT_STRETCH) {
         vp.w = (float)sw;
