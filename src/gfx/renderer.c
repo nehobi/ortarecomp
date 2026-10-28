@@ -33,7 +33,7 @@ static SDL_GPUTexture *frame_color, *frame_depth, *white;
 static SDL_GPUTextureFormat depth_format;
 static int frame_w, frame_h;
 static uint64_t frames;
-static SDL_GPUShader *vs, *fs, *vsh_vs, *fvf_vs;
+static SDL_GPUShader *vs, *fs, *fs_ps, *vsh_vs, *fvf_vs;
 
 /* Overlay settings in force: every render target is rscale times the game's
  * size (viewports and copies scaled to match), drawn with nsamples samples
@@ -540,7 +540,7 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
 
     SDL_zero(pi);
     pi.vertex_shader = ps->gpu_vsh == 1 ? vsh_vs : ps->gpu_vsh == 2 ? fvf_vs : vs;
-    pi.fragment_shader = fs;
+    pi.fragment_shader = ps->combiners && fs_ps ? fs_ps : fs;
     if (!ps->gpu_vsh) {         /* vsh.vert reads its streams from storage buffers */
         pi.vertex_input_state.vertex_buffer_descriptions = &vb;
         pi.vertex_input_state.num_vertex_buffers = 1;
@@ -1360,6 +1360,7 @@ bool pdo_gfx_init(int width, int height)
         fs = make_shader(ff_test_frag_spv, sizeof ff_test_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
     } else {
         fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+        fs_ps = make_shader(ff_ps_frag_spv, sizeof ff_ps_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
     }
     vsh_vs = make_shader_sb(vsh_vert_spv, sizeof vsh_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 3);
     if (!vsh_vs)
@@ -1927,6 +1928,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             pdo_pipeline_state ps = c->draw.ps;
             ps.single_sample = cur_target && cur_target->depth_only;
             ps.gpu_vsh = gpu;
+            ps.combiners = (c->draw.ff.ps_final[2] & 0xFF) != 0;
             p = get_pipeline(&ps);
         }
         if (!p)

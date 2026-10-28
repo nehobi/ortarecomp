@@ -2,6 +2,11 @@
 // Direct3D 8 fixed-function texture stages, interpreted from uniforms so one
 // shader covers every combination the game sets up. Values are the XDK's:
 // D3DTOP_* operations and D3DTA_* arguments.
+//
+// Built twice (tools/compile_shaders.py): as is, the texture stages only;
+// with PIXEL_SHADER, the register-combiner pixel shaders only. One shader
+// holding both made the GPU reserve the pixel shader's registers for every
+// draw, and at high resolution that alone made the GPU the bottleneck.
 
 layout(location = 0) in vec4 v_diffuse;
 layout(location = 1) in vec4 v_specular;
@@ -208,7 +213,77 @@ bool alpha_pass(float a)
 // Registers: 0 zero, 1 C0, 2 C1, 3 fog, 4 V0 (diffuse), 5 V1 (specular),
 // 8-11 T0-T3, 12 R0, 13 R1; in the final combiner also 14 V1+R0, 15 E*F.
 
-vec4 ps_reg[16];
+#ifdef PIXEL_SHADER
+// The registers as separate variables, read and written through switches:
+// a register number is the same for every pixel of a draw, so these are
+// uniform branches, where an indexed array would live in scratch memory.
+vec4 r_c0, r_c1, r_fog, r_v0, r_v1, r_t0, r_t1, r_t2, r_t3, r_r0, r_r1, r_vr, r_ef;
+
+vec4 reg(int i)
+{
+    switch (i) {
+    case 1:  return r_c0;
+    case 2:  return r_c1;
+    case 3:  return r_fog;
+    case 4:  return r_v0;
+    case 5:  return r_v1;
+    case 8:  return r_t0;
+    case 9:  return r_t1;
+    case 10: return r_t2;
+    case 11: return r_t3;
+    case 12: return r_r0;
+    case 13: return r_r1;
+    case 14: return r_vr;
+    case 15: return r_ef;
+    }
+    return vec4(0.0);           // 0 zero; 6 and 7 unused, never written
+}
+
+void set_rgb(int i, vec3 v)
+{
+    switch (i) {
+    case 1:  r_c0.rgb = v; break;
+    case 2:  r_c1.rgb = v; break;
+    case 3:  r_fog.rgb = v; break;
+    case 4:  r_v0.rgb = v; break;
+    case 5:  r_v1.rgb = v; break;
+    case 8:  r_t0.rgb = v; break;
+    case 9:  r_t1.rgb = v; break;
+    case 10: r_t2.rgb = v; break;
+    case 11: r_t3.rgb = v; break;
+    case 12: r_r0.rgb = v; break;
+    case 13: r_r1.rgb = v; break;
+    case 14: r_vr.rgb = v; break;
+    case 15: r_ef.rgb = v; break;
+    }
+}
+
+void set_a(int i, float v)
+{
+    switch (i) {
+    case 1:  r_c0.a = v; break;
+    case 2:  r_c1.a = v; break;
+    case 3:  r_fog.a = v; break;
+    case 4:  r_v0.a = v; break;
+    case 5:  r_v1.a = v; break;
+    case 8:  r_t0.a = v; break;
+    case 9:  r_t1.a = v; break;
+    case 10: r_t2.a = v; break;
+    case 11: r_t3.a = v; break;
+    case 12: r_r0.a = v; break;
+    case 13: r_r1.a = v; break;
+    case 14: r_vr.a = v; break;
+    case 15: r_ef.a = v; break;
+    }
+}
+
+vec4 tex_reg(int s)
+{
+    if (s == 0) return r_t0;
+    if (s == 1) return r_t1;
+    if (s == 2) return r_t2;
+    return r_t3;
+}
 
 int ps_word(ivec4 v[2], int i) { return v[i >> 2][i & 3]; }
 
@@ -229,7 +304,7 @@ float ps_map(float x, int m)
 
 vec3 ps_in_rgb(int b)
 {
-    vec4 r = ps_reg[b & 15];
+    vec4 r = reg(b & 15);
     vec3 v = (b & 16) != 0 ? vec3(r.a) : r.rgb;
     int m = (b >> 5) & 7;
     return vec3(ps_map(v.r, m), ps_map(v.g, m), ps_map(v.b, m));
@@ -237,7 +312,7 @@ vec3 ps_in_rgb(int b)
 
 float ps_in_alpha(int b)
 {
-    vec4 r = ps_reg[b & 15];
+    vec4 r = reg(b & 15);
     return ps_map((b & 16) != 0 ? r.a : r.b, (b >> 5) & 7);   // channel: blue or alpha
 }
 
@@ -267,7 +342,7 @@ vec4 ps_texture(int s, int mode)
         // BUMPENVMAP(_LUM): the previous stage's texel (du, dv), through
         // this stage's bump matrix, offsets these coordinates:
         // u += M00 du + M10 dv, v += M01 du + M11 dv.
-        vec4 prev = ps_reg[8 + s - 1];
+        vec4 prev = tex_reg(s - 1);
         vec4 m = bump_mat[s];
         uv += vec2(m.x * prev.r + m.w * prev.g, m.y * prev.r + m.z * prev.g);
         vec4 c = sample_tex(s, uv);
@@ -285,18 +360,22 @@ vec4 pixel_shader()
     bool unique_c0 = (ps_final.z & 0x1000) != 0;
     bool unique_c1 = (ps_final.z & 0x10000) != 0;
 
-    for (int i = 0; i < 16; i++) ps_reg[i] = vec4(0.0);
-    ps_reg[3] = vec4(fog_color.rgb, fog_factor());
-    ps_reg[4] = v_diffuse;
-    ps_reg[5] = v_specular;
-    for (int s = 0; s < 4; s++)
-        ps_reg[8 + s] = ps_texture(s, (ps_final.w >> (5 * s)) & 31);
-    ps_reg[12] = vec4(0.0, 0.0, 0.0, ps_reg[8].a);        // R0 starts with T0's alpha
+    r_c0 = r_c1 = r_vr = r_ef = r_r1 = vec4(0.0);
+    r_t0 = r_t1 = r_t2 = r_t3 = vec4(0.0);
+    r_fog = vec4(fog_color.rgb, fog_factor());
+    r_v0 = v_diffuse;
+    r_v1 = v_specular;
+    // In order: a bump-mapped stage reads the one before it.
+    r_t0 = ps_texture(0, ps_final.w & 31);
+    r_t1 = ps_texture(1, (ps_final.w >> 5) & 31);
+    r_t2 = ps_texture(2, (ps_final.w >> 10) & 31);
+    r_t3 = ps_texture(3, (ps_final.w >> 15) & 31);
+    r_r0 = vec4(0.0, 0.0, 0.0, r_t0.a);                    // R0 starts with T0's alpha
 
     for (int i = 0; i < 8; i++) {
         if (i >= count) break;
-        ps_reg[1] = ps_c0[unique_c0 ? i : 0];
-        ps_reg[2] = ps_c1[unique_c1 ? i : 0];
+        r_c0 = ps_c0[unique_c0 ? i : 0];
+        r_c1 = ps_c1[unique_c1 ? i : 0];
 
         // RGB portion
         int ri = ps_word(ps_rgb_in, i), ro = ps_word(ps_rgb_out, i);
@@ -304,7 +383,7 @@ vec4 pixel_shader()
         int rf = ro >> 12;
         vec3 ab = (rf & 2) != 0 ? vec3(dot(A, B)) : A * B;
         vec3 cd = (rf & 1) != 0 ? vec3(dot(C, D)) : C * D;
-        bool mux_r0 = mux_msb ? ps_reg[12].a >= 0.5 : (int(ps_reg[12].a * 255.0 + 0.5) & 1) != 0;
+        bool mux_r0 = mux_msb ? r_r0.a >= 0.5 : (int(r_r0.a * 255.0 + 0.5) & 1) != 0;
         vec3 sum = (rf & 4) != 0 ? (mux_r0 ? cd : ab) : ab + cd;
         int rmap = (rf >> 3) & 7;
         ab = ps_scale(vec4(ab, 0.0), rmap).rgb;
@@ -324,48 +403,48 @@ vec4 pixel_shader()
         asum = ps_scale(vec4(asum), amap).x;
 
         // Writes, after everything in the stage has been read.
-        int d;
-        d = ro & 15;         if (d != 0) ps_reg[d].rgb = cd;
-        d = (ro >> 4) & 15;  if (d != 0) ps_reg[d].rgb = ab;
-        d = (ro >> 8) & 15;  if (d != 0) ps_reg[d].rgb = sum;
-        if ((rf & 0x40) != 0 && (ro & 15) != 0) ps_reg[ro & 15].a = cd.b;        // CD blue to alpha
-        if ((rf & 0x80) != 0 && ((ro >> 4) & 15) != 0) ps_reg[(ro >> 4) & 15].a = ab.b;
-        d = ao & 15;         if (d != 0) ps_reg[d].a = acd;
-        d = (ao >> 4) & 15;  if (d != 0) ps_reg[d].a = aab;
-        d = (ao >> 8) & 15;  if (d != 0) ps_reg[d].a = asum;
+        set_rgb(ro & 15, cd);
+        set_rgb((ro >> 4) & 15, ab);
+        set_rgb((ro >> 8) & 15, sum);
+        if ((rf & 0x40) != 0) set_a(ro & 15, cd.b);         // CD blue to alpha
+        if ((rf & 0x80) != 0) set_a((ro >> 4) & 15, ab.b);
+        set_a(ao & 15, acd);
+        set_a((ao >> 4) & 15, aab);
+        set_a((ao >> 8) & 15, asum);
     }
 
     // Final combiner: A*B + (1-A)*C + D; alpha from G.
     if (ps_final.x == 0 && ps_final.y == 0) {
-        vec4 r = clamp(ps_reg[12], 0.0, 1.0);
+        vec4 r = clamp(r_r0, 0.0, 1.0);
         return vec4(apply_fog(r.rgb), r.a);
     }
-    ps_reg[1] = ps_fc0;
-    ps_reg[2] = ps_fc1;
+    r_c0 = ps_fc0;
+    r_c1 = ps_fc1;
     int fa = ps_final.x, fe = ps_final.y, fflags = fe & 0xFF;
-    vec4 v1 = ps_reg[5], r0 = ps_reg[12];
+    vec4 v1 = r_v1, r0 = r_r0;
     if ((fflags & 0x40) != 0) v1 = 1.0 - clamp(v1, 0.0, 1.0);   // COMPLEMENT_V1
     if ((fflags & 0x20) != 0) r0 = 1.0 - clamp(r0, 0.0, 1.0);   // COMPLEMENT_R0
     vec4 s = v1 + r0;
     if ((fflags & 0x80) != 0) s = clamp(s, 0.0, 1.0);           // CLAMP_SUM
-    ps_reg[14] = vec4(s.rgb, 0.0);
+    r_vr = vec4(s.rgb, 0.0);
     vec3 E = ps_in_rgb(fe >> 24), F = ps_in_rgb(fe >> 16);
-    ps_reg[15] = vec4(E * F, 0.0);
+    r_ef = vec4(E * F, 0.0);
     vec3 A = clamp(ps_in_rgb(fa >> 24), 0.0, 1.0), B = clamp(ps_in_rgb(fa >> 16), 0.0, 1.0);
     vec3 C = clamp(ps_in_rgb(fa >> 8), 0.0, 1.0), D = clamp(ps_in_rgb(fa), 0.0, 1.0);
     float G = clamp(ps_in_alpha(fe >> 8), 0.0, 1.0);
     return clamp(vec4(A * B + (1.0 - A) * C + D, G), 0.0, 1.0);
 }
 
+#endif
+
 void main()
 {
-    if ((ps_final.z & 0xFF) != 0) {
-        vec4 c = pixel_shader();
-        if (alpha_test.x != 0 && !alpha_pass(c.a))
-            discard;
-        out_color = c;
-        return;
-    }
+#ifdef PIXEL_SHADER
+    vec4 c = pixel_shader();
+    if (alpha_test.x != 0 && !alpha_pass(c.a))
+        discard;
+    out_color = c;
+#else
 
     vec4 current = v_diffuse;
     vec4 temp = vec4(0.0);
@@ -391,4 +470,5 @@ void main()
     if (alpha_test.x != 0 && !alpha_pass(current.a))
         discard;
     out_color = current;
+#endif
 }

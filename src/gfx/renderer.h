@@ -91,6 +91,8 @@ typedef struct pdo_pipeline_state {
     uint16_t z_func;
     uint8_t  gpu_vsh;           /* renderer only: vertices from shaders/vsh.vert (1)
                                  * or shaders/fvf.vert (2) */
+    uint8_t  combiners;         /* renderer only: a pixel shader (ff.frag built with
+                                 * PIXEL_SHADER), not the texture stages */
     uint32_t color_write;       /* Xbox D3DCOLORWRITEENABLE_* bits */
     /* Polygon offset (D3DRS_ZBIAS sets these): constant in depth-buffer
      * units, and slope scale. Decals rely on it to win against the wall. */
