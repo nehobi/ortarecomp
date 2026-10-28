@@ -63,7 +63,11 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    got yes, then waited on an event only the worker's own path sees set.
    Every thread shared one fake thread object, so GetCurrentThreadId was
    the same everywhere, and PsCreateSystemThreadEx never wrote ThreadId.
-   Patch 0025 gives each thread its own object and id. Still open:
+   Patch 0025 gives each thread its own object and id. It hung again
+   later in the stream destructor (0x0029FB40: SetEvent on the worker's
+   stop event, ResumeThread, wait): the worker never woke. Likely cause,
+   fixed by patch 0026: the kernel's handle table was claimed without
+   locking, so two threads could share a token. Still open:
    PsCreateSystemThreadEx ignores CreateSuspended (CRI's threads ask).
 
 ## Performance
