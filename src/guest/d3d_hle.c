@@ -307,6 +307,33 @@ void sub_002BAFC0(void)
     g_esp += 4 + 4;
 }
 
+/* D3D8 CDevice::KickOff (thiscall, the device in ecx): hand the push buffer
+ * written so far to the GPU. Before writing DMA PUT it asks the frame
+ * buffer interface to flush (sets 0x10000 in NV2A 0x100410) and spins until
+ * the GPU clears the bit -- here, until xboxrecomp's register thread gets
+ * round to it, which cost the game thread most of a core in spinning. No
+ * GPU reads this push buffer (our renderer draws from the D3D calls), so the
+ * flush is done as soon as asked: the same writes, without the wait. The
+ * rare path (device flag 0x2000) and the library's synchronous mode
+ * (0x002BD70C, waiting for IsBusy) stay the original code. */
+extern void sub_002B2F10_gen(void);
+void sub_002B2F10(void)
+{
+    uint32_t dev = g_ecx, put;
+
+    if ((MEM32(dev + 8) & 0x2000) || MEM32(0x002BD70C)) {
+        sub_002B2F10_gen();
+        return;
+    }
+    put = (MEM32(dev + 8) & 4) ? MEM32(dev + 0x35C) : MEM32(dev);
+    MEM32(dev + 0x2C) = put;
+    MEM32(MEM32(dev + 0x23BC) + 0x40) = put & 0x0FFFFFFFu;     /* DMA PUT */
+    g_eax = 0;              /* registers as the original leaves them */
+    g_ecx = dev;
+    g_edx = put & 0x0FFFFFFFu;
+    g_esp += 4;
+}
+
 /* D3D_BlockOnTime(Time, Flags): every GPU wait in the library comes here
  * ("has the GPU got past push-buffer time T yet?"). Our renderer copies what
  * it needs at draw time and presents synchronously, so the GPU is never

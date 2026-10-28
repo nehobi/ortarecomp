@@ -89,7 +89,13 @@ by default, confirmed in play): shaders/fvf.vert does fetch_fvf
 and light_vertex from the raw bytes and per-draw uniforms; an episode 1
 capture differs from the CPU in 7 pixels by 1 level; fixed-function
 300 -> 5 ms/s here. CPU still: points, programs that write constants.
-Target: run well on a Snapdragon 865 (Android, Adreno 650). For that:
+CPU: xboxrecomp's NV2A register thread spun a whole core (Sleep(0)); the
+game thread spun in D3D CDevice::KickOff on its flush handshake until that
+thread cleared the bit. KickOff is overridden without the wait and the
+thread sleeps 1 ms (patch 0027): 445 -> 122 s CPU over a 330 s run here.
+Later goal: an option above 60 fps; the game steps once per frame, so
+the renderer would interpolate between 60 Hz game frames.
+Goal: headroom on lesser PCs; phones later (Vulkan/Turnip). For that:
 1. Vertex work on the GPU: done, both on by default (toggles kept). 2. Texture change tracking by writes instead
    of hashing every texture's mip chain each frame. 3. Measure the
    recompiled code and the guest CPU lock on ARM.
