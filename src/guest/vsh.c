@@ -931,10 +931,16 @@ static int SDLCALL worker(void *unused)
 
 void pdo_vsh_parallel(uint32_t count, void (*fn)(void *, uint32_t, uint32_t), void *ctx)
 {
+    /* Small draws are not worth waking anyone for. */
+    pdo_parallel(count, 64, 256, fn, ctx);
+}
+
+void pdo_parallel(uint32_t count, uint32_t chunk, uint32_t min_count,
+                  void (*fn)(void *, uint32_t, uint32_t), void *ctx)
+{
     static bool started;
 
-    /* Small draws are not worth waking anyone for. */
-    if (count < 256) {
+    if (count < min_count || count <= chunk) {
         fn(ctx, 0, count);
         return;
     }
@@ -960,7 +966,7 @@ void pdo_vsh_parallel(uint32_t count, void (*fn)(void *, uint32_t, uint32_t), vo
     pool.fn = fn;
     pool.ctx = ctx;
     pool.count = count;
-    pool.chunk = 64;
+    pool.chunk = chunk;
     SDL_SetAtomicInt(&pool.next, 0);
     for (int i = 0; i < pool.workers; i++)
         SDL_SignalSemaphore(pool.go);

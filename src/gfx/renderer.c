@@ -8,6 +8,7 @@
 
 #include "gfx/shaders_spv.h"
 #include "gfx/xtex.h"
+#include "guest/vsh.h"      /* pdo_parallel */
 
 #include <SDL3/SDL.h>
 
@@ -647,6 +648,7 @@ static SDL_GPUSampler *get_sampler(const pdo_tex_ref *t)
 typedef struct gtex {
     uint32_t data, format_word, size_word;
     uint64_t hash;
+    bool     uploaded;      /* the GPU copy holds data with that hash */
     uint64_t last_used;
     uint32_t w, h;
     SDL_GPUTexture *tex;
@@ -926,15 +928,23 @@ typedef struct pending_upload {
 
 #define MAX_UPLOADS 2048
 
-/* Find or create the GPU texture for t; if its texels need (re)uploading,
- * decode them into *staging and note the upload. */
-static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint32_t *staging_len,
-                                   uint32_t *staging_cap, pending_upload *ups, int *nups)
+/* A texture used this frame, to hash and maybe upload (check_textures). */
+static struct tex_check {
+    gtex          *g;
+    const uint8_t *src;
+    pdo_xtex_info  info;
+    uint32_t       levels, bytes;
+    uint64_t       hash;
+} *checks;
+static uint32_t nchecks, cap_checks;
+
+/* Find or create the GPU texture for t, and queue it for check_textures
+ * the first time it is used in a frame. */
+static SDL_GPUTexture *texture_for(const pdo_tex_ref *t)
 {
     pdo_xtex_info info;
     const uint8_t *src;
     gtex *g = NULL;
-    uint64_t h;
     uint32_t levels;
 
     if (!t->data)
@@ -977,12 +987,6 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
     /* The CPU view of a resource is Data | 0x80000000, as D3D computes it. */
     src = (const uint8_t *)((uintptr_t)(t->data | 0x80000000u) + g_xbox_mem_offset);
     levels = info.known ? pdo_xtex_level_count(&info) : 1;
-    {   /* the whole mip chain, so a rewrite of any level is seen */
-        pdo_xtex_info last;
-        uint32_t off;
-        pdo_xtex_level(&info, levels - 1, &last, &off);
-        h = info.bytes ? hash_bytes(src, off + last.bytes) : 0;
-    }
     if (!g) {
         SDL_GPUTextureCreateInfo ti;
         if (ntextures == MAX_TEXTURES)
@@ -994,7 +998,6 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
         g->size_word = t->size_word;
         g->w = info.width;
         g->h = info.height;
-        g->hash = h + 1;    /* force the first upload */
         SDL_zero(ti);
         ti.type = SDL_GPU_TEXTURETYPE_2D;
         ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -1006,7 +1009,66 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
         g->tex = SDL_CreateGPUTexture(dev, &ti);
     }
     g->last_used = frames;
-    if (g->hash != h && *nups + (int)levels <= MAX_UPLOADS) {
+    /* Hashed with the rest of the frame's textures, on the worker threads
+     * (check_textures); decoded after, if it changed. */
+    checks = grow(checks, &cap_checks, nchecks + 1, sizeof *checks);
+    checks[nchecks].g = g;
+    checks[nchecks].src = src;
+    checks[nchecks].info = info;
+    checks[nchecks].levels = levels;
+    {   /* the whole mip chain, so a rewrite of any level is seen */
+        pdo_xtex_info last;
+        uint32_t off;
+        pdo_xtex_level(&info, levels - 1, &last, &off);
+        checks[nchecks].bytes = info.bytes ? off + last.bytes : 0;
+    }
+    nchecks++;
+    return g->tex;
+}
+
+/* Hashed in blocks, so one large texture spreads over the workers too. */
+#define HASH_BLOCK (256u * 1024u)
+static struct { uint32_t check, offset, bytes; uint64_t hash; } *blocks;
+static uint32_t nblocks, cap_blocks;
+
+static void hash_blocks(void *ctx, uint32_t first, uint32_t end)
+{
+    (void)ctx;
+    for (uint32_t i = first; i < end; i++)
+        blocks[i].hash = hash_bytes(checks[blocks[i].check].src + blocks[i].offset, blocks[i].bytes);
+}
+
+/* Hash this frame's textures (in parallel: on the game thread it was a
+ * large share of the frame), then decode the ones that changed into
+ * *staging and note their uploads. */
+static void check_textures(uint8_t **staging, uint32_t *staging_len, uint32_t *staging_cap,
+                           pending_upload *ups, int *nups)
+{
+    nblocks = 0;
+    for (uint32_t i = 0; i < nchecks; i++)
+        for (uint32_t o = 0; o < checks[i].bytes; o += HASH_BLOCK) {
+            blocks = grow(blocks, &cap_blocks, nblocks + 1, sizeof *blocks);
+            blocks[nblocks].check = i;
+            blocks[nblocks].offset = o;
+            blocks[nblocks].bytes = checks[i].bytes - o < HASH_BLOCK ? checks[i].bytes - o : HASH_BLOCK;
+            nblocks++;
+        }
+    pdo_parallel(nblocks, 1, 4, hash_blocks, NULL);
+    for (uint32_t i = 0; i < nchecks; i++)
+        checks[i].hash = 0;
+    for (uint32_t b = 0; b < nblocks; b++) {     /* in order, per texture */
+        uint64_t *h = &checks[blocks[b].check].hash;
+        *h = rotl64(*h, 23) * 0x9E3779B97F4A7C15ull ^ blocks[b].hash;
+    }
+    for (uint32_t i = 0; i < nchecks; i++) {
+        gtex *g = checks[i].g;
+        const uint8_t *src = checks[i].src;
+        pdo_xtex_info info = checks[i].info;
+        uint32_t levels = checks[i].levels;
+        uint64_t h = checks[i].hash;
+
+        if ((g->uploaded && g->hash == h) || *nups + (int)levels > MAX_UPLOADS)
+            continue;
         /* Every mip level: sampled with only level 0, distant textures
          * shimmered and looked grainy. */
         for (uint32_t l = 0; l < levels; l++) {
@@ -1028,8 +1090,9 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t, uint8_t **staging, uint
             *staging_len += need;
         }
         g->hash = h;
+        g->uploaded = true;
     }
-    return g->tex;
+    nchecks = 0;
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────── */
@@ -1811,8 +1874,8 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     for (uint32_t i = 0; i < ncmds; i++)
         if (cmds[i].kind == CMD_DRAW)
             for (int s = 0; s < 4; s++)
-                cmd_tex[i * 4 + s] = texture_for(&cmds[i].draw.tex[s], &staging, &staging_len,
-                                                 &staging_cap, ups, &nups);
+                cmd_tex[i * 4 + s] = texture_for(&cmds[i].draw.tex[s]);
+    check_textures(&staging, &staging_len, &staging_cap, ups, &nups);
     texture_ns += SDL_GetTicksNS() - tex_t0;
 
     /* A new program buffer (more programs than fit) needs them all again. */

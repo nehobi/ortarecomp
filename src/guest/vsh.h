@@ -102,6 +102,11 @@ bool pdo_vsh_gpu_code(const pdo_vsh_program *p, uint32_t *out);
 /* Run fn(ctx, first, end) over [0, count) split across worker threads (the
  * calling thread takes a share too). Returns when all parts are done. */
 void pdo_vsh_parallel(uint32_t count, void (*fn)(void *ctx, uint32_t first, uint32_t end), void *ctx);
+/* The same pool for any work: chunk items per task, and below min_count
+ * items (or a single chunk) on the calling thread alone. Not reentrant:
+ * one caller at a time (the game thread). */
+void pdo_parallel(uint32_t count, uint32_t chunk, uint32_t min_count,
+                  void (*fn)(void *ctx, uint32_t first, uint32_t end), void *ctx);
 
 /* Decode one input attribute of D3DVSDT type 'type' at host pointer src. */
 void pdo_vsh_fetch(uint8_t type, const uint8_t *src, float out[4]);
