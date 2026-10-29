@@ -25,6 +25,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#define HAVE_SSE2 1
+#endif
 
 #define D3D_DEVICE_PTR      0x002BD708u     /* D3D__pDevice */
 /* Device fields moved by 0x124 from 4134: JSRF's callback is at +0x242C. */
@@ -46,7 +50,16 @@ static void note_backbuffers(void);
 
 /* Draw calls since the last fps line: made, drawn, and dropped (no vertex
  * data, an unhandled FVF or a program never created). */
-static SDL_AtomicInt draws_called, draws_drawn, draws_dropped;
+/* Only guest code touches these (draws and Swap), and the guest CPU lock
+ * runs it one thread at a time: plain counters. */
+static uint32_t draws_called, draws_drawn, draws_dropped;
+
+static uint32_t take(uint32_t *v)
+{
+    uint32_t t = *v;
+    *v = 0;
+    return t;
+}
 
 /* Call a guest __cdecl function taking one pointer argument. */
 static void call_guest_cdecl1(uint32_t fn_va, uint32_t arg)
@@ -272,8 +285,7 @@ void sub_002BAFC0(void)
             double fps = (double)(n - f0) * SDL_NS_PER_SECOND / (double)(now - t0);
             SDL_Log("d3d: %.2f fps (%.2f vblanks per frame), frame %llu; draws %d, drawn %d, dropped %d", fps,
                     (double)(current_vblank() - v0) / (double)(n - f0), (unsigned long long)n,
-                    SDL_SetAtomicInt(&draws_called, 0), SDL_SetAtomicInt(&draws_drawn, 0),
-                    SDL_SetAtomicInt(&draws_dropped, 0));
+                    take(&draws_called), take(&draws_drawn), take(&draws_dropped));
             {
                 double k = 1e-6 * SDL_NS_PER_SECOND / (double)(now - t0);   /* ns -> ms per second */
                 Uint64 tex = pdo_gfx_take_texture_ns();
@@ -1967,7 +1979,7 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
             static int warned;
             if (!warned++)
                 SDL_Log("d3d: vertex shader 0x%08x was never created through CreateVertexShader", st.vshader);
-            SDL_AddAtomicInt(&draws_dropped, 1);
+            draws_dropped++;
             return;
         }
         {
@@ -2004,7 +2016,7 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
         static int warned;
         if (!warned++)
             SDL_Log("d3d: FVF 0x%x not handled", st.vshader);
-        SDL_AddAtomicInt(&draws_dropped, 1);
+        draws_dropped++;
         return;
     }
     fill_draw_state(&d, pre);
@@ -2073,7 +2085,7 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
     } else {
         pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
     }
-    SDL_AddAtomicInt(&draws_drawn, 1);
+    draws_drawn++;
 }
 
 static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
@@ -2105,18 +2117,49 @@ static uint32_t vb_data(void)
 /* D3DDevice_DrawVertices(PrimitiveType, StartVertex, VertexCount) */
 void sub_002AF2B0(void)
 {
-    SDL_AddAtomicInt(&draws_called, 1);
+    draws_called++;
     uint32_t type = MEM32(g_esp + 4), start = MEM32(g_esp + 8), n = MEM32(g_esp + 12);
     if (vb_data() && n)
         submit(type, vb_data(), st.stride, start, n, sequential(n), n);
     g_esp += 4 + 12;
 }
 
+/* The smallest and largest of n 16-bit indices: eight at a time with SSE2
+ * (signed 16-bit min/max on values offset by 0x8000), the rest one by one. */
+static void index_range(const uint16_t *idx, uint32_t n, uint32_t *lo, uint32_t *hi)
+{
+    uint32_t i = 0, l = 0xFFFF, h = 0;
+#ifdef HAVE_SSE2
+    if (n >= 16) {
+        const __m128i bias = _mm_set1_epi16((short)0x8000);
+        __m128i vl = _mm_set1_epi16(0x7FFF), vh = _mm_set1_epi16((short)0x8000);
+        uint16_t a[8], b[8];
+        for (; i + 8 <= n; i += 8) {
+            __m128i v = _mm_xor_si128(_mm_loadu_si128((const __m128i *)(idx + i)), bias);
+            vl = _mm_min_epi16(vl, v);
+            vh = _mm_max_epi16(vh, v);
+        }
+        _mm_storeu_si128((__m128i *)a, _mm_xor_si128(vl, bias));
+        _mm_storeu_si128((__m128i *)b, _mm_xor_si128(vh, bias));
+        for (int k = 0; k < 8; k++) {
+            l = a[k] < l ? a[k] : l;
+            h = b[k] > h ? b[k] : h;
+        }
+    }
+#endif
+    for (; i < n; i++) {
+        l = idx[i] < l ? idx[i] : l;
+        h = idx[i] > h ? idx[i] : h;
+    }
+    *lo = l;
+    *hi = h;
+}
+
 /* D3DDevice_DrawIndexedVertices(PrimitiveType, VertexCount, pIndexData):
  * 16-bit indices, offset by SetIndices' BaseVertexIndex. */
 void sub_002AF350(void)
 {
-    SDL_AddAtomicInt(&draws_called, 1);
+    draws_called++;
     uint32_t type = MEM32(g_esp + 4), n = MEM32(g_esp + 8), pidx = MEM32(g_esp + 12);
     static uint32_t *order, cap;
     uint32_t lo = 0xFFFFFFFFu, hi = 0;
@@ -2130,11 +2173,7 @@ void sub_002AF350(void)
             cap = n * 2;
             order = SDL_realloc(order, cap * sizeof *order);
         }
-        for (uint32_t i = 0; i < n; i++) {
-            uint32_t v = idx[i];
-            ilo = v < ilo ? v : ilo;
-            ihi = v > ihi ? v : ihi;
-        }
+        index_range(idx, n, &ilo, &ihi);
         lo = ilo + base;
         hi = ihi + base;
         for (uint32_t i = 0; i < n; i++)
@@ -2148,7 +2187,7 @@ void sub_002AF350(void)
  * VertexStreamZeroStride) */
 void sub_002AF010(void)
 {
-    SDL_AddAtomicInt(&draws_called, 1);
+    draws_called++;
     uint32_t type = MEM32(g_esp + 4), n = MEM32(g_esp + 8), data = MEM32(g_esp + 12), stride = MEM32(g_esp + 16);
     if (data && n)
         submit(type, data, stride, 0, n, sequential(n), n);
@@ -2184,7 +2223,7 @@ void sub_00279E50(void)
 {
     uint32_t p = inline_start, end = MEM32(INLINE_CURSOR), out = inline_start;
 
-    SDL_AddAtomicInt(&draws_called, 1);
+    draws_called++;
     while (p && p < end) {
         uint32_t head = MEM32(p), n = (head >> 18) & 0x7FF;
         if ((head & 0xE003FFFFu) != 0x40001818u || p + 4 + n * 4 > end) {
@@ -2208,7 +2247,7 @@ void sub_00279E50(void)
  * pVertexStreamZeroData, VertexStreamZeroStride) */
 void sub_002AF170(void)
 {
-    SDL_AddAtomicInt(&draws_called, 1);
+    draws_called++;
     uint32_t type = MEM32(g_esp + 4), n = MEM32(g_esp + 8), pidx = MEM32(g_esp + 12);
     uint32_t data = MEM32(g_esp + 16), stride = MEM32(g_esp + 20);
     static uint32_t *order, cap;
@@ -2339,7 +2378,7 @@ void sub_002AF600(void)
 /* D3DDevice_End() */
 void sub_002AF6A0(void)
 {
-    SDL_AddAtomicInt(&draws_called, 1);
+    draws_called++;
     if (imm.active && imm.n) {
         static uint32_t *ibuf, icap;
         pdo_draw d;
