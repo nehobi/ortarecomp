@@ -8,8 +8,8 @@
  * the state they need copied in) and replayed when the game calls Swap:
  * vertices, indices and textures are uploaded once, then every command is
  * drawn in order. Recording rather than drawing immediately is what later
- * allows interpolated frames and comparing frames against captures; see
- * docs/design/widescreen-and-framerate.md.
+ * allows drawing the frame on another thread, interpolated frames, and
+ * comparing frames against captures.
  *
  * The game renders into an internal target at its own resolution, presented
  * scaled with its aspect ratio kept. Debug switches (environment):
@@ -22,6 +22,15 @@
 
 bool pdo_gfx_init(int width, int height);
 void pdo_gfx_shutdown(void);
+
+/* Threads: the game runs on a thread of its own and the main thread, which
+ * owns the window, does all the drawing. On the main thread, before the
+ * game starts: pdo_gfx_prepare_threads; then pdo_gfx_main_loop, which draws
+ * the frames the game hands over at Swap (and does pdo_gfx_init when the
+ * game asks) until the game thread calls pdo_gfx_game_finished. */
+void pdo_gfx_prepare_threads(void);
+void pdo_gfx_main_loop(void);
+void pdo_gfx_game_finished(void);
 
 /* One vertex as the shaders see it. Positions are in clip space; colours are
  * D3DCOLORs; four texture coordinate sets of up to four components; fog is

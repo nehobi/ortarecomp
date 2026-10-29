@@ -17,6 +17,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_MSC_VER)
+#define PDO_TLS __declspec(thread)
+#else
+#define PDO_TLS _Thread_local
+#endif
+
 #define WINDOW_TITLE   "Orta Recomp"
 #define MAX_PIPELINES  1024
 #define MAX_SAMPLERS   64
@@ -96,26 +102,83 @@ typedef struct command {
     } vu;
 } command;
 
-static pdo_vertex *verts;
-static uint32_t nverts, cap_verts;
-static uint32_t *indices;
-static uint32_t nindices, cap_indices;
-static command *cmds;
-static uint32_t ncmds, cap_cmds;
+/* ── Threads ──────────────────────────────────────────────────────────────
+ * The game runs on a thread of its own; this file's GPU work all happens on
+ * the main thread, which owns the window. The game thread records a frame
+ * into a frame_data and, at Swap, resolves its textures (while guest memory
+ * still holds that frame's) and hands it over; the main thread uploads,
+ * replays and presents it. Three frame_datas go round: the one being
+ * recorded, one handed over, the one last drawn. F is the one this thread
+ * works on. */
 
-/* Vertex-program draws: this frame's stream bytes and constant sets, and
- * every program compiled so far (kept, uploaded again when one is added). */
-static uint8_t *blob;
-static uint32_t nblob, cap_blob;
-static float (*vconsts)[4];
-static uint32_t nvconsts, cap_vconsts;
-static int32_t last_consts = -1;
+typedef struct gtex gtex;
+typedef struct pending_upload pending_upload;
+
+/* A draw's texture stage as resolved on the game thread: a texture, or a
+ * render target (target_w not 0) that the main thread looks up by its
+ * memory and size, where it lives. */
+typedef struct tex_slot {
+    SDL_GPUTexture *tex;
+    uint32_t target_data, target_w, target_h;
+} tex_slot;
+
+typedef struct frame_data {
+    uint64_t frame;
+    command *cmds;
+    uint32_t ncmds, cap_cmds;
+    pdo_vertex *verts;
+    uint32_t nverts, cap_verts;
+    uint32_t *indices;
+    uint32_t nindices, cap_indices;
+    /* Vertex-program and fixed-function draws on the GPU: their stream
+     * bytes, constant sets and uniforms. */
+    uint8_t *blob;
+    uint32_t nblob, cap_blob;
+    float (*vconsts)[4];
+    uint32_t nvconsts, cap_vconsts;
+    int32_t last_consts;
+    pdo_fvf_uniforms *fvf_us;
+    uint32_t nfvf_us, cap_fvf_us;
+    /* Resolved at Swap: four slots a command, texels to upload. */
+    tex_slot *tex;
+    uint32_t cap_tex;
+    uint8_t *staging;
+    uint32_t staging_len, staging_cap;
+    pending_upload *ups;
+    int nups;
+    /* Every vertex program so far, when one was added since the last
+     * frame handed over; the gamma ramp, when it changed. */
+    uint32_t *progs;
+    uint32_t nprogs, cap_progs;
+    bool progs_new, gamma_new;
+    uint8_t gamma[256 * 4];
+} frame_data;
+
+static frame_data pool[3];
+static PDO_TLS frame_data *F;
+
+static SDL_Mutex *q_lock;
+static SDL_Condition *q_cond;
+static frame_data *ready;           /* handed over, not drawn yet */
+static frame_data *drawing;         /* the main thread is drawing it */
+static frame_data *last_drawn;      /* the main thread's latest */
+static bool game_done;              /* the game thread has ended */
+static int init_w, init_h, init_state;  /* pdo_gfx_init asked of the main thread:
+                                         * 1 asked, 2 done, 3 failed */
+static SDL_ThreadID main_thread;
+
+static bool on_main_thread(void)
+{
+    return !main_thread || SDL_GetCurrentThreadID() == main_thread;
+}
+
+static bool init_here(int width, int height);
+
+/* Every program compiled so far (game thread). */
 static uint32_t *progs;
 static uint32_t nprogs, cap_progs;
 static bool progs_dirty;
 static bool cpu_vsh;        /* captures only: GPU-vertex draws drawn from the CPU's vertices */
-static pdo_fvf_uniforms *fvf_us;
-static uint32_t nfvf_us, cap_fvf_us;
 
 static void *grow(void *p, uint32_t *cap, uint32_t need, size_t elem)
 {
@@ -126,20 +189,26 @@ static void *grow(void *p, uint32_t *cap, uint32_t need, size_t elem)
     return SDL_realloc(p, (size_t)*cap * elem);
 }
 
-/* Forget the frame's commands and what they recorded. */
-static void drop_frame(void)
+/* Forget a frame's commands and what they recorded. */
+static void reset_frame(frame_data *f)
 {
-    nverts = nindices = ncmds = 0;
-    nblob = nvconsts = nfvf_us = 0;
-    last_consts = -1;
+    f->nverts = f->nindices = f->ncmds = 0;
+    f->nblob = f->nvconsts = f->nfvf_us = 0;
+    f->last_consts = -1;
+    f->staging_len = 0;
+    f->nups = 0;
+    f->progs_new = f->gamma_new = false;
 }
+
+/* The game thread records into pool[0] first. */
+#define RECORDING() do { if (!F) { F = &pool[0]; reset_frame(F); } } while (0)
 
 static command *new_command(void)
 {
-    cmds = grow(cmds, &cap_cmds, ncmds + 1, sizeof *cmds);
-    memset(&cmds[ncmds], 0, sizeof *cmds);
-    cmds[ncmds].fvf = -1;
-    return &cmds[ncmds++];
+    F->cmds = grow(F->cmds, &F->cap_cmds, F->ncmds + 1, sizeof *F->cmds);
+    memset(&F->cmds[F->ncmds], 0, sizeof *F->cmds);
+    F->cmds[F->ncmds].fvf = -1;
+    return &F->cmds[F->ncmds++];
 }
 
 /* Bytes the vertex shaders read, 4-aligned with 8 bytes of slack past the
@@ -148,17 +217,18 @@ static uint32_t add_blob(const uint8_t *data, uint32_t n)
 {
     uint32_t at;
 
-    nblob = (nblob + 3) & ~3u;
-    blob = grow(blob, &cap_blob, nblob + n + 8, 1);
-    memcpy(blob + nblob, data, n);
-    at = nblob;
-    nblob += n;
-    memset(blob + nblob, 0, 8);
+    F->nblob = (F->nblob + 3) & ~3u;
+    F->blob = grow(F->blob, &F->cap_blob, F->nblob + n + 8, 1);
+    memcpy(F->blob + F->nblob, data, n);
+    at = F->nblob;
+    F->nblob += n;
+    memset(F->blob + F->nblob, 0, 8);
     return at;
 }
 
 void pdo_gfx_clear(uint32_t flags, uint32_t color, float z, uint32_t stencil)
 {
+    RECORDING();
     command *c = new_command();
     c->kind = CMD_CLEAR;
     c->clear_flags = flags;
@@ -172,13 +242,15 @@ void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
 {
     command *c;
 
+    RECORDING();
+
     if (!nv || !ni)
         return;
-    verts = grow(verts, &cap_verts, nverts + nv, sizeof *verts);
-    indices = grow(indices, &cap_indices, nindices + ni, sizeof *indices);
-    memcpy(verts + nverts, v, nv * sizeof *v);
+    F->verts = grow(F->verts, &F->cap_verts, F->nverts + nv, sizeof *F->verts);
+    F->indices = grow(F->indices, &F->cap_indices, F->nindices + ni, sizeof *F->indices);
+    memcpy(F->verts + F->nverts, v, nv * sizeof *v);
     for (uint32_t i = 0; i < ni; i++)
-        indices[nindices + i] = nverts + idx[i];
+        F->indices[F->nindices + i] = F->nverts + idx[i];
 
     {
         /* PDO_GFX_DEBUG=n: describe the draws of frame n. */
@@ -195,7 +267,7 @@ void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
              ((long)frames - debug_frame) % debug_every == 0)) {
             pdo_xtex_info ti;
             pdo_xtex_describe(d->tex[0].format_word, d->tex[0].size_word, &ti);
-            SDL_Log("gfx draw @%llu: %u verts %u idx topo %u blend %u %x/%x z %u tex0 %08x %s %ux%u "
+            SDL_Log("gfx draw @%llu: %u F->verts %u idx topo %u blend %u %x/%x z %u tex0 %08x %s %ux%u "
                     "cop0 %d/%x/%x aop0 %d/%x/%x vp %.0f,%.0f %.0fx%.0f",
                     (unsigned long long)frames, nv, ni, d->ps.topology, d->ps.blend_enable, d->ps.src_blend, d->ps.dst_blend,
                     d->ps.z_enable, d->tex[0].data, pdo_xtex_format_name(ti.format), ti.width, ti.height,
@@ -210,10 +282,10 @@ void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
     }
     c = new_command();
     c->draw = *d;
-    c->first_index = nindices;
+    c->first_index = F->nindices;
     c->index_count = ni;
-    nverts += nv;
-    nindices += ni;
+    F->nverts += nv;
+    F->nindices += ni;
 }
 
 int32_t pdo_gfx_vsh_program(const uint32_t *code, uint32_t count)
@@ -236,11 +308,13 @@ void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
     int32_t consts;
     command *c;
 
+    RECORDING();
+
     if (!nv || !ni || g->program < 0)
         return;
     if (cpu) {
         pdo_gfx_draw(d, cpu, nv, idx, ni);
-        c = &cmds[ncmds - 1];
+        c = &F->cmds[F->ncmds - 1];
         c->has_cpu = true;
     } else {
         c = new_command();
@@ -255,14 +329,14 @@ void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
             sbase[k] = add_blob(g->stream_data[k], g->stream_bytes[k]);
 
     /* The constants, shared with the draw before when they are the same. */
-    if (last_consts >= 0 && !memcmp(vconsts[last_consts], g->constants, 192 * 16)) {
-        consts = last_consts;
+    if (F->last_consts >= 0 && !memcmp(F->vconsts[F->last_consts], g->constants, 192 * 16)) {
+        consts = F->last_consts;
     } else {
-        vconsts = grow(vconsts, &cap_vconsts, nvconsts + 192, sizeof *vconsts);
-        memcpy(vconsts[nvconsts], g->constants, 192 * 16);
-        consts = (int32_t)nvconsts;
-        last_consts = consts;
-        nvconsts += 192;
+        F->vconsts = grow(F->vconsts, &F->cap_vconsts, F->nvconsts + 192, sizeof *F->vconsts);
+        memcpy(F->vconsts[F->nvconsts], g->constants, 192 * 16);
+        consts = (int32_t)F->nvconsts;
+        F->last_consts = consts;
+        F->nvconsts += 192;
     }
 
     c->vu.info[0] = g->program;
@@ -282,11 +356,11 @@ void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
     memcpy(c->vu.scale, g->vp_scale, sizeof c->vu.scale);
     memcpy(c->vu.offset, g->vp_offset, sizeof c->vu.offset);
 
-    indices = grow(indices, &cap_indices, nindices + ni, sizeof *indices);
-    memcpy(indices + nindices, idx, ni * sizeof *idx);
-    c->vsh_first_index = nindices;
+    F->indices = grow(F->indices, &F->cap_indices, F->nindices + ni, sizeof *F->indices);
+    memcpy(F->indices + F->nindices, idx, ni * sizeof *idx);
+    c->vsh_first_index = F->nindices;
     c->vsh_index_count = ni;
-    nindices += ni;
+    F->nindices += ni;
 }
 
 bool pdo_gfx_draw_fvf(const pdo_draw *d, const pdo_gpu_fvf *g, uint32_t nv,
@@ -294,27 +368,29 @@ bool pdo_gfx_draw_fvf(const pdo_draw *d, const pdo_gpu_fvf *g, uint32_t nv,
 {
     command *c;
 
+    RECORDING();
+
     if (!fvf_vs || !nv || !ni || !g->data)
         return false;
     if (cpu) {
         pdo_gfx_draw(d, cpu, nv, idx, ni);
-        c = &cmds[ncmds - 1];
+        c = &F->cmds[F->ncmds - 1];
         c->has_cpu = true;
     } else {
         c = new_command();
         c->draw = *d;
     }
-    fvf_us = grow(fvf_us, &cap_fvf_us, nfvf_us + 1, sizeof *fvf_us);
+    F->fvf_us = grow(F->fvf_us, &F->cap_fvf_us, F->nfvf_us + 1, sizeof *F->fvf_us);
     /* An unlit draw's lights and material are never read: leave them. */
-    memcpy(&fvf_us[nfvf_us], &g->u, (g->u.layout0[2] & PDO_FVF_LIT) ? sizeof g->u
+    memcpy(&F->fvf_us[F->nfvf_us], &g->u, (g->u.layout0[2] & PDO_FVF_LIT) ? sizeof g->u
                                     : offsetof(pdo_fvf_uniforms, material));
-    fvf_us[nfvf_us].layout0[0] = (int32_t)add_blob(g->data, g->bytes);
-    c->fvf = (int32_t)nfvf_us++;
-    indices = grow(indices, &cap_indices, nindices + ni, sizeof *indices);
-    memcpy(indices + nindices, idx, ni * sizeof *idx);
-    c->vsh_first_index = nindices;
+    F->fvf_us[F->nfvf_us].layout0[0] = (int32_t)add_blob(g->data, g->bytes);
+    c->fvf = (int32_t)F->nfvf_us++;
+    F->indices = grow(F->indices, &F->cap_indices, F->nindices + ni, sizeof *F->indices);
+    memcpy(F->indices + F->nindices, idx, ni * sizeof *idx);
+    c->vsh_first_index = F->nindices;
     c->vsh_index_count = ni;
-    nindices += ni;
+    F->nindices += ni;
     return true;
 }
 
@@ -894,6 +970,56 @@ static rtarget *target_for_surface_as(const pdo_surface *s, bool depth_only)
     return r;
 }
 
+/* The game thread's list of the render targets above, by key only, kept
+ * the same way as they are made (target_for_surface_as, target_of): which
+ * textures are targets has to be known at Swap, on the game thread, while
+ * the targets themselves are made on the main thread as it replays. */
+static struct { uint32_t data, w, h; } tkeys[MAX_TARGETS];
+static int ntkeys;
+
+static bool target_known(uint32_t data, uint32_t w, uint32_t h)
+{
+    for (int i = 0; i < ntkeys; i++)
+        if (tkeys[i].data == phys(data) && tkeys[i].w == w && tkeys[i].h == h)
+            return true;
+    return false;
+}
+
+static void note_target(const pdo_surface *s)
+{
+    int w, h, i;
+
+    pdo_gfx_surface_size(s, &w, &h);
+    if (!s->data || w <= 0 || h <= 0 || w > 4096 || h > 4096 || target_known(s->data, (uint32_t)w, (uint32_t)h))
+        return;
+    for (i = 0; i < ntkeys; i++)        /* same memory, other size: the old one is gone */
+        if (tkeys[i].data == phys(s->data)) {
+            tkeys[i] = tkeys[--ntkeys];
+            break;
+        }
+    if (ntkeys == MAX_TARGETS)
+        return;
+    tkeys[ntkeys].data = phys(s->data);
+    tkeys[ntkeys].w = (uint32_t)w;
+    tkeys[ntkeys].h = (uint32_t)h;
+    ntkeys++;
+}
+
+static void note_target_of(const pdo_surface *s, const pdo_surface *z)
+{
+    pdo_surface scratch;
+
+    if (s->data) {
+        note_target(s);
+        return;
+    }
+    if (!s->format_word)
+        return;
+    scratch = *s;
+    scratch.data = z && z->data ? z->data : NO_COLOUR_DATA;
+    note_target(&scratch);
+}
+
 static pdo_surface cur_depth_surface;
 
 void pdo_gfx_set_depth(const pdo_surface *depth)
@@ -903,24 +1029,30 @@ void pdo_gfx_set_depth(const pdo_surface *depth)
 
 void pdo_gfx_set_target(const pdo_surface *color)
 {
-    command *c = new_command();
+    command *c;
+
+    RECORDING();
+    c = new_command();
     c->kind = CMD_TARGET;
     c->surf = *color;
     c->surf2 = cur_depth_surface;
-    target_of(color, &cur_depth_surface);
+    note_target_of(color, &cur_depth_surface);
 }
 
 void pdo_gfx_copy_rect(const pdo_surface *src, const pdo_surface *dst,
                        int x, int y, int w, int h, int dx, int dy)
 {
-    command *c = new_command();
+    command *c;
+
+    RECORDING();
+    c = new_command();
     c->kind = CMD_COPY;
     c->surf = *src;
     c->surf2 = *dst;
     c->rect[0] = x; c->rect[1] = y; c->rect[2] = w; c->rect[3] = h;
     c->rect[4] = dx; c->rect[5] = dy;
     if (dst->data)
-        target_for_surface(dst);
+        note_target(dst);
 }
 
 typedef struct pending_upload {
@@ -943,22 +1075,25 @@ static uint32_t nchecks, cap_checks;
 
 /* Find or create the GPU texture for t, and queue it for check_textures
  * the first time it is used in a frame. */
-static SDL_GPUTexture *texture_for(const pdo_tex_ref *t)
+static tex_slot texture_for(const pdo_tex_ref *t)
 {
     pdo_xtex_info info;
     const uint8_t *src;
     gtex *g = NULL;
     uint32_t levels;
+    tex_slot slot = { white, 0, 0, 0 };
 
     if (!t->data)
-        return white;
+        return slot;
     pdo_xtex_describe(t->format_word, t->size_word, &info);
     if (!info.width || !info.height || info.width > 4096 || info.height > 4096)
-        return white;
-    {
-        rtarget *r = find_target(t->data, info.width, info.height);
-        if (r)
-            return r->depth_only ? (no_shadows ? white : r->depth) : r->color;
+        return slot;
+    if (target_known(t->data, info.width, info.height)) {
+        slot.tex = NULL;
+        slot.target_data = t->data;
+        slot.target_w = info.width;
+        slot.target_h = info.height;
+        return slot;
     }
     if (info.format >= 0x2A && info.format <= 0x31) {
         /* Depth textures (D24S8, F24S8, D16, F16, swizzled and linear) are
@@ -970,7 +1105,7 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t)
             SDL_Log("gfx: depth texture (format 0x%02x) at 0x%08x sampled before any pass drew it: lit",
                     info.format, t->data);
         }
-        return white;
+        return slot;
     }
     if (!info.known) {
         static uint32_t warned[256];
@@ -986,14 +1121,14 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t)
         }
     }
     if (g && g->last_used == frames)
-        return g->tex;      /* already checked this frame */
+        { slot.tex = g->tex; return slot; }      /* already checked this frame */
     /* The CPU view of a resource is Data | 0x80000000, as D3D computes it. */
     src = (const uint8_t *)((uintptr_t)(t->data | 0x80000000u) + g_xbox_mem_offset);
     levels = info.known ? pdo_xtex_level_count(&info) : 1;
     if (!g) {
         SDL_GPUTextureCreateInfo ti;
         if (ntextures == MAX_TEXTURES)
-            return white;
+            return slot;
         g = &textures[ntextures++];
         memset(g, 0, sizeof *g);
         g->data = t->data;
@@ -1026,7 +1161,8 @@ static SDL_GPUTexture *texture_for(const pdo_tex_ref *t)
         checks[nchecks].bytes = info.bytes ? off + last.bytes : 0;
     }
     nchecks++;
-    return g->tex;
+    slot.tex = g->tex;
+    return slot;
 }
 
 /* Hashed in blocks, so one large texture spreads over the workers too. */
@@ -1308,17 +1444,23 @@ static bool init_present(void)
     return true;
 }
 
+/* The ramp as the game last set it (game thread); it goes over with the
+ * next frame. */
+static uint8_t game_gamma[256 * 4];
+static bool game_gamma_dirty;
+
 void pdo_gfx_set_gamma(const uint8_t ramp[768])
 {
     if (getenv("PDO_GAMMA_TRACE"))
         SDL_Log("gfx: frame %llu gamma r[64]=%u r[128]=%u r[255]=%u g[128]=%u b[128]=%u",
                 (unsigned long long)frames, ramp[64], ramp[128], ramp[255], ramp[256 + 128], ramp[512 + 128]);
     for (int i = 0; i < 256; i++) {
-        gamma_rgba[i * 4 + 0] = ramp[i];
-        gamma_rgba[i * 4 + 1] = ramp[256 + i];
-        gamma_rgba[i * 4 + 2] = ramp[512 + i];
+        game_gamma[i * 4 + 0] = ramp[i];
+        game_gamma[i * 4 + 1] = ramp[256 + i];
+        game_gamma[i * 4 + 2] = ramp[512 + i];
+        game_gamma[i * 4 + 3] = 255;
     }
-    gamma_dirty = true;
+    game_gamma_dirty = true;
 }
 
 /* frame -> (gamma) -> output. */
@@ -1395,7 +1537,29 @@ static int SDLCALL watchdog(void *unused)
     return 0;
 }
 
+/* The game thread asks (Direct3D_CreateDevice); the main thread, which
+ * owns the window, does it in pdo_gfx_main_loop. */
 bool pdo_gfx_init(int width, int height)
+{
+    bool ok;
+
+    if (on_main_thread())
+        return init_here(width, height);
+    if (dev)
+        return true;
+    SDL_LockMutex(q_lock);
+    init_w = width;
+    init_h = height;
+    init_state = 1;
+    SDL_BroadcastCondition(q_cond);
+    while (init_state == 1)
+        SDL_WaitCondition(q_cond, q_lock);
+    ok = init_state == 2;
+    SDL_UnlockMutex(q_lock);
+    return ok;
+}
+
+static bool init_here(int width, int height)
 {
     SDL_GPUTextureCreateInfo ti;
     const char *every;
@@ -1738,9 +1902,9 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
                 c->vu.info[1], c->vu.info[0], c->vu.info[2], c->has_cpu ? "; the CPU's vertices:" : "");
     if (c->fvf >= 0)
         SDL_Log("capture:     fixed-function vertices on the GPU: flags %x, %d lights%s",
-                fvf_us[c->fvf].layout0[2], fvf_us[c->fvf].light_info[0], c->has_cpu ? "; the CPU's vertices:" : "");
+                F->fvf_us[c->fvf].layout0[2], F->fvf_us[c->fvf].light_info[0], c->has_cpu ? "; the CPU's vertices:" : "");
     for (uint32_t k = 0; k < 3 && k < c->index_count && ((!c->vsh && c->fvf < 0) || c->has_cpu); k++) {
-        const pdo_vertex *v = &verts[indices[c->first_index + k]];
+        const pdo_vertex *v = &F->verts[F->indices[c->first_index + k]];
         SDL_Log("capture:     v pos %.3f %.3f %.3f %.3f d %08x s %08x t0 %.3f %.3f %.3f %.3f "
                 "t1 %.3f %.3f %.3f %.3f fog %.2f",
                 v->pos[0], v->pos[1], v->pos[2], v->pos[3], v->diffuse, v->specular, v->tc[0][0], v->tc[0][1],
@@ -1866,35 +2030,33 @@ static void copy_rect(SDL_GPUCommandBuffer *cmd, const command *c)
  * drawn to after every n commands (capture_<frame>_<count>.bmp), to find the
  * draw that goes wrong. The frame is replayed once per image. */
 static uint32_t replay_limit = UINT32_MAX;
-static bool replay_keep;
+
+/* A stage's texture, as the game thread resolved it: render targets are
+ * looked up here, where they are made. */
+static SDL_GPUTexture *slot_texture(const tex_slot *t)
+{
+    rtarget *r;
+
+    if (t->tex || !t->target_w)
+        return t->tex ? t->tex : white;
+    r = find_target(t->target_data, t->target_w, t->target_h);
+    if (!r)
+        return white;
+    return r->depth_only ? (no_shadows ? white : r->depth) : r->color;
+}
 
 static void replay(SDL_GPUCommandBuffer *cmd)
 {
-    static uint8_t *staging;
-    static uint32_t staging_cap;
-    static SDL_GPUTexture **cmd_tex;
-    static uint32_t cmd_tex_cap;
-    static pending_upload ups[MAX_UPLOADS];
-    int nups = 0;
-    uint32_t staging_len = 0;
+    uint8_t *staging = F->staging;
+    pending_upload *ups = F->ups;
+    int nups = F->nups;
+    uint32_t staging_len = F->staging_len;
     SDL_GPURenderPass *pass = NULL;
-    Uint32 vbytes = nverts * (Uint32)sizeof *verts, ibytes = nindices * 4;
-    Uint32 bbytes = nblob ? (nblob + 8 + 3) & ~3u : 0, cbytes = nvconsts * 16, pbytes;
+    Uint32 vbytes = F->nverts * (Uint32)sizeof *F->verts, ibytes = F->nindices * 4;
+    Uint32 bbytes = F->nblob ? (F->nblob + 8 + 3) & ~3u : 0, cbytes = F->nvconsts * 16, pbytes;
 
-    /* Resolve every texture first: decoding fills the staging area. */
-    Uint64 tex_t0 = SDL_GetTicksNS();
-    cmd_tex = grow(cmd_tex, &cmd_tex_cap, ncmds * 4 + 4, sizeof *cmd_tex);
-    for (uint32_t i = 0; i < ncmds; i++)
-        if (cmds[i].kind == CMD_DRAW)
-            for (int s = 0; s < 4; s++)
-                cmd_tex[i * 4 + s] = texture_for(&cmds[i].draw.tex[s]);
-    check_textures(&staging, &staging_len, &staging_cap, ups, &nups);
-    texture_ns += SDL_GetTicksNS() - tex_t0;
-
-    /* A new program buffer (more programs than fit) needs them all again. */
-    if (nprogs && (!prog_buf || prog_buf_size < nprogs * 4))
-        progs_dirty = true;
-    pbytes = progs_dirty ? nprogs * 4 : 0;
+    /* All the programs again when one was added. */
+    pbytes = F->progs_new ? F->nprogs * 4 : 0;
     if (vbytes || ibytes || staging_len || bbytes || cbytes || pbytes) {
         SDL_GPUTransferBufferCreateInfo tbi;
         SDL_GPUTransferBuffer *tb;
@@ -1918,11 +2080,11 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         tbi.size = tex_off + staging_len;
         tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
         map = SDL_MapGPUTransferBuffer(dev, tb, false);
-        memcpy(map, verts, vbytes);
-        memcpy(map + vbytes, indices, ibytes);
-        memcpy(map + boff, blob, nblob + 8 < bbytes ? nblob + 8 : bbytes);
-        memcpy(map + coff, vconsts, cbytes);
-        memcpy(map + poff, progs, pbytes);
+        memcpy(map, F->verts, vbytes);
+        memcpy(map + vbytes, F->indices, ibytes);
+        memcpy(map + boff, F->blob, F->nblob + 8 < bbytes ? F->nblob + 8 : bbytes);
+        memcpy(map + coff, F->vconsts, cbytes);
+        memcpy(map + poff, F->progs, pbytes);
         memcpy(map + tex_off, staging, staging_len);
         SDL_UnmapGPUTransferBuffer(dev, tb);
 
@@ -1938,7 +2100,6 @@ static void replay(SDL_GPUCommandBuffer *cmd)
                     SDL_GPUBufferRegion dst = { up[k].b, 0, up[k].n };
                     SDL_UploadToGPUBuffer(copy, &src, &dst, true);
                 }
-            progs_dirty = false;
         }
         for (int i = 0; i < nups; i++) {
             SDL_GPUTextureTransferInfo src;
@@ -1959,8 +2120,8 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     }
 
     cur_target = NULL;
-    for (uint32_t i = 0; i < ncmds; i++) {
-        command *c = &cmds[i];
+    for (uint32_t i = 0; i < F->ncmds; i++) {
+        command *c = &F->cmds[i];
         SDL_GPUGraphicsPipeline *p;
         SDL_GPUTextureSamplerBinding tsb[4];
         SDL_GPUViewport vp;
@@ -1968,8 +2129,13 @@ static void replay(SDL_GPUCommandBuffer *cmd)
 
         if (i >= replay_limit)
             break;
-        if (frames == capture_frame && replay_limit == UINT32_MAX)
-            log_command(i, c, cmd_tex + i * 4);
+        SDL_GPUTexture *tex[4];
+
+        if (c->kind == CMD_DRAW)
+            for (int s = 0; s < 4; s++)
+                tex[s] = slot_texture(&F->tex[i * 4 + s]);
+        if (F->frame == capture_frame && replay_limit == UINT32_MAX)
+            log_command(i, c, tex);
 
         if (c->kind == CMD_CLEAR) {
             if (pass)
@@ -2019,7 +2185,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         SDL_SetGPUViewport(pass, &vp);
         bind_geometry(pass, gpu);
         for (int s = 0; s < 4; s++) {
-            tsb[s].texture = cmd_tex[i * 4 + s];
+            tsb[s].texture = tex[s];
             tsb[s].sampler = get_sampler(&c->draw.tex[s]);
             if (tsb[s].texture == cur_color()) {
                 /* Sampling the target being drawn to (feedback effects):
@@ -2041,7 +2207,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             if (gpu == 1)
                 SDL_PushGPUVertexUniformData(cmd, 0, &c->vu, sizeof c->vu);
             else
-                SDL_PushGPUVertexUniformData(cmd, 0, &fvf_us[c->fvf], sizeof fvf_us[0]);
+                SDL_PushGPUVertexUniformData(cmd, 0, &F->fvf_us[c->fvf], sizeof F->fvf_us[0]);
             SDL_DrawGPUIndexedPrimitives(pass, c->vsh_index_count, 1, c->vsh_first_index, 0, 0);
         } else {
             SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, 0, 0);
@@ -2049,9 +2215,6 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     }
     if (pass)
         SDL_EndGPURenderPass(pass);
-
-    if (!replay_keep)
-        drop_frame();
 }
 
 /* Read the frame target back and write it as a BMP. Slow; debugging only. */
@@ -2104,7 +2267,7 @@ static void save_screenshot(SDL_GPUCommandBuffer **cmdp, const char *dir, const 
 {
     char path[1024];
 
-    snprintf(path, sizeof path, "%s/%s_%05llu.bmp", dir, name, (unsigned long long)frames);
+    snprintf(path, sizeof path, "%s/%s_%05llu.bmp", dir, name, (unsigned long long)F->frame);
     save_texture(cmdp, output, frame_w * rscale, frame_h * rscale, path);
 }
 
@@ -2117,7 +2280,6 @@ static void capture_shadows(void)
 
     if (!e || !atoi(e))
         return;
-    replay_keep = true;
     for (int k = 0; k < 2; k++) {
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
         char path[64];
@@ -2128,14 +2290,13 @@ static void capture_shadows(void)
         no_shadows = k == 1;
         replay(cmd);
         cur_size(&w, &h);
-        snprintf(path, sizeof path, "capture_%05llu_%s.bmp", (unsigned long long)frames,
+        snprintf(path, sizeof path, "capture_%05llu_%s.bmp", (unsigned long long)F->frame,
                  k ? "noshadow" : "shadow");
         save_texture(&cmd, cur_color(), (int)w, (int)h, path);
         if (cmd)
             SDL_SubmitGPUCommandBuffer(cmd);
     }
     no_shadows = false;
-    replay_keep = false;
 }
 
 /* PDO_CAPTURE_CPUVSH=1: at the capture frame, save the frame's last target
@@ -2148,7 +2309,6 @@ static void capture_vsh(void)
 
     if (!e || !atoi(e))
         return;
-    replay_keep = true;
     for (int k = 0; k < 2; k++) {
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
         char path[64];
@@ -2159,24 +2319,22 @@ static void capture_vsh(void)
         cpu_vsh = k == 1;
         replay(cmd);
         cur_size(&w, &h);
-        snprintf(path, sizeof path, "capture_%05llu_%s.bmp", (unsigned long long)frames,
+        snprintf(path, sizeof path, "capture_%05llu_%s.bmp", (unsigned long long)F->frame,
                  k ? "cpuvsh" : "gpuvsh");
         save_texture(&cmd, cur_color(), (int)w, (int)h, path);
         if (cmd)
             SDL_SubmitGPUCommandBuffer(cmd);
     }
     cpu_vsh = false;
-    replay_keep = false;
 }
 
 static void capture_steps(void)
 {
     const char *e = getenv("PDO_CAPTURE_STEP");
-    uint32_t step = e ? (uint32_t)atol(e) : 0, total = ncmds;
+    uint32_t step = e ? (uint32_t)atol(e) : 0, total = F->ncmds;
 
     if (!step)
         return;
-    replay_keep = true;
     for (uint32_t lim = step; lim < total; lim += step) {
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
         char path[64];
@@ -2187,13 +2345,12 @@ static void capture_steps(void)
         replay_limit = lim;
         replay(cmd);
         cur_size(&w, &h);
-        snprintf(path, sizeof path, "capture_%05llu_%04u.bmp", (unsigned long long)frames, lim);
+        snprintf(path, sizeof path, "capture_%05llu_%04u.bmp", (unsigned long long)F->frame, lim);
         save_texture(&cmd, cur_color(), (int)w, (int)h, path);
         if (cmd)
             SDL_SubmitGPUCommandBuffer(cmd);
     }
     replay_limit = UINT32_MAX;
-    replay_keep = false;
 }
 
 /* Handles window and key events. Only the thread that made the window may
@@ -2312,45 +2469,67 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     SDL_EndGPURenderPass(pass);
 }
 
-/* The options menu is open: keep the game in this Swap, the sound held,
- * redrawing the last frame with the menu over it until it closes. */
-static bool hold_for_overlay(void)
+/* ── The two threads ──────────────────────────────────────────────────── */
+
+/* A frame data no thread holds (with q_lock held): not recorded into, not
+ * handed over, not the one last drawn. */
+static frame_data *free_frame(void)
 {
-    bool keep_going = true;
+    for (int i = 0; i < 3; i++)
+        if (&pool[i] != F && &pool[i] != ready && &pool[i] != drawing && &pool[i] != last_drawn)
+            return &pool[i];
+    return NULL;
+}
 
-    paused = true;
-    pdo_mixer_set_paused(true);
-    while (pdo_overlay_open() && keep_going) {
-        SDL_GPUCommandBuffer *cmd;
+/* Game thread, at Swap: resolve the frame's textures while guest memory
+ * still holds them, then hand it over and go on recording into another. */
+static void hand_over(void)
+{
+    Uint64 tex_t0 = SDL_GetTicksNS();
+    frame_data *next = NULL;
 
-        keep_going = pdo_gfx_pump_events();
-        cmd = SDL_AcquireGPUCommandBuffer(dev);
-        if (cmd) {
-            present_to_window(cmd);
-            SDL_SubmitGPUCommandBuffer(cmd);
-        }
-        if (!have_swapchain)
-            SDL_Delay(16);
+    F->frame = frames;
+    F->tex = grow(F->tex, &F->cap_tex, F->ncmds * 4 + 4, sizeof *F->tex);
+    if (!F->ups)
+        F->ups = SDL_malloc(MAX_UPLOADS * sizeof *F->ups);
+    for (uint32_t i = 0; i < F->ncmds; i++)
+        if (F->cmds[i].kind == CMD_DRAW)
+            for (int s = 0; s < 4; s++)
+                F->tex[i * 4 + s] = texture_for(&F->cmds[i].draw.tex[s]);
+    F->staging_len = 0;
+    F->nups = 0;
+    check_textures(&F->staging, &F->staging_len, &F->staging_cap, F->ups, &F->nups);
+    texture_ns += SDL_GetTicksNS() - tex_t0;
+    if (progs_dirty) {
+        F->progs = grow(F->progs, &F->cap_progs, nprogs, sizeof *F->progs);
+        memcpy(F->progs, progs, nprogs * sizeof *progs);
+        F->nprogs = nprogs;
+        F->progs_new = true;
+        progs_dirty = false;
     }
-    pdo_mixer_set_paused(false);
-    paused = false;
-    return keep_going;
+    if (game_gamma_dirty) {
+        memcpy(F->gamma, game_gamma, sizeof F->gamma);
+        F->gamma_new = true;
+        game_gamma_dirty = false;
+    }
+
+    SDL_LockMutex(q_lock);
+    /* One frame ahead at most; none while the options menu holds the game. */
+    while (ready || paused || !(next = free_frame()))
+        SDL_WaitCondition(q_cond, q_lock);
+    ready = F;
+    F = next;
+    SDL_BroadcastCondition(q_cond);
+    SDL_UnlockMutex(q_lock);
+    reset_frame(F);
 }
 
 bool pdo_gfx_present(void)
 {
-    SDL_GPUCommandBuffer *cmd;
-    bool keep_going = pdo_gfx_pump_events();
-
+    RECORDING();
     frames++;
     if (!dev)
-        return keep_going;
-
-    if (frames == capture_frame) {
-        capture_steps();
-        capture_shadows();
-        capture_vsh();
-    }
+        return true;
     {
         /* PDO_NO_DRAW=1: drop the frame's commands unless it is captured or
          * screenshotted, so a debugging run reaches a stage at the game's
@@ -2360,29 +2539,131 @@ bool pdo_gfx_present(void)
         if (no_draw < 0)
             no_draw = getenv("PDO_NO_DRAW") && atoi(getenv("PDO_NO_DRAW")) != 0;
         if (no_draw && !shot && frames != capture_frame) {
-            drop_frame();
-            return keep_going;
+            reset_frame(F);
+            return true;
         }
+    }
+    hand_over();
+    return true;
+}
+
+/* Main thread: draw a handed-over frame and present it. */
+static void draw_frame(frame_data *f)
+{
+    SDL_GPUCommandBuffer *cmd;
+    bool shot = shot_dir && f->frame <= 300 * (uint64_t)shot_every && f->frame % (uint64_t)shot_every == 0;
+
+    F = f;
+    if (f->gamma_new) {
+        memcpy(gamma_rgba, f->gamma, sizeof gamma_rgba);
+        gamma_dirty = true;
+    }
+    if (f->frame == capture_frame) {
+        capture_steps();
+        capture_shadows();
+        capture_vsh();
     }
     apply_quality();
     cmd = SDL_AcquireGPUCommandBuffer(dev);
     if (!cmd)
-        return keep_going;
+        return;
     replay(cmd);
     present_pass(cmd);
-
     present_to_window(cmd);
-
-    if (shot_dir && frames <= 300 * (uint64_t)shot_every && frames % (uint64_t)shot_every == 0)
+    if (shot)
         save_screenshot(&cmd, shot_dir, "frame");
-    else if (frames == capture_frame) {
+    else if (f->frame == capture_frame) {
         save_screenshot(&cmd, ".", "capture");
-        SDL_Log("capture: saved capture_%05llu.bmp", (unsigned long long)frames);
+        SDL_Log("capture: saved capture_%05llu.bmp", (unsigned long long)f->frame);
     }
     if (cmd)
         SDL_SubmitGPUCommandBuffer(cmd);
     pdo_overlay_frame();
-    if (pdo_overlay_open())
-        keep_going = hold_for_overlay() && keep_going;
-    return keep_going;
+}
+
+/* The options menu is open: the game waits at its next Swap and the sound
+ * holds, while the last frame is shown with the menu over it. */
+static void hold_for_overlay(void)
+{
+    SDL_LockMutex(q_lock);
+    paused = true;
+    SDL_UnlockMutex(q_lock);
+    pdo_mixer_set_paused(true);
+    while (pdo_overlay_open()) {
+        SDL_GPUCommandBuffer *cmd;
+
+        if (!pdo_gfx_pump_events()) {
+            SDL_Log("d3d: window closed");
+            exit(0);
+        }
+        cmd = SDL_AcquireGPUCommandBuffer(dev);
+        if (cmd) {
+            present_to_window(cmd);
+            SDL_SubmitGPUCommandBuffer(cmd);
+        }
+        if (!have_swapchain)
+            SDL_Delay(16);
+    }
+    pdo_mixer_set_paused(false);
+    SDL_LockMutex(q_lock);
+    paused = false;
+    SDL_BroadcastCondition(q_cond);
+    SDL_UnlockMutex(q_lock);
+}
+
+void pdo_gfx_prepare_threads(void)
+{
+    main_thread = SDL_GetCurrentThreadID();
+    q_lock = SDL_CreateMutex();
+    q_cond = SDL_CreateCondition();
+}
+
+void pdo_gfx_game_finished(void)
+{
+    SDL_LockMutex(q_lock);
+    game_done = true;
+    SDL_BroadcastCondition(q_cond);
+    SDL_UnlockMutex(q_lock);
+}
+
+void pdo_gfx_main_loop(void)
+{
+    for (;;) {
+        frame_data *f = NULL;
+
+        if (dev && !pdo_gfx_pump_events()) {
+            SDL_Log("d3d: window closed");
+            exit(0);
+        }
+        if (dev && pdo_overlay_open())     /* opened while no frame comes (loading) */
+            hold_for_overlay();
+        SDL_LockMutex(q_lock);
+        if (!ready && !game_done && init_state != 1)
+            SDL_WaitConditionTimeout(q_cond, q_lock, 4);
+        if (init_state == 1) {
+            SDL_UnlockMutex(q_lock);
+            bool ok = init_here(init_w, init_h);
+            SDL_LockMutex(q_lock);
+            init_state = ok ? 2 : 3;
+            SDL_BroadcastCondition(q_cond);
+        }
+        if (game_done && !ready) {
+            SDL_UnlockMutex(q_lock);
+            return;
+        }
+        f = ready;
+        ready = NULL;
+        drawing = f;
+        SDL_UnlockMutex(q_lock);
+        if (!f)
+            continue;
+        draw_frame(f);
+        SDL_LockMutex(q_lock);
+        drawing = NULL;
+        last_drawn = f;
+        SDL_BroadcastCondition(q_cond);
+        SDL_UnlockMutex(q_lock);
+        if (pdo_overlay_open())
+            hold_for_overlay();
+    }
 }

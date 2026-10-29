@@ -16,6 +16,7 @@
 
 #ifdef PDO_HAVE_RECOMP
 #include "guest/guest.h"
+#include "gfx/renderer.h"
 #endif
 
 #include <SDL3/SDL.h>
@@ -85,6 +86,33 @@ static void cli_progress(void *userdata, double fraction, const char *file)
 }
 
 #ifdef PDO_HAVE_RECOMP
+/* The game's own thread: the guest's registers are per thread, so the
+ * address space is set up here, where it then runs. The main thread keeps
+ * the window and draws (pdo_gfx_main_loop). */
+typedef struct game_run {
+    void       *xbe;
+    size_t      size;
+    const char *game_dir, *save_dir;
+    uint32_t    entry;
+    bool        ok;
+} game_run;
+
+static int SDLCALL game_thread(void *arg)
+{
+    game_run *g = arg;
+
+    if (pdo_guest_init(g->xbe, g->size, g->game_dir, g->save_dir)) {
+        char list[PDO_PATH_MAX];
+        g->ok = true;
+        snprintf(list, sizeof list, "%sopened_files.txt", pdo_data_dir());
+        pdo_guest_log_opened_files(list);
+        SDL_Log("the game files the title opens are listed in %s", list);
+        pdo_guest_run(g->entry);
+    }
+    pdo_gfx_game_finished();
+    return 0;
+}
+
 static int start_guest(const char *game_dir, const pdo_game_check *check, bool boot)
 {
     char path[PDO_PATH_MAX], save_dir[PDO_PATH_MAX], image_hex[65];
@@ -109,17 +137,29 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
         SDL_Log("cannot read %s: %s", path, SDL_GetError());
         return 1;
     }
-    if (pdo_guest_init(xbe, size, game_dir, save_dir)) {
-        if (boot) {
-            char list[PDO_PATH_MAX];
-            snprintf(list, sizeof list, "%sopened_files.txt", pdo_data_dir());
-            pdo_guest_log_opened_files(list);
-            SDL_Log("the game files the title opens are listed in %s", list);
-            pdo_guest_run(check->xbe.entry);
+    if (boot) {
+        game_run g = { xbe, size, game_dir, save_dir, check->xbe.entry, false };
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_Thread *t;
+
+        pdo_gfx_prepare_threads();
+        SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER, (void *)game_thread);
+        SDL_SetStringProperty(props, SDL_PROP_THREAD_CREATE_NAME_STRING, "game");
+        SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_USERDATA_POINTER, &g);
+        /* Generous: the recompiled code nests as deep as the game's calls. */
+        SDL_SetNumberProperty(props, SDL_PROP_THREAD_CREATE_STACKSIZE_NUMBER, 64 * 1024 * 1024);
+        t = SDL_CreateThreadWithProperties(props);
+        SDL_DestroyProperties(props);
+        if (t) {
+            pdo_gfx_main_loop();
+            SDL_WaitThread(t, NULL);
+            rc = g.ok ? 0 : 1;
         } else {
-            SDL_Log("game code is linked and the Xbox address space is set up; "
-                    "run with --boot to start the title (not playable yet)");
+            SDL_Log("cannot start the game thread: %s", SDL_GetError());
         }
+    } else if (pdo_guest_init(xbe, size, game_dir, save_dir)) {
+        SDL_Log("game code is linked and the Xbox address space is set up; "
+                "run with --boot to start the title (not playable yet)");
         rc = 0;
     }
     pdo_guest_shutdown();
