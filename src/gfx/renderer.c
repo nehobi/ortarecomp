@@ -1419,6 +1419,16 @@ bool pdo_gfx_init(int width, int height)
         have_swapchain = true;
     else
         SDL_Log("gfx: rendering without a window (%s)", SDL_GetError());
+    if (have_swapchain && getenv("PDO_BENCHMARK") && atoi(getenv("PDO_BENCHMARK"))) {
+        /* Not tied to the monitor's refresh, so the frame rate is the PC's. */
+        SDL_GPUPresentMode m = SDL_WindowSupportsGPUPresentMode(dev, window, SDL_GPU_PRESENTMODE_IMMEDIATE)
+                               ? SDL_GPU_PRESENTMODE_IMMEDIATE : SDL_GPU_PRESENTMODE_MAILBOX;
+        if (SDL_WindowSupportsGPUPresentMode(dev, window, m)
+                && SDL_SetGPUSwapchainParameters(dev, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, m))
+            SDL_Log("gfx: benchmark: presenting %s", m == SDL_GPU_PRESENTMODE_IMMEDIATE ? "immediately" : "by mailbox");
+        else
+            SDL_Log("gfx: benchmark: presentation stays synchronised to the display");
+    }
 
     vs = make_shader(ff_vert_spv, sizeof ff_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     if (getenv("PDO_TEST_SIMPLE_FS")) {     /* a test: how much of the GPU time is ff.frag */

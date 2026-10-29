@@ -113,15 +113,45 @@ static Uint64 perf_ns[PERF_COUNT];
 int guest_cpu_yield_begin(void);       /* xboxrecomp, patch 0023 */
 void guest_cpu_yield_end(int held);
 
-static Uint64 wait_vblank(void)
+/* PDO_BENCHMARK=1: as fast as the PC goes. The vblank timeline is moved on
+ * to the next vblank instead of slept to, so every frame is still one vblank
+ * to the game (its logic steps the same way) but frames come as fast as
+ * they are made: the game runs faster than real time and its sound and
+ * streaming, timed by other clocks, fall out of step. Loading screens wait
+ * in real time (wait_vblank_for). For measuring only. */
+static bool benchmark(void)
 {
-    Uint64 now = SDL_GetTicksNS(), index, at;
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("PDO_BENCHMARK");
+        on = e && atoi(e) != 0;
+        if (on)
+            SDL_Log("d3d: PDO_BENCHMARK: frames unpaced, the game runs faster than real time");
+    }
+    return on != 0;
+}
+
+static Uint64 skipped_ns;          /* benchmark: vblank time jumped over */
+
+static Uint64 vblank_clock(void)
+{
+    return SDL_GetTicksNS() + skipped_ns;
+}
+
+/* skip: a frame's own wait (Swap), which benchmark mode moves past instead
+ * of sleeping. Other waits stay in real time: loading screens wait for
+ * vblanks in a loop while other threads load, and must let them run. */
+static Uint64 wait_vblank_for(bool skip)
+{
+    Uint64 now = vblank_clock(), index, at;
 
     if (!epoch)
         epoch = now;
     index = (now - epoch) / vblank_ns() + 1;
     at = epoch + index * vblank_ns();
-    if (at > now) {
+    if (at > now && skip && benchmark()) {
+        skipped_ns += at - now;
+    } else if (at > now) {
         /* A kernel wait on the console: the other threads run meanwhile
          * (the guest CPU lock, see guest.c). */
         int held = guest_cpu_yield_begin();
@@ -132,9 +162,14 @@ static Uint64 wait_vblank(void)
     return index;
 }
 
+static Uint64 wait_vblank(void)
+{
+    return wait_vblank_for(false);
+}
+
 static Uint64 current_vblank(void)
 {
-    return epoch ? (SDL_GetTicksNS() - epoch) / vblank_ns() : 0;
+    return epoch ? (vblank_clock() - epoch) / vblank_ns() : 0;
 }
 
 void sub_002ADCB0(void)
@@ -250,7 +285,7 @@ void sub_002BAFC0(void)
 
     if (swap_interval > 0) {
         while (current_vblank() < last_vblank + (Uint64)swap_interval)
-            wait_vblank();
+            wait_vblank_for(true);
         last_vblank = current_vblank();
     }
 
