@@ -305,7 +305,9 @@ bool pdo_gfx_draw_fvf(const pdo_draw *d, const pdo_gpu_fvf *g, uint32_t nv,
         c->draw = *d;
     }
     fvf_us = grow(fvf_us, &cap_fvf_us, nfvf_us + 1, sizeof *fvf_us);
-    fvf_us[nfvf_us] = g->u;
+    /* An unlit draw's lights and material are never read: leave them. */
+    memcpy(&fvf_us[nfvf_us], &g->u, (g->u.layout0[2] & PDO_FVF_LIT) ? sizeof g->u
+                                    : offsetof(pdo_fvf_uniforms, material));
     fvf_us[nfvf_us].layout0[0] = (int32_t)add_blob(g->data, g->bytes);
     c->fvf = (int32_t)nfvf_us++;
     indices = grow(indices, &cap_indices, nindices + ni, sizeof *indices);
@@ -550,6 +552,7 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     }
     pi.primitive_type = ps->topology == 1 ? SDL_GPU_PRIMITIVETYPE_LINELIST
                       : ps->topology == 2 ? SDL_GPU_PRIMITIVETYPE_POINTLIST
+                      : ps->topology == 3 ? SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP
                       : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     /* D3D culls by screen-space winding, which ours matches: clip space is

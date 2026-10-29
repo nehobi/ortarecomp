@@ -82,7 +82,7 @@ typedef struct pdo_ff_uniforms {
 
 /* Fixed-function output state, in the XDK's GL-valued enums. */
 typedef struct pdo_pipeline_state {
-    uint8_t  topology;          /* 0 triangles, 1 lines, 2 points */
+    uint8_t  topology;          /* 0 triangles, 1 lines, 2 points, 3 triangle strip */
     uint8_t  blend_enable;
     uint16_t src_blend, dst_blend, blend_op;
     uint8_t  z_enable, z_write;

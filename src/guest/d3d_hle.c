@@ -1497,7 +1497,9 @@ static bool fvf_gpu_job(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t f
         return false;
     if (!stride)
         stride = l.size;
-    memset(g, 0, sizeof *g);
+    /* Lights and material only for a lit draw (filled below); the shader
+     * reads them only then, and they are most of the block. */
+    memset(g, 0, offsetof(pdo_gpu_fvf, u) + offsetof(pdo_fvf_uniforms, material));
     g->data = (const uint8_t *)XBOX_PTR(base + first * stride);
     g->bytes = count * stride + 64;     /* as for vertex programs */
 
@@ -1531,6 +1533,7 @@ static bool fvf_gpu_job(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t f
     if (!(flags & PDO_FVF_LIT))
         return true;
 
+    memset(u->material, 0, sizeof *u - offsetof(pdo_fvf_uniforms, material));
     memcpy(u->material, st.material, sizeof u->material);
     for (int k = 0; k < 4; k++)
         u->mat_src[k] = (int32_t)RS(src_rs[k]);
@@ -1831,7 +1834,9 @@ static bool fetch_vsh(const pdo_vsh_program *p, uint32_t base, uint32_t stride,
 }
 
 /* Turn a D3DPRIMITIVETYPE run of n vertices into list indices. Returns the
- * topology (0 triangles, 1 lines, 2 points) and the index count. */
+ * topology (0 triangles, 1 lines, 2 points, 3 triangle strip) and the index
+ * count. Strips go to the GPU as strips: the same triangles, with the same
+ * alternating winding, from a third of the indices. */
 static uint32_t build_indices(uint32_t type, const uint32_t *in, uint32_t n, uint32_t *out, uint8_t *topology)
 {
     uint32_t k = 0;
@@ -1846,10 +1851,10 @@ static uint32_t build_indices(uint32_t type, const uint32_t *in, uint32_t n, uin
         break;
     case 5: for (uint32_t i = 0; i + 2 < n; i += 3) { out[k++] = in[i]; out[k++] = in[i + 1]; out[k++] = in[i + 2]; } break;
     case 6:
-        for (uint32_t i = 0; i + 2 < n; i++) {
-            if (i & 1) { out[k++] = in[i + 1]; out[k++] = in[i]; }
-            else       { out[k++] = in[i];     out[k++] = in[i + 1]; }
-            out[k++] = in[i + 2];
+        *topology = 3;
+        if (n >= 3) {
+            memcpy(out, in, n * sizeof *out);
+            k = n;
         }
         break;
     case 7: case 10:
@@ -2117,18 +2122,23 @@ void sub_002AF350(void)
     uint32_t lo = 0xFFFFFFFFu, hi = 0;
 
     if (vb_data() && n && pidx) {
+        /* Through a plain pointer, not MEM16 (volatile), so these loops
+         * vectorize: this was one of the larger costs on the game thread. */
+        const uint16_t *idx = (const uint16_t *)XBOX_PTR(pidx);
+        uint32_t base = st.base_vertex, ilo = 0xFFFF, ihi = 0;
         if (n > cap) {
             cap = n * 2;
             order = SDL_realloc(order, cap * sizeof *order);
         }
         for (uint32_t i = 0; i < n; i++) {
-            uint32_t v = MEM16(pidx + 2 * i) + st.base_vertex;
-            order[i] = v;
-            if (v < lo) lo = v;
-            if (v > hi) hi = v;
+            uint32_t v = idx[i];
+            ilo = v < ilo ? v : ilo;
+            ihi = v > ihi ? v : ihi;
         }
+        lo = ilo + base;
+        hi = ihi + base;
         for (uint32_t i = 0; i < n; i++)
-            order[i] -= lo;
+            order[i] = (uint32_t)idx[i] - ilo;
         submit(type, vb_data(), st.stride, lo, hi - lo + 1, order, n);
     }
     g_esp += 4 + 12;
