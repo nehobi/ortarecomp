@@ -93,6 +93,10 @@ CPU: xboxrecomp's NV2A register thread spun a whole core (Sleep(0)); the
 game thread spun in D3D CDevice::KickOff on its flush handshake until that
 thread cleared the bit. KickOff is overridden without the wait and the
 thread sleeps 1 ms (patch 0027): 445 -> 122 s CPU over a 330 s run here.
+"Game code" in the timing log is wall time: perf on Linux (perf works
+here, gprofng loses samples) shows part of it is our draw submission.
+Linux only: win32_compat's WaitForMultipleObjects polls with sleeps
+(three stream workers at ~58 ms/s each); matters for Android.
 Later goal: an option above 60 fps; the game steps once per frame, so
 the renderer would interpolate between 60 Hz game frames.
 Goal: headroom on lesser PCs; phones later (Vulkan/Turnip). For that:
