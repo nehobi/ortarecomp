@@ -1943,9 +1943,24 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
     if (c->vsh)
         SDL_Log("capture:     vertex program on the GPU: %d instructions at %d, constants at %d%s",
                 c->vu.info[1], c->vu.info[0], c->vu.info[2], c->has_cpu ? "; the CPU's vertices:" : "");
-    if (c->fvf >= 0)
+    if (c->fvf >= 0) {
+        const pdo_fvf_uniforms *u = &F->fvf_us[c->fvf];
         SDL_Log("capture:     fixed-function vertices on the GPU: flags %x, %d lights%s",
-                F->fvf_us[c->fvf].layout0[2], F->fvf_us[c->fvf].light_info[0], c->has_cpu ? "; the CPU's vertices:" : "");
+                u->layout0[2], u->light_info[0], c->has_cpu ? "; the CPU's vertices:" : "");
+        /* The first vertex as the game wrote it: position, colours. */
+        if ((uint32_t)u->layout0[0] + (uint32_t)u->layout0[1] <= F->nblob && u->layout0[1] >= 16) {
+            const uint8_t *v = F->blob + u->layout0[0];
+            float p[4];
+            uint32_t dif = 0, spe = 0;
+            memcpy(p, v, 16);
+            if (u->layout0[2] & PDO_FVF_DIFFUSE)
+                memcpy(&dif, v + u->offs[1], 4);
+            if (u->layout0[2] & PDO_FVF_SPECULAR)
+                memcpy(&spe, v + u->offs[2], 4);
+            SDL_Log("capture:     v0 raw %.3f %.3f %.3f %.3f diffuse %08x specular %08x, %u vertices",
+                    p[0], p[1], p[2], p[3], dif, spe, c->id_nv);
+        }
+    }
     for (uint32_t k = 0; k < 3 && k < c->index_count && ((!c->vsh && c->fvf < 0) || c->has_cpu); k++) {
         const pdo_vertex *v = &F->verts[F->indices[c->first_index + k]];
         SDL_Log("capture:     v pos %.3f %.3f %.3f %.3f d %08x s %08x t0 %.3f %.3f %.3f %.3f "
