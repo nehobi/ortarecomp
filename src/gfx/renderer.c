@@ -107,9 +107,11 @@ typedef struct command {
  * the main thread, which owns the window. The game thread records a frame
  * into a frame_data and, at Swap, resolves its textures (while guest memory
  * still holds that frame's) and hands it over; the main thread uploads,
- * replays and presents it. Three frame_datas go round: the one being
- * recorded, one handed over, the one last drawn. F is the one this thread
- * works on. */
+ * replays and presents it. Four frame_datas go round: the one being
+ * recorded, the latest handed over, the one being drawn and the one last
+ * drawn. The game never waits for drawing: a frame handed over while the
+ * one before was not taken yet replaces it. F is the one this thread works
+ * on. */
 
 typedef struct gtex gtex;
 typedef struct pending_upload pending_upload;
@@ -154,12 +156,23 @@ typedef struct frame_data {
     uint8_t gamma[256 * 4];
 } frame_data;
 
-static frame_data pool[3];
+static frame_data pool[4];
 static PDO_TLS frame_data *F;
 
 static SDL_Mutex *q_lock;
 static SDL_Condition *q_cond;
 static frame_data *ready;           /* handed over, not drawn yet */
+static uint32_t frames_dropped;     /* replaced before they were drawn */
+static uint32_t frames_drawn;       /* by the main thread */
+
+void pdo_gfx_take_frame_counts(uint32_t *drawn, uint32_t *dropped)
+{
+    SDL_LockMutex(q_lock);
+    *drawn = frames_drawn;
+    *dropped = frames_dropped;
+    frames_drawn = frames_dropped = 0;
+    SDL_UnlockMutex(q_lock);
+}
 static frame_data *drawing;         /* the main thread is drawing it */
 static frame_data *last_drawn;      /* the main thread's latest */
 static bool game_done;              /* the game thread has ended */
@@ -2475,7 +2488,7 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
  * handed over, not the one last drawn. */
 static frame_data *free_frame(void)
 {
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 4; i++)
         if (&pool[i] != F && &pool[i] != ready && &pool[i] != drawing && &pool[i] != last_drawn)
             return &pool[i];
     return NULL;
@@ -2514,9 +2527,30 @@ static void hand_over(void)
     }
 
     SDL_LockMutex(q_lock);
-    /* One frame ahead at most; none while the options menu holds the game. */
-    while (ready || paused || !(next = free_frame()))
+    /* The options menu holds the game here. Otherwise no waiting: a frame
+     * the main thread has not taken yet (it is behind, the display or the
+     * GPU slower than the game) is dropped for this newer one. */
+    while (paused)
         SDL_WaitCondition(q_cond, q_lock);
+    next = ready ? ready : free_frame();
+    if (ready) {
+        /* What the dropped frame alone carried goes with this one: its
+         * programs and gamma ramp; its textures are uploaded again the next
+         * time they are used. */
+        frames_dropped++;
+        for (int i = 0; i < ready->nups; i++)
+            ready->ups[i].t->uploaded = false;
+        if (ready->progs_new && !F->progs_new) {
+            F->progs = grow(F->progs, &F->cap_progs, nprogs, sizeof *F->progs);
+            memcpy(F->progs, progs, nprogs * sizeof *progs);
+            F->nprogs = nprogs;
+            F->progs_new = true;
+        }
+        if (ready->gamma_new && !F->gamma_new) {
+            memcpy(F->gamma, ready->gamma, sizeof F->gamma);
+            F->gamma_new = true;
+        }
+    }
     ready = F;
     F = next;
     SDL_BroadcastCondition(q_cond);
@@ -2661,6 +2695,7 @@ void pdo_gfx_main_loop(void)
         SDL_LockMutex(q_lock);
         drawing = NULL;
         last_drawn = f;
+        frames_drawn++;
         SDL_BroadcastCondition(q_cond);
         SDL_UnlockMutex(q_lock);
         if (pdo_overlay_open())

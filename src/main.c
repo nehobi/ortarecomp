@@ -86,29 +86,21 @@ static void cli_progress(void *userdata, double fraction, const char *file)
 }
 
 #ifdef PDO_HAVE_RECOMP
-/* The game's own thread: the guest's registers are per thread, so the
- * address space is set up here, where it then runs. The main thread keeps
- * the window and draws (pdo_gfx_main_loop). */
+/* The game's own thread. The address space is set up on the main thread
+ * first (its fixed addresses must be free, and this thread's big stack
+ * could land on them); the guest registers that set up are taken over
+ * here. The main thread keeps the window and draws (pdo_gfx_main_loop). */
 typedef struct game_run {
-    void       *xbe;
-    size_t      size;
-    const char *game_dir, *save_dir;
-    uint32_t    entry;
-    bool        ok;
+    pdo_guest_cpu cpu;
+    uint32_t      entry;
 } game_run;
 
 static int SDLCALL game_thread(void *arg)
 {
     game_run *g = arg;
 
-    if (pdo_guest_init(g->xbe, g->size, g->game_dir, g->save_dir)) {
-        char list[PDO_PATH_MAX];
-        g->ok = true;
-        snprintf(list, sizeof list, "%sopened_files.txt", pdo_data_dir());
-        pdo_guest_log_opened_files(list);
-        SDL_Log("the game files the title opens are listed in %s", list);
-        pdo_guest_run(g->entry);
-    }
+    pdo_guest_cpu_load(&g->cpu);
+    pdo_guest_run(g->entry);
     pdo_gfx_game_finished();
     return 0;
 }
@@ -137,12 +129,19 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
         SDL_Log("cannot read %s: %s", path, SDL_GetError());
         return 1;
     }
-    if (boot) {
-        game_run g = { xbe, size, game_dir, save_dir, check->xbe.entry, false };
-        SDL_PropertiesID props = SDL_CreateProperties();
+    if (boot && pdo_guest_init(xbe, size, game_dir, save_dir)) {
+        game_run g;
+        SDL_PropertiesID props;
         SDL_Thread *t;
+        char list[PDO_PATH_MAX];
 
+        snprintf(list, sizeof list, "%sopened_files.txt", pdo_data_dir());
+        pdo_guest_log_opened_files(list);
+        SDL_Log("the game files the title opens are listed in %s", list);
+        pdo_guest_cpu_save(&g.cpu);
+        g.entry = check->xbe.entry;
         pdo_gfx_prepare_threads();
+        props = SDL_CreateProperties();
         SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER, (void *)game_thread);
         SDL_SetStringProperty(props, SDL_PROP_THREAD_CREATE_NAME_STRING, "game");
         SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_USERDATA_POINTER, &g);
@@ -153,11 +152,11 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
         if (t) {
             pdo_gfx_main_loop();
             SDL_WaitThread(t, NULL);
-            rc = g.ok ? 0 : 1;
+            rc = 0;
         } else {
             SDL_Log("cannot start the game thread: %s", SDL_GetError());
         }
-    } else if (pdo_guest_init(xbe, size, game_dir, save_dir)) {
+    } else if (!boot && pdo_guest_init(xbe, size, game_dir, save_dir)) {
         SDL_Log("game code is linked and the Xbox address space is set up; "
                 "run with --boot to start the title (not playable yet)");
         rc = 0;

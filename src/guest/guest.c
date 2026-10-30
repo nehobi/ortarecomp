@@ -145,6 +145,28 @@ void pdo_guest_run(uint32_t entry)
     SDL_Log("guest: title returned");
 }
 
+extern RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_ebx, g_esp, g_ebp, g_esi, g_edi;
+void guest_cpu_join(void);      /* xboxrecomp: the guest CPU lock (patch 0023) */
+void guest_cpu_part(void);
+
+/* The kernel layer's setup hands the guest CPU lock to the thread that set
+ * it up, as the one that runs the title: it goes with the registers. */
+void pdo_guest_cpu_save(pdo_guest_cpu *c)
+{
+    c->eax = g_eax; c->ecx = g_ecx; c->edx = g_edx; c->ebx = g_ebx;
+    c->esp = g_esp; c->ebp = g_ebp; c->esi = g_esi; c->edi = g_edi;
+    c->fs_base = g_fs_base;
+    guest_cpu_part();
+}
+
+void pdo_guest_cpu_load(const pdo_guest_cpu *c)
+{
+    g_eax = c->eax; g_ecx = c->ecx; g_edx = c->edx; g_ebx = c->ebx;
+    g_esp = c->esp; g_ebp = c->ebp; g_esi = c->esi; g_edi = c->edi;
+    g_fs_base = c->fs_base;
+    guest_cpu_join();
+}
+
 void pdo_guest_shutdown(void)
 {
     if (!mapped)

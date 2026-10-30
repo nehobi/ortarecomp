@@ -31,6 +31,9 @@ void pdo_gfx_shutdown(void);
 void pdo_gfx_prepare_threads(void);
 void pdo_gfx_main_loop(void);
 void pdo_gfx_game_finished(void);
+/* Frames the main thread drew, and frames it never took (a newer one came
+ * first), since the last call. */
+void pdo_gfx_take_frame_counts(uint32_t *drawn, uint32_t *dropped);
 
 /* One vertex as the shaders see it. Positions are in clip space; colours are
  * D3DCOLORs; four texture coordinate sets of up to four components; fog is

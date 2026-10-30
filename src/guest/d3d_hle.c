@@ -157,7 +157,7 @@ static Uint64 wait_vblank_for(bool skip)
         int held = guest_cpu_yield_begin();
         SDL_DelayPrecise(at - now);
         guest_cpu_yield_end(held);
-        perf_ns[PERF_VBLANK] += SDL_GetTicksNS() - now;
+        perf_ns[PERF_VBLANK] += vblank_clock() - now;   /* same clock as now (benchmark) */
     }
     return index;
 }
@@ -337,12 +337,15 @@ void sub_002BAFC0(void)
                 if (made)
                     SDL_Log("d3d: %u new pipelines made in the last %.1f s", made, (double)span / 1e9);
                 {
-                    uint32_t pc[4];
+                    uint32_t pc[4], drawn, dropped;
                     double fr = (double)(n - f0);
                     pdo_gfx_take_pass_counts(pc);
+                    pdo_gfx_take_frame_counts(&drawn, &dropped);
                     if (fr > 0)
                         SDL_Log("d3d: per frame: %.1f render passes, %.1f multisample seeds, %.1f snapshots, "
-                                "%.1f copies", pc[0] / fr, pc[1] / fr, pc[2] / fr, pc[3] / fr);
+                                "%.1f copies; on screen %.1f fps, %u frames not drawn",
+                                pc[0] / fr, pc[1] / fr, pc[2] / fr, pc[3] / fr,
+                                drawn * 1e9 / (double)(now - t0), dropped);
                 }
                 memset(perf_ns, 0, sizeof perf_ns);
             }

@@ -13,6 +13,19 @@ bool pdo_guest_init(const void *xbe_data, size_t xbe_size,
 /* Run the title from its entry point. Returns when the title exits. */
 void pdo_guest_run(uint32_t entry);
 
+/* The guest CPU's registers live per host thread, and pdo_guest_init sets
+ * them up on the thread that calls it. To run the title on another thread
+ * (made after pdo_guest_init: the Xbox address space has to be mapped at
+ * its fixed addresses before a big thread stack can land on them), save
+ * them there and load them on the new thread before pdo_guest_run. The
+ * guest CPU lock, which the setup gives the calling thread, goes with
+ * them. */
+typedef struct pdo_guest_cpu {
+    uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi, fs_base;
+} pdo_guest_cpu;
+void pdo_guest_cpu_save(pdo_guest_cpu *c);
+void pdo_guest_cpu_load(const pdo_guest_cpu *c);
+
 void pdo_guest_shutdown(void);
 
 /* Write every game file the title opens, once each, to list_path. */
