@@ -97,8 +97,15 @@ thread sleeps 1 ms (patch 0027): 445 -> 122 s CPU over a 330 s run here.
 here, gprofng loses samples) shows part of it is our draw submission.
 Linux only: win32_compat's WaitForMultipleObjects polls with sleeps
 (three stream workers at ~58 ms/s each); matters for Android.
-Later goal: an option above 60 fps; the game steps once per frame, so
-the renderer would interpolate between 60 Hz game frames.
+Threads: the game runs on its own thread; the main thread owns the
+window and draws (renderer.c, frame_data pool; the game never waits on
+drawing). Above 60: "Frame interp" (F1, ini frame_interp, off by
+default) draws frames between the last two game frames at the display
+rate, one game frame behind; draws are matched by what they draw from
+(match_frames) and blend vertices, matrices, program constants.
+PDO_CAPTURE_INTERP=1 saves t 0/0.5/1 at the capture frame. PDO_BENCHMARK=1
+runs the game unpaced (measuring only). Player's PC, benchmark at 2x:
+~190 fps in play (game thread bound); at 4x+4xAA the GPU caps ~60-80.
 Goal: headroom on lesser PCs; phones later (Vulkan/Turnip). For that:
 1. Vertex work on the GPU: done, both on by default (toggles kept). 2. Texture change tracking by writes instead
    of hashing every texture's mip chain each frame. 3. Measure the

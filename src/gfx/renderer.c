@@ -99,7 +99,15 @@ typedef struct command {
         int32_t info[4];                /* program base, count, constant base, - */
         int32_t inputs[16][4];          /* byte base in the stream blob, stride, offset, type */
         float   scale[4], offset[4];
+        /* frame interpolation (match_frames): see shaders/vsh.vert */
+        int32_t interp[4];
+        int32_t prev_in[16];
+        float   blend_t[4];
     } vu;
+    /* What the draw drew from, to find it again in the next frame: the
+     * host address of its (first) vertex data and its vertex count. */
+    uintptr_t id_src;
+    uint32_t id_nv;
 } command;
 
 /* ── Threads ──────────────────────────────────────────────────────────────
@@ -107,11 +115,11 @@ typedef struct command {
  * the main thread, which owns the window. The game thread records a frame
  * into a frame_data and, at Swap, resolves its textures (while guest memory
  * still holds that frame's) and hands it over; the main thread uploads,
- * replays and presents it. Four frame_datas go round: the one being
- * recorded, the latest handed over, the one being drawn and the one last
- * drawn. The game never waits for drawing: a frame handed over while the
- * one before was not taken yet replaces it. F is the one this thread works
- * on. */
+ * replays and presents it. Five frame_datas go round: the one being
+ * recorded, the latest handed over, the two the main thread holds (the
+ * newest it took, and the one before for frame interpolation), and a spare.
+ * The game never waits for drawing: a frame handed over while the one
+ * before was not taken yet replaces it. F is the one this thread works on. */
 
 typedef struct gtex gtex;
 typedef struct pending_upload pending_upload;
@@ -154,9 +162,15 @@ typedef struct frame_data {
     uint32_t nprogs, cap_progs;
     bool progs_new, gamma_new;
     uint8_t gamma[256 * 4];
+    Uint64 stamp;           /* when it was handed over */
+    /* Main thread: the frame's own GPU copies, uploaded once (on_gpu) and
+     * used for every frame shown from it. */
+    SDL_GPUBuffer *gvb, *gib, *gblob, *gconst;
+    Uint32 gvb_size, gib_size, gblob_size, gconst_size;
+    bool on_gpu;
 } frame_data;
 
-static frame_data pool[4];
+static frame_data pool[5];
 static PDO_TLS frame_data *F;
 
 static SDL_Mutex *q_lock;
@@ -173,8 +187,8 @@ void pdo_gfx_take_frame_counts(uint32_t *drawn, uint32_t *dropped)
     frames_drawn = frames_dropped = 0;
     SDL_UnlockMutex(q_lock);
 }
-static frame_data *drawing;         /* the main thread is drawing it */
-static frame_data *last_drawn;      /* the main thread's latest */
+static frame_data *held_cur;        /* the main thread's newest */
+static frame_data *held_prev;       /* and the one before it */
 static bool game_done;              /* the game thread has ended */
 static int init_w, init_h, init_state;  /* pdo_gfx_init asked of the main thread:
                                          * 1 asked, 2 done, 3 failed */
@@ -211,6 +225,7 @@ static void reset_frame(frame_data *f)
     f->staging_len = 0;
     f->nups = 0;
     f->progs_new = f->gamma_new = false;
+    f->on_gpu = false;
 }
 
 /* The game thread records into pool[0] first. */
@@ -334,12 +349,16 @@ void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
         c->draw = *d;
     }
     c->vsh = true;
+    c->id_nv = nv;
 
     /* The streams, 4-aligned; 8 bytes of slack past the end for the
      * shader's word reads. */
     for (int k = 0; k < 16; k++)
-        if (g->stream_bytes[k] && g->stream_data[k])
+        if (g->stream_bytes[k] && g->stream_data[k]) {
             sbase[k] = add_blob(g->stream_data[k], g->stream_bytes[k]);
+            if (!c->id_src)
+                c->id_src = (uintptr_t)g->stream_data[k];
+        }
 
     /* The constants, shared with the draw before when they are the same. */
     if (F->last_consts >= 0 && !memcmp(F->vconsts[F->last_consts], g->constants, 192 * 16)) {
@@ -399,6 +418,8 @@ bool pdo_gfx_draw_fvf(const pdo_draw *d, const pdo_gpu_fvf *g, uint32_t nv,
                                     : offsetof(pdo_fvf_uniforms, material));
     F->fvf_us[F->nfvf_us].layout0[0] = (int32_t)add_blob(g->data, g->bytes);
     c->fvf = (int32_t)F->nfvf_us++;
+    c->id_src = (uintptr_t)g->data;
+    c->id_nv = nv;
     F->indices = grow(F->indices, &F->cap_indices, F->nindices + ni, sizeof *F->indices);
     memcpy(F->indices + F->nindices, idx, ni * sizeof *idx);
     c->vsh_first_index = F->nindices;
@@ -1615,10 +1636,10 @@ static bool init_here(int width, int height)
         fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
         fs_ps = make_shader(ff_ps_frag_spv, sizeof ff_ps_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
     }
-    vsh_vs = make_shader_sb(vsh_vert_spv, sizeof vsh_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 3);
+    vsh_vs = make_shader_sb(vsh_vert_spv, sizeof vsh_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 5);
     if (!vsh_vs)
         SDL_Log("gfx: no GPU vertex programs (%s); they run on the CPU", SDL_GetError());
-    fvf_vs = make_shader_sb(fvf_vert_spv, sizeof fvf_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 1);
+    fvf_vs = make_shader_sb(fvf_vert_spv, sizeof fvf_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 2);
     if (!fvf_vs)
         SDL_Log("gfx: no GPU fixed-function vertices (%s); they run on the CPU", SDL_GetError());
     if (!vs || !fs) {
@@ -1737,22 +1758,30 @@ uint64_t pdo_gfx_frame_count(void)
 
 /* ── Replay ───────────────────────────────────────────────────────────── */
 
-static SDL_GPUBuffer *vbuf, *ibuf, *blob_buf, *const_buf, *prog_buf;
-static Uint32 vbuf_size, ibuf_size, blob_buf_size, const_buf_size, prog_buf_size;
+static SDL_GPUBuffer *prog_buf;
+static Uint32 prog_buf_size;
 
 /* A draw's vertices: the vertex buffer, or for a vertex program on the GPU
  * its streams, programs and constants. */
+/* Frame interpolation (main thread): the previous game frame, when the
+ * frame shown blends towards F from it, and how far (1: F as it is). */
+static frame_data *P;
+static float blend;
+
 static void bind_geometry(SDL_GPURenderPass *pass, int gpu)
 {
-    SDL_GPUBufferBinding ib = { ibuf, 0 };
+    SDL_GPUBufferBinding ib = { F->gib, 0 };
+    SDL_GPUBuffer *pblob = P && P->gblob ? P->gblob : F->gblob;
+    SDL_GPUBuffer *pconst = P && P->gconst ? P->gconst : F->gconst;
 
     if (gpu == 1) {
-        SDL_GPUBuffer *sb[3] = { blob_buf, prog_buf, const_buf };
-        SDL_BindGPUVertexStorageBuffers(pass, 0, sb, 3);
+        SDL_GPUBuffer *sb[5] = { F->gblob, prog_buf, F->gconst, pblob, pconst };
+        SDL_BindGPUVertexStorageBuffers(pass, 0, sb, 5);
     } else if (gpu == 2) {
-        SDL_BindGPUVertexStorageBuffers(pass, 0, &blob_buf, 1);
+        SDL_GPUBuffer *sb[2] = { F->gblob, pblob };
+        SDL_BindGPUVertexStorageBuffers(pass, 0, sb, 2);
     } else {
-        SDL_GPUBufferBinding vb = { vbuf, 0 };
+        SDL_GPUBufferBinding vb = { F->gvb, 0 };
         SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
     }
     SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -2058,16 +2087,20 @@ static SDL_GPUTexture *slot_texture(const tex_slot *t)
     return r->depth_only ? (no_shadows ? white : r->depth) : r->color;
 }
 
-static void replay(SDL_GPUCommandBuffer *cmd)
+/* The frame's vertices, indices, streams, constants (and any new programs
+ * and changed texels) to the GPU, once. */
+static void upload_frame(SDL_GPUCommandBuffer *cmd)
 {
     uint8_t *staging = F->staging;
     pending_upload *ups = F->ups;
     int nups = F->nups;
     uint32_t staging_len = F->staging_len;
-    SDL_GPURenderPass *pass = NULL;
     Uint32 vbytes = F->nverts * (Uint32)sizeof *F->verts, ibytes = F->nindices * 4;
     Uint32 bbytes = F->nblob ? (F->nblob + 8 + 3) & ~3u : 0, cbytes = F->nvconsts * 16, pbytes;
 
+    if (F->on_gpu)
+        return;
+    F->on_gpu = true;
     /* All the programs again when one was added. */
     pbytes = F->progs_new ? F->nprogs * 4 : 0;
     if (vbytes || ibytes || staging_len || bbytes || cbytes || pbytes) {
@@ -2079,13 +2112,13 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         Uint32 tex_off = poff + pbytes;
 
         if (vbytes)
-            vbuf = ensure_buffer(vbuf, &vbuf_size, vbytes, SDL_GPU_BUFFERUSAGE_VERTEX);
+            F->gvb = ensure_buffer(F->gvb, &F->gvb_size, vbytes, SDL_GPU_BUFFERUSAGE_VERTEX);
         if (ibytes)
-            ibuf = ensure_buffer(ibuf, &ibuf_size, ibytes, SDL_GPU_BUFFERUSAGE_INDEX);
+            F->gib = ensure_buffer(F->gib, &F->gib_size, ibytes, SDL_GPU_BUFFERUSAGE_INDEX);
         if (bbytes)
-            blob_buf = ensure_buffer(blob_buf, &blob_buf_size, bbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
+            F->gblob = ensure_buffer(F->gblob, &F->gblob_size, bbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
         if (cbytes)
-            const_buf = ensure_buffer(const_buf, &const_buf_size, cbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
+            F->gconst = ensure_buffer(F->gconst, &F->gconst_size, cbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
         if (pbytes)
             prog_buf = ensure_buffer(prog_buf, &prog_buf_size, pbytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
         SDL_zero(tbi);
@@ -2104,8 +2137,8 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         copy = SDL_BeginGPUCopyPass(cmd);
         {
             struct { SDL_GPUBuffer *b; Uint32 off, n; } up[5] = {
-                { vbuf, 0, vbytes }, { ibuf, vbytes, ibytes }, { blob_buf, boff, bbytes },
-                { const_buf, coff, cbytes }, { prog_buf, poff, pbytes },
+                { F->gvb, 0, vbytes }, { F->gib, vbytes, ibytes }, { F->gblob, boff, bbytes },
+                { F->gconst, coff, cbytes }, { prog_buf, poff, pbytes },
             };
             for (int k = 0; k < 5; k++)
                 if (up[k].n && up[k].b) {
@@ -2131,7 +2164,13 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         SDL_EndGPUCopyPass(copy);
         SDL_ReleaseGPUTransferBuffer(dev, tb);
     }
+}
 
+static void replay(SDL_GPUCommandBuffer *cmd)
+{
+    SDL_GPURenderPass *pass = NULL;
+
+    upload_frame(cmd);
     cur_target = NULL;
     for (uint32_t i = 0; i < F->ncmds; i++) {
         command *c = &F->cmds[i];
@@ -2171,9 +2210,9 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             continue;
         }
         gpu = 0;
-        if (c->vsh && !(cpu_vsh && c->has_cpu) && vsh_vs && prog_buf && blob_buf && const_buf)
+        if (c->vsh && !(cpu_vsh && c->has_cpu) && vsh_vs && prog_buf && F->gblob && F->gconst)
             gpu = 1;
-        else if (c->fvf >= 0 && !(cpu_vsh && c->has_cpu) && fvf_vs && blob_buf)
+        else if (c->fvf >= 0 && !(cpu_vsh && c->has_cpu) && fvf_vs && F->gblob)
             gpu = 2;
         if ((c->vsh || c->fvf >= 0) && !gpu && !c->has_cpu)
             continue;           /* no vertices to draw it with */
@@ -2217,10 +2256,14 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         if (c->draw.ps.stencil_enable)
             SDL_SetGPUStencilReference(pass, c->draw.stencil_ref);
         if (gpu) {
-            if (gpu == 1)
+            float t = P ? blend : 1.0f;
+            if (gpu == 1) {
+                c->vu.blend_t[0] = t;
                 SDL_PushGPUVertexUniformData(cmd, 0, &c->vu, sizeof c->vu);
-            else
+            } else {
+                F->fvf_us[c->fvf].blend_t[0] = t;
                 SDL_PushGPUVertexUniformData(cmd, 0, &F->fvf_us[c->fvf], sizeof F->fvf_us[0]);
+            }
             SDL_DrawGPUIndexedPrimitives(pass, c->vsh_index_count, 1, c->vsh_first_index, 0, 0);
         } else {
             SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, 0, 0);
@@ -2339,6 +2382,44 @@ static void capture_vsh(void)
             SDL_SubmitGPUCommandBuffer(cmd);
     }
     cpu_vsh = false;
+}
+
+/* PDO_CAPTURE_INTERP=1: at the capture frame, save the frame between the
+ * one before and it at t 0, 0.5 and 1 (capture_<frame>_t000.bmp, _t050,
+ * _t100): matched draws should sit halfway in the middle one. */
+static void match_frames(frame_data *prev, frame_data *cur);
+
+static void capture_interp(frame_data *prev, frame_data *cur)
+{
+    const char *e = getenv("PDO_CAPTURE_INTERP");
+    static const float ts[3] = { 0.0f, 0.5f, 1.0f };
+
+    if (!e || !atoi(e))
+        return;
+    match_frames(prev, cur);
+    for (int k = 0; k < 3; k++) {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+        char path[64];
+        Uint32 w, h;
+
+        if (!cmd)
+            break;
+        F = prev;           /* prev on the GPU first, as when interpolating */
+        upload_frame(cmd);
+        F = cur;
+        P = prev;
+        blend = ts[k];
+        replay(cmd);
+        cur_target = NULL;
+        cur_size(&w, &h);
+        snprintf(path, sizeof path, "capture_%05llu_t%03d.bmp", (unsigned long long)cur->frame,
+                 (int)(ts[k] * 100));
+        save_texture(&cmd, cur_color(), (int)w, (int)h, path);
+        if (cmd)
+            SDL_SubmitGPUCommandBuffer(cmd);
+    }
+    P = NULL;
+    blend = 1.0f;
 }
 
 static void capture_steps(void)
@@ -2482,14 +2563,159 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     SDL_EndGPURenderPass(pass);
 }
 
+/* ── Frame interpolation ─────────────────────────────────────────────────
+ * The game runs at 60; frames between two of its frames are drawn by
+ * blending each draw of the newer frame with the same draw in the frame
+ * before. "The same draw" is a guess from what the draw drew from: the kind
+ * of draw, its program (or fixed-function layout), the host address of its
+ * vertex data, vertex and index counts and first texture. Draws alike in
+ * all of that pair up in order -- but only when the group is as large in
+ * both frames; otherwise (objects appearing, vanishing, reordering) the
+ * group is not blended rather than blended with the wrong partner. A
+ * fixed-function draw whose position on screen jumps (a teleport, a new
+ * object recycling a buffer) is not blended either, and when many do, the
+ * camera cut and nothing is. Unblended draws show the newer frame. */
+
+typedef struct draw_key {
+    uint64_t h;
+    uint32_t cmd;
+} draw_key;
+
+static uint64_t key_of(const frame_data *f, const command *c)
+{
+    uint64_t h = 1469598103934665603ull;
+    uint64_t v[7];
+
+    v[0] = c->vsh ? 1 : 2;
+    v[1] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[0]
+                  : ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1];
+    v[2] = c->id_src;
+    v[3] = c->id_nv;
+    v[4] = c->vsh_index_count;
+    v[5] = c->draw.tex[0].data;
+    v[6] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[1] : 0;
+    for (int i = 0; i < 7; i++)
+        h = (h ^ v[i]) * 1099511628211ull;
+    return h;
+}
+
+static int cmp_key(const void *a, const void *b)
+{
+    const draw_key *x = a, *y = b;
+    if (x->h != y->h)
+        return x->h < y->h ? -1 : 1;
+    return x->cmd < y->cmd ? -1 : x->cmd > y->cmd;
+}
+
+static bool blendable(const command *c)
+{
+    return c->kind == CMD_DRAW && (c->vsh || c->fvf >= 0) && c->id_src;
+}
+
+static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < f->ncmds; i++)
+        if (blendable(&f->cmds[i])) {
+            *keys = grow(*keys, cap, n + 1, sizeof **keys);
+            (*keys)[n].h = key_of(f, &f->cmds[i]);
+            (*keys)[n].cmd = i;
+            n++;
+        }
+    qsort(*keys, n, sizeof **keys, cmp_key);
+    return n;
+}
+
+/* Where a fixed-function draw's origin lands on screen (NDC), and whether
+ * it is in front of the eye. */
+static bool origin_ndc(const float *wvp, float *x, float *y)
+{
+    float w = wvp[15];
+    if (w <= 1e-4f)
+        return false;
+    *x = wvp[12] / w;
+    *y = wvp[13] / w;
+    return true;
+}
+
+/* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
+static void match_frames(frame_data *prev, frame_data *cur)
+{
+    static draw_key *pk, *ck;
+    static uint32_t cap_pk, cap_ck;
+    uint32_t np = 0, nc, i = 0, j = 0, fvf_pairs = 0, fvf_jumps = 0;
+
+    for (uint32_t k = 0; k < cur->ncmds; k++) {
+        command *c = &cur->cmds[k];
+        if (c->kind != CMD_DRAW)
+            continue;
+        if (c->vsh) {
+            c->vu.interp[0] = -1;
+            c->vu.interp[1] = 0;
+        }
+        if (c->fvf >= 0)
+            cur->fvf_us[c->fvf].interp[0] = -1;
+    }
+    if (!prev)
+        return;
+    np = keys_of(prev, &pk, &cap_pk);
+    nc = keys_of(cur, &ck, &cap_ck);
+    while (i < np && j < nc) {
+        uint32_t i2 = i, j2 = j;
+        if (pk[i].h < ck[j].h) { i++; continue; }
+        if (pk[i].h > ck[j].h) { j++; continue; }
+        while (i2 < np && pk[i2].h == pk[i].h) i2++;
+        while (j2 < nc && ck[j2].h == ck[j].h) j2++;
+        if (i2 - i == j2 - j) {
+            for (uint32_t k = 0; k < i2 - i; k++) {
+                const command *pc = &prev->cmds[pk[i + k].cmd];
+                command *c = &cur->cmds[ck[j + k].cmd];
+                if (c->vsh && pc->vsh) {
+                    bool same_in = true;
+                    for (int r = 0; r < 16; r++) {
+                        if (c->vu.inputs[r][1] != pc->vu.inputs[r][1] || c->vu.inputs[r][2] != pc->vu.inputs[r][2] ||
+                            c->vu.inputs[r][3] != pc->vu.inputs[r][3])
+                            same_in = false;
+                        c->vu.prev_in[r] = pc->vu.inputs[r][0];
+                    }
+                    c->vu.interp[0] = pc->vu.info[2];
+                    c->vu.interp[1] = same_in;
+                } else if (c->fvf >= 0 && pc->fvf >= 0) {
+                    pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
+                    const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
+                    float x0, y0, x1, y1;
+                    if (!(u->layout0[2] & PDO_FVF_PRE)) {
+                        fvf_pairs++;
+                        if (origin_ndc(pu->wvp, &x0, &y0) != origin_ndc(u->wvp, &x1, &y1) ||
+                            (origin_ndc(u->wvp, &x1, &y1) && (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f))) {
+                            fvf_jumps++;
+                            continue;   /* jumped: not blended */
+                        }
+                    }
+                    u->interp[0] = pu->layout0[0];
+                    u->interp[1] = 1;
+                    memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
+                    memcpy(u->prev_wv, pu->wv, sizeof u->prev_wv);
+                    memcpy(u->prev_world, pu->world, sizeof u->prev_world);
+                }
+            }
+        }
+        i = i2;
+        j = j2;
+    }
+    /* A camera cut: most things jumped. Show the new frame as it is. */
+    if (fvf_pairs >= 8 && fvf_jumps * 3 > fvf_pairs)
+        match_frames(NULL, cur);
+}
+
 /* ── The two threads ──────────────────────────────────────────────────── */
 
 /* A frame data no thread holds (with q_lock held): not recorded into, not
  * handed over, not the one last drawn. */
 static frame_data *free_frame(void)
 {
-    for (int i = 0; i < 4; i++)
-        if (&pool[i] != F && &pool[i] != ready && &pool[i] != drawing && &pool[i] != last_drawn)
+    for (int i = 0; i < 5; i++)
+        if (&pool[i] != F && &pool[i] != ready && &pool[i] != held_cur && &pool[i] != held_prev)
             return &pool[i];
     return NULL;
 }
@@ -2502,6 +2728,7 @@ static void hand_over(void)
     frame_data *next = NULL;
 
     F->frame = frames;
+    F->stamp = tex_t0;
     F->tex = grow(F->tex, &F->cap_tex, F->ncmds * 4 + 4, sizeof *F->tex);
     if (!F->ups)
         F->ups = SDL_malloc(MAX_UPLOADS * sizeof *F->ups);
@@ -2572,7 +2799,7 @@ bool pdo_gfx_present(void)
         bool shot = shot_dir && frames <= 300 * (uint64_t)shot_every && frames % (uint64_t)shot_every == 0;
         if (no_draw < 0)
             no_draw = getenv("PDO_NO_DRAW") && atoi(getenv("PDO_NO_DRAW")) != 0;
-        if (no_draw && !shot && frames != capture_frame) {
+        if (no_draw && !shot && frames != capture_frame && frames + 1 != capture_frame) {
             reset_frame(F);
             return true;
         }
@@ -2581,18 +2808,27 @@ bool pdo_gfx_present(void)
     return true;
 }
 
-/* Main thread: draw a handed-over frame and present it. */
-static void draw_frame(frame_data *f)
+static bool shot_frame(const frame_data *f)
+{
+    return shot_dir && f->frame <= 300 * (uint64_t)shot_every && f->frame % (uint64_t)shot_every == 0;
+}
+
+/* Main thread: draw a handed-over frame and present it; with prev, the
+ * frame between prev and f at t (0 prev, 1 f). Captures and screenshots
+ * are of frames as they are. */
+static void draw_frame(frame_data *f, frame_data *prev, float t)
 {
     SDL_GPUCommandBuffer *cmd;
-    bool shot = shot_dir && f->frame <= 300 * (uint64_t)shot_every && f->frame % (uint64_t)shot_every == 0;
+    bool shot = !prev && shot_frame(f);
 
     F = f;
+    P = prev;
+    blend = t;
     if (f->gamma_new) {
         memcpy(gamma_rgba, f->gamma, sizeof gamma_rgba);
         gamma_dirty = true;
     }
-    if (f->frame == capture_frame) {
+    if (!prev && f->frame == capture_frame) {
         capture_steps();
         capture_shadows();
         capture_vsh();
@@ -2606,7 +2842,7 @@ static void draw_frame(frame_data *f)
     present_to_window(cmd);
     if (shot)
         save_screenshot(&cmd, shot_dir, "frame");
-    else if (f->frame == capture_frame) {
+    else if (!prev && f->frame == capture_frame) {
         save_screenshot(&cmd, ".", "capture");
         SDL_Log("capture: saved capture_%05llu.bmp", (unsigned long long)f->frame);
     }
@@ -2662,8 +2898,12 @@ void pdo_gfx_game_finished(void)
 
 void pdo_gfx_main_loop(void)
 {
+    frame_data *cur = NULL, *prev = NULL;
+    double interval = 1e9 / 59.94;     /* between game frames, smoothed */
+
     for (;;) {
-        frame_data *f = NULL;
+        frame_data *f;
+        bool interp = pdo_settings_get()->frame_interp && !getenv("PDO_BENCHMARK");
 
         if (dev && !pdo_gfx_pump_events()) {
             SDL_Log("d3d: window closed");
@@ -2672,7 +2912,8 @@ void pdo_gfx_main_loop(void)
         if (dev && pdo_overlay_open())     /* opened while no frame comes (loading) */
             hold_for_overlay();
         SDL_LockMutex(q_lock);
-        if (!ready && !game_done && init_state != 1)
+        /* Interpolating, frames are drawn whether a new one came or not. */
+        if (!ready && !game_done && init_state != 1 && !(interp && prev))
             SDL_WaitConditionTimeout(q_cond, q_lock, 4);
         if (init_state == 1) {
             SDL_UnlockMutex(q_lock);
@@ -2687,18 +2928,45 @@ void pdo_gfx_main_loop(void)
         }
         f = ready;
         ready = NULL;
-        drawing = f;
+        if (f) {
+            held_prev = cur;
+            held_cur = f;
+        }
         SDL_UnlockMutex(q_lock);
-        if (!f)
+
+        if (f) {
+            if (cur) {
+                double d = (double)(f->stamp - cur->stamp);
+                if (d > 8e6 && d < 50e6)
+                    interval += (d - interval) * 0.1;
+            }
+            prev = cur;
+            cur = f;
+            match_frames(interp ? prev : NULL, cur);
+            if (prev && f->frame == capture_frame)
+                capture_interp(prev, cur);
+            /* Captures and screenshots are of the frame as it is. */
+            if (!interp || !prev || shot_frame(f) || f->frame == capture_frame) {
+                draw_frame(f, NULL, 1.0f);
+                SDL_LockMutex(q_lock);
+                frames_drawn++;
+                SDL_UnlockMutex(q_lock);
+                if (!interp)
+                    continue;
+            }
+        }
+        if (!interp || !prev || !cur)
             continue;
-        draw_frame(f);
-        SDL_LockMutex(q_lock);
-        drawing = NULL;
-        last_drawn = f;
-        frames_drawn++;
-        SDL_BroadcastCondition(q_cond);
-        SDL_UnlockMutex(q_lock);
-        if (pdo_overlay_open())
-            hold_for_overlay();
+        {
+            /* One game frame behind: as the newest arrives, show the one
+             * before; as the next is due, the newest. */
+            double t = (double)(SDL_GetTicksNS() - cur->stamp) / interval;
+            draw_frame(cur, prev, (float)(t < 0 ? 0 : t > 1 ? 1 : t));
+            SDL_LockMutex(q_lock);
+            frames_drawn++;
+            SDL_UnlockMutex(q_lock);
+            if (!have_swapchain)
+                SDL_Delay(1);
+        }
     }
 }

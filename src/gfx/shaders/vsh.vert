@@ -14,12 +14,22 @@
 layout(set = 0, binding = 0, std430) readonly buffer Streams { uint blob[]; };
 layout(set = 0, binding = 1, std430) readonly buffer Programs { uvec4 prog[]; };
 layout(set = 0, binding = 2, std430) readonly buffer Constants { vec4 cbuf[]; };
+// Frame interpolation: the previous game frame's streams and constants.
+layout(set = 0, binding = 3, std430) readonly buffer PrevStreams { uint pblob[]; };
+layout(set = 0, binding = 4, std430) readonly buffer PrevConstants { vec4 pcbuf[]; };
 
 layout(set = 1, binding = 0, std140) uniform Draw {
     ivec4 info;          // program base (uvec4 units), instructions, constant base (vec4 units), -
     ivec4 inputs[16];    // per v register: byte base in blob, stride, offset, D3DVSDT type (0: absent)
     vec4  vp_scale;      // the viewport transform the program ends with (c[58]), w unused
     vec4  vp_offset;     // c[59]; w: the depth scale
+    // Interpolation (renderer.c, match_frames): x the matching draw's
+    // constant base in the previous frame (-1: none), y 1 if its streams
+    // match too; prev_in its v registers' byte bases; blend_t.x how far from
+    // the previous frame (1: this frame, as drawn without interpolation).
+    ivec4 interp;
+    ivec4 prev_in[4];
+    vec4  blend_t;
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -30,22 +40,25 @@ layout(location = 4) out vec4 v_tc2;
 layout(location = 5) out vec4 v_tc3;
 layout(location = 6) out float v_fog;
 
-uint rd8(uint a)  { return (blob[a >> 2] >> ((a & 3u) * 8u)) & 0xFFu; }
+// Reads from this frame's streams, or the previous frame's (from_prev).
+bool from_prev;
+uint word(uint i) { return from_prev ? pblob[i] : blob[i]; }
+uint rd8(uint a)  { return (word(a >> 2) >> ((a & 3u) * 8u)) & 0xFFu; }
 uint rd16(uint a) { return rd8(a) | (rd8(a + 1u) << 8); }
 uint rd32(uint a)
 {
-    if ((a & 3u) == 0u) return blob[a >> 2];
+    if ((a & 3u) == 0u) return word(a >> 2);
     return rd8(a) | (rd8(a + 1u) << 8) | (rd8(a + 2u) << 16) | (rd8(a + 3u) << 24);
 }
 float s16(uint a) { return float(int(rd16(a) << 16) >> 16); }
 
-// One input attribute, as pdo_vsh_fetch decodes it.
-vec4 fetch(int r)
+// One input attribute, as pdo_vsh_fetch decodes it, from byte base 'base'.
+vec4 fetch_at(int r, int base)
 {
     ivec4 d = inputs[r];
     vec4 o = vec4(0.0, 0.0, 0.0, 1.0);
     uint t = uint(d.w), n = t >> 4;
-    uint a = uint(d.x) + uint(gl_VertexIndex) * uint(d.y) + uint(d.z);
+    uint a = uint(base) + uint(gl_VertexIndex) * uint(d.y) + uint(d.z);
     if (t == 0u) return o;
     uint k = t & 15u;
     if (k == 2u) {                                  // FLOATn
@@ -65,6 +78,17 @@ vec4 fetch(int r)
         for (uint i = 0u; i < n && i < 4u; i++) o[i] = float(rd8(a + i)) / 255.0;
     }
     return o;
+}
+
+vec4 fetch(int r)
+{
+    from_prev = false;
+    vec4 cur = fetch_at(r, inputs[r].x);
+    if (blend_t.x >= 1.0 || interp.y == 0 || inputs[r].w == 0)
+        return cur;
+    from_prev = true;
+    vec4 prev = fetch_at(r, prev_in[r >> 2][r & 3]);
+    return mix(prev, cur, blend_t.x);
 }
 
 vec4 mulz(vec4 a, vec4 b)
@@ -89,7 +113,13 @@ vec4 O[16];
 
 vec4 operand(uint w, int cidx)
 {
-    vec4 s = ((w >> 8) & 1u) != 0u ? cbuf[info.z + cidx] : R[w & 0xFFu];
+    vec4 s;
+    if (((w >> 8) & 1u) == 0u)
+        s = R[w & 0xFFu];
+    else if (blend_t.x >= 1.0 || interp.x < 0)
+        s = cbuf[info.z + cidx];
+    else
+        s = mix(pcbuf[interp.x + cidx], cbuf[info.z + cidx], blend_t.x);
     vec4 v = vec4(s[(w >> 12) & 3u], s[(w >> 14) & 3u], s[(w >> 16) & 3u], s[(w >> 18) & 3u]);
     return ((w >> 9) & 1u) != 0u ? -v : v;
 }

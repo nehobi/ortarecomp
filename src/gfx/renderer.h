@@ -200,6 +200,10 @@ typedef struct pdo_fvf_uniforms {
     float   material[4][4];      /* diffuse, ambient, specular, emissive */
     float   ambient[4];
     float   light[8][7][4];      /* see shaders/fvf.vert */
+    /* frame interpolation, filled by the renderer (match_frames) */
+    int32_t interp[4];
+    float   blend_t[4];
+    float   prev_wvp[16], prev_wv[16], prev_world[16];
 } pdo_fvf_uniforms;
 
 enum { PDO_FVF_PRE = 1, PDO_FVF_DIFFUSE = 2, PDO_FVF_SPECULAR = 4, PDO_FVF_NORMAL = 8,

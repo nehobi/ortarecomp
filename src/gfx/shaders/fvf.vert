@@ -6,6 +6,7 @@
 // material and lights.
 
 layout(set = 0, binding = 0, std430) readonly buffer Streams { uint blob[]; };
+layout(set = 0, binding = 1, std430) readonly buffer PrevStreams { uint pblob[]; };  // interpolation
 
 layout(set = 1, binding = 0, std140) uniform Draw {
     ivec4 layout0;       // byte base, stride, flags, coordinate sets in the FVF
@@ -28,6 +29,12 @@ layout(set = 1, binding = 0, std140) uniform Draw {
                          // ambient, position, direction (unit for directional:
                          // to the light), attenuation (a0, a1, a2, |direction|),
                          // cone (cos theta/2, cos phi/2)
+    // Interpolation (renderer.c, match_frames): x the matching draw's byte
+    // base in the previous frame's streams (-1: none), y 1 if its matrices
+    // are below; blend_t.x how far from the previous frame (1: this frame).
+    ivec4 interp;
+    vec4  blend_t;
+    vec4  prev_wvp[4], prev_wv[4], prev_world[4];
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -40,10 +47,12 @@ layout(location = 6) out float v_fog;
 
 const int F_PRE = 1, F_DIFFUSE = 2, F_SPECULAR = 4, F_NORMAL = 8, F_LIT = 16, F_FOGTABLE = 32;
 
-uint rd8(uint a)  { return (blob[a >> 2] >> ((a & 3u) * 8u)) & 0xFFu; }
+bool from_prev;
+uint word(uint i) { return from_prev ? pblob[i] : blob[i]; }
+uint rd8(uint a)  { return (word(a >> 2) >> ((a & 3u) * 8u)) & 0xFFu; }
 uint rd32(uint a)
 {
-    if ((a & 3u) == 0u) return blob[a >> 2];
+    if ((a & 3u) == 0u) return word(a >> 2);
     return rd8(a) | (rd8(a + 1u) << 8) | (rd8(a + 2u) << 16) | (rd8(a + 3u) << 24);
 }
 float f32(uint a) { return uintBitsToFloat(rd32(a)); }
@@ -136,22 +145,44 @@ void main()
     bool pre = (flags & F_PRE) != 0, hd = (flags & F_DIFFUSE) != 0, hs = (flags & F_SPECULAR) != 0;
     bool hn = (flags & F_NORMAL) != 0;
     uint v = uint(layout0.x) + uint(gl_VertexIndex) * uint(layout0.y);
+    vec4 mwvp[4], mwv[4], mworld[4];
+    from_prev = false;
     vec3 p = vec3(f32(v), f32(v + 4u), f32(v + 8u));
     vec3 nrm = hn ? vec3(f32(v + uint(offs.x)), f32(v + uint(offs.x) + 4u), f32(v + uint(offs.x) + 8u)) : vec3(0.0);
+    float rhw = pre ? f32(v + 12u) : 1.0;
+    bool blend = blend_t.x < 1.0 && interp.x >= 0;
+
+    // Interpolation: positions (and normals, rhw) from the previous game
+    // frame's vertices, blended; the matrices too when they are given.
+    for (int i = 0; i < 4; i++) {
+        bool bm = blend && interp.y != 0;
+        mwvp[i] = bm ? mix(prev_wvp[i], wvp[i], blend_t.x) : wvp[i];
+        mwv[i] = bm ? mix(prev_wv[i], wv[i], blend_t.x) : wv[i];
+        mworld[i] = bm ? mix(prev_world[i], world[i], blend_t.x) : world[i];
+    }
+    if (blend) {
+        uint q = uint(interp.x) + uint(gl_VertexIndex) * uint(layout0.y);
+        from_prev = true;
+        vec3 pp = vec3(f32(q), f32(q + 4u), f32(q + 8u));
+        p = mix(pp, p, blend_t.x);
+        if (hn) nrm = mix(vec3(f32(q + uint(offs.x)), f32(q + uint(offs.x) + 4u), f32(q + uint(offs.x) + 8u)), nrm, blend_t.x);
+        if (pre) rhw = mix(f32(q + 12u), rhw, blend_t.x);
+        from_prev = false;
+    }
     uint dw = hd ? rd32(v + uint(offs.y)) : 0xFFFFFFFFu, sw = hs ? rd32(v + uint(offs.z)) : 0u;
     vec4 diffuse = color(dw), specular = color(sw);
-    vec3 e = xform(p, wv[0], wv[1], wv[2], wv[3]).xyz;
+    vec3 e = xform(p, mwv[0], mwv[1], mwv[2], mwv[3]).xyz;
 
     if (pre) {
-        float rhw = f32(v + 12u), w = rhw != 0.0 ? 1.0 / rhw : 1.0;
+        float w = rhw != 0.0 ? 1.0 / rhw : 1.0;
         gl_Position = vec4((p.x / rt.x * 2.0 - 1.0) * w, (1.0 - p.y / rt.y * 2.0) * w, p.z * w, w);
     } else {
-        gl_Position = xform(p, wvp[0], wvp[1], wvp[2], wvp[3]);
+        gl_Position = xform(p, mwvp[0], mwvp[1], mwvp[2], mwvp[3]);
     }
     if ((flags & F_LIT) != 0) {
-        vec3 wp = xform(p, world[0], world[1], world[2], world[3]).xyz, wn = vec3(0.0);
+        vec3 wp = xform(p, mworld[0], mworld[1], mworld[2], mworld[3]).xyz, wn = vec3(0.0);
         if (hn) {
-            wn = xform3(nrm, world[0], world[1], world[2]);
+            wn = xform3(nrm, mworld[0], mworld[1], mworld[2]);
             float len = sqrt((wn.x * wn.x + wn.y * wn.y) + wn.z * wn.z);
             if (len > 0.0) wn /= len;
         }
@@ -172,7 +203,7 @@ void main()
             if (gen == 2) {
                 g = e;
             } else if (hn) {
-                g = xform3(nrm, wv[0], wv[1], wv[2]);
+                g = xform3(nrm, mwv[0], mwv[1], mwv[2]);
                 float len = sqrt((g.x * g.x + g.y * g.y) + g.z * g.z);
                 if (len > 0.0) g /= len;
             }
