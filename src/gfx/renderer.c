@@ -785,7 +785,8 @@ typedef struct gtex {
     uint32_t data, format_word, size_word;
     uint64_t hash;
     bool     uploaded;      /* the GPU copy holds data with that hash */
-    const void *staged_in;  /* hand_over: the frame with an upload of it */
+    uint64_t staged_in;     /* hand_over: number of the frame with an upload of it
+                               (a number: frame_datas are reused, addresses repeat) */
     uint64_t last_used;
     uint32_t w, h;
     SDL_GPUTexture *tex;
@@ -2956,11 +2957,11 @@ static void hand_over(void)
          * uploaded, and would draw it never filled), programs and gamma. */
         frames_dropped++;
         for (int i = 0; i < F->nups; i++)
-            F->ups[i].t->staged_in = F;
+            F->ups[i].t->staged_in = F->frame;
         for (int i = 0; i < ready->nups; i++) {
             pending_upload *u = &ready->ups[i];
             uint32_t need = u->w * u->h * 4;
-            if (u->t->staged_in == F)
+            if (u->t->staged_in == F->frame)
                 continue;           /* this frame has a newer copy */
             if (F->nups == MAX_UPLOADS) {
                 u->t->uploaded = false;     /* next time it is used */
