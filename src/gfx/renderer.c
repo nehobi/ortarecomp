@@ -2738,6 +2738,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         while (j2 < nc && ck[j2].h == ck[j].h) j2++;
         if (i2 - i == j2 - j && i2 - i <= 256) {
             uint32_t n = i2 - i, order[256];
+            bool forced[256] = { false };
             static pair_cand *cand;
             static uint32_t cap_cand;
 
@@ -2756,16 +2757,28 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         cand[nc2].b = (uint16_t)b;
                         nc2++;
                     }
+                float best[256];
+                for (uint32_t b = 0; b < n; b++)
+                    best[b] = 3.4e38f;
+                for (uint32_t k = 0; k < nc2; k++)
+                    if (cand[k].d < best[cand[k].b])
+                        best[cand[k].b] = cand[k].d;
                 qsort(cand, nc2, sizeof *cand, cmp_cand);
                 for (uint32_t k = 0; k < nc2; k++)
                     if (!used_a[cand[k].a] && !used_b[cand[k].b]) {
                         used_a[cand[k].a] = used_b[cand[k].b] = true;
                         order[cand[k].b] = cand[k].a;
+                        /* Its nearest went to another: what is left can be
+                         * far (the end of a chain of alike segments that
+                         * each moved one along). Not blended. */
+                        forced[cand[k].b] = cand[k].d > best[cand[k].b] * 2.0f + 1e-3f;
                     }
             }
             for (uint32_t k = 0; k < n; k++) {
                 const command *pc = &prev->cmds[pk[i + order[k]].cmd];
                 command *c = &cur->cmds[ck[j + k].cmd];
+                if (forced[k])
+                    continue;
                 if (c->vsh && pc->vsh) {
                     bool same_in = true;
                     for (int r = 0; r < 16; r++) {
