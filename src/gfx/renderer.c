@@ -762,6 +762,7 @@ typedef struct gtex {
     uint32_t data, format_word, size_word;
     uint64_t hash;
     bool     uploaded;      /* the GPU copy holds data with that hash */
+    const void *staged_in;  /* hand_over: the frame with an upload of it */
     uint64_t last_used;
     uint32_t w, h;
     SDL_GPUTexture *tex;
@@ -2822,11 +2823,30 @@ static void hand_over(void)
     next = ready ? ready : free_frame();
     if (ready) {
         /* What the dropped frame alone carried goes with this one: its
-         * programs and gamma ramp; its textures are uploaded again the next
-         * time they are used. */
+         * texture uploads (this frame skipped a texture the dropped one
+         * uploaded, and would draw it never filled), programs and gamma. */
         frames_dropped++;
-        for (int i = 0; i < ready->nups; i++)
-            ready->ups[i].t->uploaded = false;
+        for (int i = 0; i < F->nups; i++)
+            F->ups[i].t->staged_in = F;
+        for (int i = 0; i < ready->nups; i++) {
+            pending_upload *u = &ready->ups[i];
+            uint32_t need = u->w * u->h * 4;
+            if (u->t->staged_in == F)
+                continue;           /* this frame has a newer copy */
+            if (F->nups == MAX_UPLOADS) {
+                u->t->uploaded = false;     /* next time it is used */
+                continue;
+            }
+            if (F->staging_len + need > F->staging_cap) {
+                F->staging_cap = (F->staging_len + need) * 2;
+                F->staging = SDL_realloc(F->staging, F->staging_cap);
+            }
+            memcpy(F->staging + F->staging_len, ready->staging + u->offset, need);
+            F->ups[F->nups] = *u;
+            F->ups[F->nups].offset = F->staging_len;
+            F->nups++;
+            F->staging_len += need;
+        }
         if (ready->progs_new && !F->progs_new) {
             F->progs = grow(F->progs, &F->cap_progs, nprogs, sizeof *F->progs);
             memcpy(F->progs, progs, nprogs * sizeof *progs);
