@@ -2847,10 +2847,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     }
             }
             for (uint32_t k = 0; k < n; k++) {
-                const command *pc = &prev->cmds[pk[i + order[k]].cmd];
+                const command *pc;
                 command *c = &cur->cmds[ck[j + k].cmd];
                 if (forced[k])
-                    continue;
+                    continue;           /* no partner (order[k] unset) */
+                pc = &prev->cmds[pk[i + order[k]].cmd];
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
                     c->prev_vbase = (int32_t)pc->vbase;
                     c->unpaired = false;
