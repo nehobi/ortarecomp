@@ -79,6 +79,8 @@ static uint64_t capture_frame = UINT64_MAX;
 
 enum { CMD_DRAW, CMD_CLEAR, CMD_TARGET, CMD_COPY };
 
+#define PDO_FEAT 40     /* first and last vertex (8), matrices (32) or folded constants (16) */
+
 typedef struct command {
     uint8_t  kind;
     /* target (surf), copy (surf to surf2, rect: x, y, w, h, dx, dy) */
@@ -113,6 +115,11 @@ typedef struct command {
     uint32_t vbase;
     int32_t prev_vbase;
     bool unpaired;
+    /* Pairing (match_frames): where the draw is, as numbers to compare
+     * (feat_ok: worked out), and how they moved since its partner in the
+     * frame before (has_vel), to guess where it is in the next. */
+    bool feat_ok, has_vel;
+    float feat[PDO_FEAT], vel[PDO_FEAT];
 } command;
 
 /* ── Threads ──────────────────────────────────────────────────────────────
@@ -2643,7 +2650,8 @@ typedef struct draw_key {
     uint32_t cmd;
 } draw_key;
 
-static uint64_t key_of(const frame_data *f, const command *c)
+/* loose 1: the texture aside; 2: the vertex and index counts too. */
+static uint64_t key_of(const frame_data *f, const command *c, int loose)
 {
     uint64_t h = 1469598103934665603ull;
     uint64_t v[7];
@@ -2653,9 +2661,9 @@ static uint64_t key_of(const frame_data *f, const command *c)
          : c->fvf >= 0 ? ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1]
          : c->draw.ps.topology;
     v[2] = 0;       /* not the address: dynamic vertices move every frame */
-    v[3] = c->id_nv;
-    v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
-    v[5] = c->draw.tex[0].data;
+    v[3] = loose >= 2 ? 0 : c->id_nv;
+    v[4] = loose >= 2 ? 0 : c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
+    v[5] = loose ? 0 : c->draw.tex[0].data;
     v[6] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[1] : 0;
     for (int i = 0; i < 7; i++)
         h = (h ^ v[i]) * 1099511628211ull;
@@ -2677,13 +2685,23 @@ static bool blendable(const command *c)
     return c->kind == CMD_DRAW && c->id_src;
 }
 
-static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap)
+/* Whether a draw has matrices or constants to blend on their own, when its
+ * vertices cannot be (their count changed): not CPU-made or pretransformed
+ * ones, placed by their vertices alone. */
+static bool has_placement(const frame_data *f, const command *c)
+{
+    return c->vsh || (c->fvf >= 0 && !(f->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE));
+}
+
+/* The keys of f's blendable draws, sorted; loose (key_of): only the draws
+ * skip[] does not mark. */
+static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, int loose, const uint8_t *skip)
 {
     uint32_t n = 0;
     for (uint32_t i = 0; i < f->ncmds; i++)
-        if (blendable(&f->cmds[i])) {
+        if (blendable(&f->cmds[i]) && !(loose && skip[i]) && !(loose >= 2 && !has_placement(f, &f->cmds[i]))) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
-            (*keys)[n].h = key_of(f, &f->cmds[i]);
+            (*keys)[n].h = key_of(f, &f->cmds[i], loose);
             (*keys)[n].cmd = i;
             n++;
         }
@@ -2740,33 +2758,86 @@ static bool draw_corners(const frame_data *f, const command *c, float out[8])
     return true;
 }
 
-/* How far apart two alike draws are, to pair a group nearest first: where
- * their vertices are, and their matrices (fixed-function) or constant sets
- * (programs; what all objects share is equal and adds nothing). */
-static float draw_distance(const frame_data *pf, const command *pc, const frame_data *cf, const command *c,
-                           bool cheap)
+/* A program draw's constants folded to 16 numbers, each a fixed +-1
+ * weighted sum: the fold is linear, so two draws' folds differ by the fold
+ * of their difference -- what all objects share cancels, and what places
+ * one object (its matrix) shows -- at a 48th of the cost of comparing all
+ * 768 floats. */
+static void fold_consts(const float *k, float out[16])
+{
+    static float w[192 * 4][16];
+    static bool w_ok;
+
+    if (!w_ok) {
+        for (int i = 0; i < 192 * 4; i++)
+            for (int o = 0; o < 16; o++)
+                w[i][o] = (((uint32_t)i * 2654435761u) >> (o + 8)) & 1 ? 1.0f : -1.0f;
+        w_ok = true;
+    }
+    for (int o = 0; o < 16; o++)
+        out[o] = 0.0f;
+    for (int i = 0; i < 192 * 4; i++) {
+        float v = k[i];
+        if (!(SDL_fabsf(v) <= 1e30f))
+            continue;               /* NaN or huge: unused registers */
+        for (int o = 0; o < 16; o++)
+            out[o] += v * w[i][o];
+    }
+}
+
+/* What pairing compares of a draw (c->feat): its first and last vertices,
+ * and its matrices (fixed-function) or folded constants (programs).
+ * Copies of one model have the same vertices, so the matrices or constants
+ * are what tell them apart: the vertices alone paired a row of buildings
+ * in draw order, and when that shifted each blended towards its
+ * neighbour. */
+static void draw_features(const frame_data *f, command *c)
+{
+    float *x = c->feat;
+
+    if (c->feat_ok)
+        return;
+    SDL_memset(x, 0, sizeof c->feat);
+    if (!draw_corners(f, c, x))
+        SDL_memset(x, 0, 8 * sizeof *x);
+    if (c->vsh) {
+        fold_consts(f->vconsts[c->vu.info[2]], x + 8);
+    } else if (c->fvf >= 0) {
+        memcpy(x + 8, f->fvf_us[c->fvf].wvp, 16 * sizeof *x);
+        memcpy(x + 24, f->fvf_us[c->fvf].world, 16 * sizeof *x);
+    }
+    for (int i = 0; i < PDO_FEAT; i++)
+        if (!(SDL_fabsf(x[i]) <= 1e30f))
+            x[i] = 0.0f;            /* NaN or huge */
+    c->feat_ok = true;
+}
+
+/* How far a draw of this frame is from where an alike draw of the
+ * previous one was going: its place there moved on by how it moved since
+ * the frame before. Without that guess, a shot or a flock member that
+ * moves further in a frame than the gap to the next one paired with that
+ * next one (or with none) and jittered. */
+static float draw_distance(const command *pc, const command *c)
 {
     float d = pc->id_src == c->id_src ? 0.0f : 1e-3f;   /* same data: a tie-breaker */
-    float a4[8], b4[8];
 
-    if (draw_corners(pf, pc, a4) && draw_corners(cf, c, b4))
-        for (int i = 0; i < 8; i++)
-            if (a4[i] == a4[i] && b4[i] == b4[i])     /* not NaN */
-                d += SDL_fabsf(a4[i] - b4[i]);
-
-    if (cheap || (!c->vsh && c->fvf < 0))
-        return d;                           /* positions only */
-    if (c->vsh) {
-        const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
-        for (int i = 0; i < 192 * 4; i++)
-            d += SDL_fabsf(a[i] - b[i]);
-    } else {
-        const float *a = pf->fvf_us[pc->fvf].wvp, *b = cf->fvf_us[c->fvf].wvp;
-        const float *aw = pf->fvf_us[pc->fvf].world, *bw = cf->fvf_us[c->fvf].world;
-        for (int i = 0; i < 16; i++)
-            d += SDL_fabsf(a[i] - b[i]) + SDL_fabsf(aw[i] - bw[i]);
-    }
+    if (pc->has_vel)
+        for (int i = 0; i < PDO_FEAT; i++)
+            d += SDL_fabsf(pc->feat[i] + pc->vel[i] - c->feat[i]);
+    else
+        for (int i = 0; i < PDO_FEAT; i++)
+            d += SDL_fabsf(pc->feat[i] - c->feat[i]);
     return d;
+}
+
+/* A pair made: how the draw moved, for the guess in the next frame. */
+static void note_motion(const frame_data *pf, command *pc, const frame_data *cf, command *c)
+{
+    draw_features(pf, pc);
+    draw_features(cf, c);
+    for (int i = 0; i < PDO_FEAT; i++)
+        c->vel[i] = c->feat[i] - pc->feat[i];
+    c->has_vel = true;
 }
 
 typedef struct pair_cand {
@@ -2780,14 +2851,15 @@ static int cmp_cand(const void *x, const void *y)
     return a->d < b->d ? -1 : a->d > b->d;
 }
 
-static uint32_t st_frames, st_draws, st_blendable, st_paired, st_jumps, st_cuts;
+static uint32_t st_frames, st_draws, st_blendable, st_paired, st_jumps, st_cuts, st_far, st_sprite;
 
 /* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
 static void match_frames(frame_data *prev, frame_data *cur)
 {
     static draw_key *pk, *ck;
-    static uint32_t cap_pk, cap_ck;
-    uint32_t np = 0, nc, i = 0, j = 0, fvf_pairs = 0, fvf_jumps = 0;
+    static uint8_t *taken, *grouped;    /* prev draws paired; cur draws that had alike ones */
+    static uint32_t cap_pk, cap_ck, cap_taken, cap_grouped;
+    uint32_t np = 0, nc, i, j, fvf_pairs = 0, fvf_jumps = 0;
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
         command *c = &cur->cmds[k];
@@ -2795,23 +2867,41 @@ static void match_frames(frame_data *prev, frame_data *cur)
             continue;
         c->prev_vbase = -1;
         c->unpaired = true;
+        c->feat_ok = c->has_vel = false;
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
         }
-        if (c->fvf >= 0)
+        if (c->fvf >= 0) {
             cur->fvf_us[c->fvf].interp[0] = -1;
+            cur->fvf_us[c->fvf].interp[1] = 0;
+        }
     }
     if (!prev)
         return;
-    np = keys_of(prev, &pk, &cap_pk);
-    nc = keys_of(cur, &ck, &cap_ck);
+    taken = grow(taken, &cap_taken, prev->ncmds + 1, 1);
+    grouped = grow(grouped, &cap_grouped, cur->ncmds + 1, 1);
+    memset(taken, 0, prev->ncmds);
+    memset(grouped, 0, cur->ncmds);
+    /* Three passes: alike draws (same texture too); then what found none
+     * with what is left, the texture aside -- effects and shots whose
+     * texture animates (a new picture each frame) otherwise never paired
+     * and moved at the game's rate among blended things; then the vertex
+     * count aside too -- a trail that grows or shrinks each frame -- for
+     * its matrices or constants alone (the camera's move then is smooth on
+     * it too). */
+    for (int pass = 0; pass < 3; pass++) {
+    np = keys_of(prev, &pk, &cap_pk, pass, taken);
+    nc = keys_of(cur, &ck, &cap_ck, pass, grouped);
+    i = j = 0;
     while (i < np && j < nc) {
         uint32_t i2 = i, j2 = j;
         if (pk[i].h < ck[j].h) { i++; continue; }
         if (pk[i].h > ck[j].h) { j++; continue; }
         while (i2 < np && pk[i2].h == pk[i].h) i2++;
         while (j2 < nc && ck[j2].h == ck[j].h) j2++;
+        for (uint32_t k = j; k < j2; k++)
+            grouped[ck[k].cmd] = 1;
         if (i2 - i <= 256 && j2 - j <= 256) {
             uint32_t na = i2 - i, n = j2 - j, order[256];
             bool forced[256] = { false };
@@ -2832,9 +2922,12 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 uint32_t nc2 = 0;
                 cand = grow(cand, &cap_cand, na * n, sizeof *cand);
                 for (uint32_t a = 0; a < na; a++)
+                    draw_features(prev, &prev->cmds[pk[i + a].cmd]);
+                for (uint32_t b = 0; b < n; b++)
+                    draw_features(cur, &cur->cmds[ck[j + b].cmd]);
+                for (uint32_t a = 0; a < na; a++)
                     for (uint32_t b = 0; b < n; b++) {
-                        cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd],
-                                                    na * n > 1024);
+                        cand[nc2].d = draw_distance(&prev->cmds[pk[i + a].cmd], &cur->cmds[ck[j + b].cmd]);
                         cand[nc2].a = (uint16_t)a;
                         cand[nc2].b = (uint16_t)b;
                         nc2++;
@@ -2857,14 +2950,20 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     }
             }
             for (uint32_t k = 0; k < n; k++) {
-                const command *pc;
+                command *pc;
                 command *c = &cur->cmds[ck[j + k].cmd];
-                if (forced[k])
+                bool same_nv;
+                if (forced[k]) {
+                    st_far++;
                     continue;           /* no partner (order[k] unset) */
+                }
                 pc = &prev->cmds[pk[i + order[k]].cmd];
+                same_nv = c->id_nv == pc->id_nv && c->vsh_index_count == pc->vsh_index_count;
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
                     c->prev_vbase = (int32_t)pc->vbase;
                     c->unpaired = false;
+                    taken[pk[i + order[k]].cmd] = 1;
+                    note_motion(prev, pc, cur, c);
                 } else if (c->vsh && pc->vsh) {
                     bool same_in = true;
                     for (int r = 0; r < 16; r++) {
@@ -2874,15 +2973,20 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         c->vu.prev_in[r] = pc->vu.inputs[r][0];
                     }
                     c->vu.interp[0] = pc->vu.info[2];
-                    c->vu.interp[1] = same_in;
+                    c->vu.interp[1] = same_in && same_nv;
                     c->unpaired = false;
+                    taken[pk[i + order[k]].cmd] = 1;
+                    note_motion(prev, pc, cur, c);
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
                     pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
                     const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
                     float x0, y0, x1, y1, a4[8], b4[8];
                     if ((u->layout0[2] & PDO_FVF_PRE) && draw_corners(prev, pc, a4) && draw_corners(cur, c, b4) &&
                         (SDL_fabsf(a4[0] - b4[0]) > u->rt[0] * 0.25f || SDL_fabsf(a4[1] - b4[1]) > u->rt[1] * 0.25f))
+                    {
+                        st_sprite++;
                         continue;       /* a sprite that jumped: not blended */
+                    }
                     /* Jumped: only judged with the origin on screen in both
                      * frames -- near the eye or off screen it swings far
                      * while the object hardly moves, and judged there it
@@ -2896,9 +3000,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
                             continue;   /* jumped: not blended */
                         }
                     }
-                    u->interp[0] = pu->layout0[0];
+                    u->interp[0] = same_nv ? pu->layout0[0] : -1;     /* else the matrices alone */
                     u->interp[1] = 1;
                     c->unpaired = false;
+                    taken[pk[i + order[k]].cmd] = 1;
+                    note_motion(prev, pc, cur, c);
                     memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
                     memcpy(u->prev_wv, pu->wv, sizeof u->prev_wv);
                     memcpy(u->prev_world, pu->world, sizeof u->prev_world);
@@ -2907,6 +3013,23 @@ static void match_frames(frame_data *prev, frame_data *cur)
         }
         i = i2;
         j = j2;
+    }
+    }
+    /* PDO_DBG_UNPAIRED=1: every 600th frame, the draws left unpaired. */
+    if (getenv("PDO_DBG_UNPAIRED") && cur->frame % 600 == 0)
+    for (uint32_t i = 0; i < cur->ncmds; i++) {
+        const command *c = &cur->cmds[i];
+        uint32_t same = 0, loose = 0;
+        if (c->kind != CMD_DRAW || !c->unpaired)
+            continue;
+        for (uint32_t k = 0; k < prev->ncmds; k++)
+            if (blendable(&prev->cmds[k])) {
+                same += key_of(prev, &prev->cmds[k], 0) == key_of(cur, c, 0);
+                loose += key_of(prev, &prev->cmds[k], 2) == key_of(cur, c, 2);
+            }
+        SDL_Log("unpaired %u: kind %d src %d nv %u idx %u tex %08x; prev alike %u, counts aside %u", i,
+                c->vsh ? 1 : c->fvf >= 0 ? 2 : 3, c->id_src != 0, c->id_nv,
+                c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count, (unsigned)c->draw.tex[0].data, same, loose);
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
@@ -2927,7 +3050,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (++st_frames == 300) {
             SDL_Log("interp: per frame %.0f commands, %.0f could pair, %.0f paired; %u jumps, %u camera cuts in 300",
                     st_draws / 300.0, st_blendable / 300.0, st_paired / 300.0, st_jumps, st_cuts);
+            SDL_Log("interp: unpaired per frame %.1f without an alike draw, %.1f far, %.1f jumping sprites",
+                    (st_blendable - st_paired - st_far - st_sprite - st_jumps) / 300.0, st_far / 300.0,
+                    st_sprite / 300.0);
             st_frames = st_draws = st_blendable = st_paired = st_jumps = st_cuts = 0;
+            st_far = st_sprite = 0;
         }
     }
 }
