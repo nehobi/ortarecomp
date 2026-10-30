@@ -11,6 +11,11 @@ layout(location = 4) in vec4 in_tc1;
 layout(location = 5) in vec4 in_tc2;
 layout(location = 6) in vec4 in_tc3;
 layout(location = 7) in float in_fog;
+// Frame interpolation: the matching draw's positions in the previous game
+// frame, and how far to blend (renderer.c, match_frames): x the blend, y 1
+// when paired, z 1 to tint the draw (PDO_INTERP_TINT: it could not pair).
+layout(location = 8) in vec4 in_prev_pos;
+layout(set = 1, binding = 0) uniform Blend { vec4 blend; };
 
 layout(location = 0) out vec4 v_diffuse;
 layout(location = 1) out vec4 v_specular;
@@ -22,8 +27,8 @@ layout(location = 6) out float v_fog;
 
 void main()
 {
-    gl_Position = in_pos;
-    v_diffuse = in_diffuse.bgra;
+    gl_Position = (blend.y != 0.0 && blend.x < 1.0) ? mix(in_prev_pos, in_pos, blend.x) : in_pos;
+    v_diffuse = blend.z != 0.0 ? vec4(1.0, 0.0, 1.0, 1.0) : in_diffuse.bgra;
     v_specular = in_specular.bgra;
     v_tc0 = in_tc0;
     v_tc1 = in_tc1;

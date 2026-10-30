@@ -25,7 +25,8 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     vec4  vp_offset;     // c[59]; w: the depth scale
     // Interpolation (renderer.c, match_frames): x the matching draw's
     // constant base in the previous frame (-1: none), y 1 if its streams
-    // match too; prev_in its v registers' byte bases; blend_t.x how far from
+    // match too, z 1 to tint it (PDO_INTERP_TINT: it could not pair);
+    // prev_in its v registers' byte bases; blend_t.x how far from
     // the previous frame (1: this frame, as drawn without interpolation).
     ivec4 interp;
     ivec4 prev_in[4];
@@ -208,7 +209,7 @@ void main()
     // Colours as the CPU packs them: NaN as 0, clamped, to 8 bits.
     vec4 d0 = mix(clamp(O[3], 0.0, 1.0), vec4(0.0), isnan(O[3]));
     vec4 d1 = mix(clamp(O[4], 0.0, 1.0), vec4(0.0), isnan(O[4]));
-    v_diffuse = floor(d0 * 255.0 + 0.5) / 255.0;
+    v_diffuse = interp.z != 0 ? vec4(1.0, 0.0, 1.0, 1.0) : floor(d0 * 255.0 + 0.5) / 255.0;
     v_specular = floor(d1 * 255.0 + 0.5) / 255.0;
     v_tc0 = O[9];
     v_tc1 = O[10];

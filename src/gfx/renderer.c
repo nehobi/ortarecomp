@@ -108,6 +108,11 @@ typedef struct command {
      * host address of its (first) vertex data and its vertex count. */
     uintptr_t id_src;
     uint32_t id_nv;
+    /* CPU-made vertices: where the draw's start in verts, and the paired
+     * draw's in the previous frame (-1: none); unpaired: for the tint. */
+    uint32_t vbase;
+    int32_t prev_vbase;
+    bool unpaired;
 } command;
 
 /* ── Threads ──────────────────────────────────────────────────────────────
@@ -265,6 +270,8 @@ void pdo_gfx_clear(uint32_t flags, uint32_t color, float z, uint32_t stencil)
     c->clear_stencil = stencil;
 }
 
+static uintptr_t draw_src;     /* pdo_gfx_set_draw_source, for the next draw */
+
 void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
                   const uint32_t *idx, uint32_t ni)
 {
@@ -312,8 +319,17 @@ void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
     c->draw = *d;
     c->first_index = F->nindices;
     c->index_count = ni;
+    c->vbase = F->nverts;
+    c->id_src = draw_src;
+    c->id_nv = nv;
+    draw_src = 0;
     F->nverts += nv;
     F->nindices += ni;
+}
+
+void pdo_gfx_set_draw_source(const void *src)
+{
+    draw_src = (uintptr_t)src;
 }
 
 int32_t pdo_gfx_vsh_program(const uint32_t *code, uint32_t count)
@@ -599,8 +615,8 @@ uint64_t pdo_gfx_take_pipeline_ns(uint32_t *made)
 static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
 {
     SDL_GPUGraphicsPipelineCreateInfo pi;
-    SDL_GPUVertexBufferDescription vb;
-    SDL_GPUVertexAttribute attrs[8];
+    SDL_GPUVertexBufferDescription vb[2];
+    SDL_GPUVertexAttribute attrs[9];
     SDL_GPUColorTargetDescription ct;
     SDL_GPUGraphicsPipeline *p;
     uint32_t cw = ps->color_write;
@@ -613,10 +629,13 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
         return pipelines[0].p;
     t0 = SDL_GetTicksNS();
 
+    /* Slot 1: the previous game frame's vertices, for interpolation. */
     SDL_zero(vb);
-    vb.slot = 0;
-    vb.pitch = sizeof(pdo_vertex);
-    vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    for (int i = 0; i < 2; i++) {
+        vb[i].slot = (Uint32)i;
+        vb[i].pitch = sizeof(pdo_vertex);
+        vb[i].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    }
     for (int i = 0; i < 8; i++) {
         attrs[i].location = (Uint32)i;
         attrs[i].buffer_slot = 0;
@@ -633,6 +652,10 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     }
     attrs[7].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
     attrs[7].offset = offsetof(pdo_vertex, fog);
+    attrs[8].location = 8;
+    attrs[8].buffer_slot = 1;
+    attrs[8].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+    attrs[8].offset = offsetof(pdo_vertex, pos);
 
     SDL_zero(ct);
     ct.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -655,10 +678,10 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
     pi.vertex_shader = ps->gpu_vsh == 1 ? vsh_vs : ps->gpu_vsh == 2 ? fvf_vs : vs;
     pi.fragment_shader = ps->combiners && fs_ps ? fs_ps : fs;
     if (!ps->gpu_vsh) {         /* vsh.vert reads its streams from storage buffers */
-        pi.vertex_input_state.vertex_buffer_descriptions = &vb;
-        pi.vertex_input_state.num_vertex_buffers = 1;
+        pi.vertex_input_state.vertex_buffer_descriptions = vb;
+        pi.vertex_input_state.num_vertex_buffers = 2;
         pi.vertex_input_state.vertex_attributes = attrs;
-        pi.vertex_input_state.num_vertex_attributes = 8;
+        pi.vertex_input_state.num_vertex_attributes = 9;
     }
     pi.primitive_type = ps->topology == 1 ? SDL_GPU_PRIMITIVETYPE_LINELIST
                       : ps->topology == 2 ? SDL_GPU_PRIMITIVETYPE_POINTLIST
@@ -1629,7 +1652,7 @@ static bool init_here(int width, int height)
             SDL_Log("gfx: benchmark: presentation stays synchronised to the display");
     }
 
-    vs = make_shader(ff_vert_spv, sizeof ff_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    vs = make_shader(ff_vert_spv, sizeof ff_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
     if (getenv("PDO_TEST_SIMPLE_FS")) {     /* a test: how much of the GPU time is ff.frag */
         SDL_Log("gfx: PDO_TEST_SIMPLE_FS: the cheapest fragment shader instead of ff.frag; pictures are wrong");
         fs = make_shader(ff_test_frag_spv, sizeof ff_test_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
@@ -1768,8 +1791,9 @@ static Uint32 prog_buf_size;
  * frame shown blends towards F from it, and how far (1: F as it is). */
 static frame_data *P;
 static float blend;
+static bool interp_tint;    /* PDO_INTERP_TINT=1: unpaired draws magenta when blending */
 
-static void bind_geometry(SDL_GPURenderPass *pass, int gpu)
+static void bind_geometry(SDL_GPURenderPass *pass, int gpu, const command *c)
 {
     SDL_GPUBufferBinding ib = { F->gib, 0 };
     SDL_GPUBuffer *pblob = P && P->gblob ? P->gblob : F->gblob;
@@ -1782,8 +1806,14 @@ static void bind_geometry(SDL_GPURenderPass *pass, int gpu)
         SDL_GPUBuffer *sb[2] = { F->gblob, pblob };
         SDL_BindGPUVertexStorageBuffers(pass, 0, sb, 2);
     } else {
-        SDL_GPUBufferBinding vb = { F->gvb, 0 };
-        SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+        /* From the draw's first vertex (drawn with a vertex offset taking
+         * it back off the indices); slot 1 the paired draw's, or its own. */
+        bool paired = P && P->gvb && c->prev_vbase >= 0;
+        SDL_GPUBufferBinding vb[2] = {
+            { F->gvb, c->vbase * (Uint32)sizeof(pdo_vertex) },
+            { paired ? P->gvb : F->gvb, (paired ? (Uint32)c->prev_vbase : c->vbase) * (Uint32)sizeof(pdo_vertex) },
+        };
+        SDL_BindGPUVertexBuffers(pass, 0, vb, 2);
     }
     SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 }
@@ -2251,7 +2281,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         vp.min_depth = c->draw.viewport[4];
         vp.max_depth = c->draw.viewport[5];
         SDL_SetGPUViewport(pass, &vp);
-        bind_geometry(pass, gpu);
+        bind_geometry(pass, gpu, c);
         for (int s = 0; s < 4; s++) {
             tsb[s].texture = tex[s];
             tsb[s].sampler = get_sampler(&c->draw.tex[s]);
@@ -2264,7 +2294,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
                 pass = begin_pass(cmd, NULL);
                 SDL_BindGPUGraphicsPipeline(pass, p);
                 SDL_SetGPUViewport(pass, &vp);
-                bind_geometry(pass, gpu);
+                bind_geometry(pass, gpu, c);
             }
         }
         SDL_BindGPUFragmentSamplers(pass, 0, tsb, 4);
@@ -2273,16 +2303,22 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             SDL_SetGPUStencilReference(pass, c->draw.stencil_ref);
         if (gpu) {
             float t = P ? blend : 1.0f;
+            int tint = P && interp_tint && c->unpaired;
             if (gpu == 1) {
                 c->vu.blend_t[0] = t;
+                c->vu.interp[2] = tint;
                 SDL_PushGPUVertexUniformData(cmd, 0, &c->vu, sizeof c->vu);
             } else {
                 F->fvf_us[c->fvf].blend_t[0] = t;
+                F->fvf_us[c->fvf].interp[2] = tint;
                 SDL_PushGPUVertexUniformData(cmd, 0, &F->fvf_us[c->fvf], sizeof F->fvf_us[0]);
             }
             SDL_DrawGPUIndexedPrimitives(pass, c->vsh_index_count, 1, c->vsh_first_index, 0, 0);
         } else {
-            SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, 0, 0);
+            float b[4] = { P ? blend : 1.0f, P && c->prev_vbase >= 0 ? 1.0f : 0.0f,
+                           P && interp_tint && c->unpaired && c->id_src ? 1.0f : 0.0f, 0.0f };
+            SDL_PushGPUVertexUniformData(cmd, 0, b, sizeof b);
+            SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, -(Sint32)c->vbase, 0);
         }
     }
     if (pass)
@@ -2588,9 +2624,11 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
  * all of that (a flock of one enemy) pair up nearest first: by how little
  * their matrices, or their program constants, differ between the frames.
  * The game's draw order is no guide -- it sorts see-through things by
- * depth, and pairing in order swapped them as they flew. A group only
- * pairs when it is as large in both frames; otherwise (objects appearing,
- * vanishing) it is not blended rather than blended with the wrong partner. A
+ * depth, and pairing in order swapped them as they flew. A group whose
+ * size changed (a pack losing and gaining members) still pairs as far as
+ * it goes: refusing the whole group made it jump between the blended past
+ * and the unblended newer frame as members came and went. A draw whose
+ * partner is far beyond its own nearest is not blended either. A
  * fixed-function draw whose position on screen jumps (a teleport, a new
  * object recycling a buffer) is not blended either, and when many do, the
  * camera cut and nothing is. Unblended draws show the newer frame. */
@@ -2605,12 +2643,13 @@ static uint64_t key_of(const frame_data *f, const command *c)
     uint64_t h = 1469598103934665603ull;
     uint64_t v[7];
 
-    v[0] = c->vsh ? 1 : 2;
+    v[0] = c->vsh ? 1 : c->fvf >= 0 ? 2 : 3;
     v[1] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[0]
-                  : ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1];
+         : c->fvf >= 0 ? ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1]
+         : c->draw.ps.topology;
     v[2] = c->id_src;
     v[3] = c->id_nv;
-    v[4] = c->vsh_index_count;
+    v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
     v[6] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[1] : 0;
     for (int i = 0; i < 7; i++)
@@ -2626,9 +2665,11 @@ static int cmp_key(const void *a, const void *b)
     return x->cmd < y->cmd ? -1 : x->cmd > y->cmd;
 }
 
+/* Draws on the GPU from the game's bytes, or from CPU-made vertices with
+ * their source known (pdo_gfx_set_draw_source). */
 static bool blendable(const command *c)
 {
-    return c->kind == CMD_DRAW && (c->vsh || c->fvf >= 0) && c->id_src;
+    return c->kind == CMD_DRAW && c->id_src;
 }
 
 static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap)
@@ -2665,6 +2706,13 @@ static bool draw_corners(const frame_data *f, const command *c, float out[8])
 {
     uint32_t base, stride, n = c->id_nv ? c->id_nv : 1;
 
+    if (!c->vsh && c->fvf < 0) {           /* CPU-made: clip-space positions */
+        if (c->vbase + n > f->nverts)
+            return false;
+        memcpy(out, f->verts[c->vbase].pos, 16);
+        memcpy(out + 4, f->verts[c->vbase + n - 1].pos, 16);
+        return true;
+    }
     if (c->vsh) {
         int r;
         for (r = 0; r < 16; r++)
@@ -2699,6 +2747,8 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
             if (a4[i] == a4[i] && b4[i] == b4[i])     /* not NaN */
                 d += SDL_fabsf(a4[i] - b4[i]);
 
+    if (!c->vsh && c->fvf < 0)
+        return d;                           /* CPU-made: positions only */
     if (c->vsh) {
         const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
         for (int i = 0; i < 192 * 4; i++)
@@ -2734,6 +2784,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
         command *c = &cur->cmds[k];
         if (c->kind != CMD_DRAW)
             continue;
+        c->prev_vbase = -1;
+        c->unpaired = true;
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
@@ -2751,21 +2803,26 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (pk[i].h > ck[j].h) { j++; continue; }
         while (i2 < np && pk[i2].h == pk[i].h) i2++;
         while (j2 < nc && ck[j2].h == ck[j].h) j2++;
-        if (i2 - i == j2 - j && i2 - i <= 256) {
-            uint32_t n = i2 - i, order[256];
+        if (i2 - i <= 256 && j2 - j <= 256) {
+            uint32_t na = i2 - i, n = j2 - j, order[256];
             bool forced[256] = { false };
             static pair_cand *cand;
             static uint32_t cap_cand;
 
-            /* Which previous draw each one pairs with: alone, the one;
-             * in a group, nearest first. */
-            if (n == 1) {
+            /* Which previous draw each one pairs with: alone in both, the
+             * one; otherwise nearest first, as many as pair (a pack whose
+             * size changed: the rest of it stays blended, the new ones
+             * show the newer frame). */
+            for (uint32_t b = 0; b < n; b++)
+                forced[b] = true;           /* until paired */
+            if (n == 1 && na == 1) {
                 order[0] = 0;
+                forced[0] = false;
             } else {
                 bool used_a[256] = { false }, used_b[256] = { false };
                 uint32_t nc2 = 0;
-                cand = grow(cand, &cap_cand, n * n, sizeof *cand);
-                for (uint32_t a = 0; a < n; a++)
+                cand = grow(cand, &cap_cand, na * n, sizeof *cand);
+                for (uint32_t a = 0; a < na; a++)
                     for (uint32_t b = 0; b < n; b++) {
                         cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd]);
                         cand[nc2].a = (uint16_t)a;
@@ -2794,7 +2851,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 command *c = &cur->cmds[ck[j + k].cmd];
                 if (forced[k])
                     continue;
-                if (c->vsh && pc->vsh) {
+                if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
+                    c->prev_vbase = (int32_t)pc->vbase;
+                    c->unpaired = false;
+                } else if (c->vsh && pc->vsh) {
                     bool same_in = true;
                     for (int r = 0; r < 16; r++) {
                         if (c->vu.inputs[r][1] != pc->vu.inputs[r][1] || c->vu.inputs[r][2] != pc->vu.inputs[r][2] ||
@@ -2804,6 +2864,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     }
                     c->vu.interp[0] = pc->vu.info[2];
                     c->vu.interp[1] = same_in;
+                    c->unpaired = false;
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
                     pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
                     const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
@@ -2821,6 +2882,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     }
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
+                    c->unpaired = false;
                     memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
                     memcpy(u->prev_wv, pu->wv, sizeof u->prev_wv);
                     memcpy(u->prev_world, pu->world, sizeof u->prev_world);
@@ -3046,6 +3108,8 @@ void pdo_gfx_main_loop(void)
 {
     frame_data *cur = NULL, *prev = NULL;
     double interval = 1e9 / 59.94;     /* between game frames, smoothed */
+
+    interp_tint = getenv("PDO_INTERP_TINT") && atoi(getenv("PDO_INTERP_TINT"));
 
     for (;;) {
         frame_data *f;

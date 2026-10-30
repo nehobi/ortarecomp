@@ -2118,9 +2118,13 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
         if (!pdo_gfx_draw_fvf(&d, &gpu_f, count, ibuf, ni, cpu_too ? vbuf : NULL)) {
             if (!cpu_too)
                 timed_fvf(st.vshader, base, stride, first, count, vbuf, &pre);
+            pdo_gfx_set_draw_source((const void *)XBOX_PTR(base + first * stride));
             pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
         }
     } else {
+        /* The game's vertex data, so interpolation can find this draw in
+         * the next frame. */
+        pdo_gfx_set_draw_source((const void *)XBOX_PTR(base + first * stride));
         pdo_gfx_draw(&d, vbuf, count, ibuf, ni);
     }
     draws_drawn++;

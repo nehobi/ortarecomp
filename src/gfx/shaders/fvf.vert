@@ -31,7 +31,8 @@ layout(set = 1, binding = 0, std140) uniform Draw {
                          // cone (cos theta/2, cos phi/2)
     // Interpolation (renderer.c, match_frames): x the matching draw's byte
     // base in the previous frame's streams (-1: none), y 1 if its matrices
-    // are below; blend_t.x how far from the previous frame (1: this frame).
+    // are below, z 1 to tint it (PDO_INTERP_TINT: it could not pair);
+    // blend_t.x how far from the previous frame (1: this frame).
     ivec4 interp;
     vec4  blend_t;
     vec4  prev_wvp[4], prev_wv[4], prev_world[4];
@@ -189,7 +190,7 @@ void main()
         diffuse = quantize(lighting(wp, wn, diffuse, specular, hd, hs));
         specular = vec4(0.0);
     }
-    v_diffuse = diffuse;
+    v_diffuse = interp.z != 0 ? vec4(1.0, 0.0, 1.0, 1.0) : diffuse;
     v_specular = specular;
     // Fog: eye depth for table fog, else the specular alpha (lit: 0).
     v_fog = (!pre && (flags & F_FOGTABLE) != 0) ? e.z : (hs ? specular.a : 1.0);

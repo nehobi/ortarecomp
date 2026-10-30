@@ -132,6 +132,10 @@ typedef struct pdo_draw {
 /* Record a draw. idx are indices into v; both are copied. */
 void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
                   const uint32_t *idx, uint32_t ni);
+/* What the next pdo_gfx_draw's vertices were made from (the host address
+ * of the game's vertex data), so frame interpolation can find the same
+ * draw in the next frame. */
+void pdo_gfx_set_draw_source(const void *src);
 
 /* D3DCLEAR_* flags: TARGET 0xF0, ZBUFFER 0x01, STENCIL 0x02. color is a
  * D3DCOLOR (ARGB). */
