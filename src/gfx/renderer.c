@@ -2642,12 +2642,47 @@ static bool origin_ndc(const float *wvp, float *x, float *y)
     return true;
 }
 
-/* How far apart two alike draws are, to pair a group nearest first: their
- * matrices (fixed-function), or their constant sets (programs; what all
- * objects share is equal and adds nothing). */
+/* Where a draw's first and last vertices are, as the raw floats of its
+ * position (fixed-function), or of its first float input (programs):
+ * screen pixels for pretransformed sprites, so that HUD pieces drawn alike
+ * (one shared vertex area, four vertices) tell apart. False: none read. */
+static bool draw_corners(const frame_data *f, const command *c, float out[8])
+{
+    uint32_t base, stride, n = c->id_nv ? c->id_nv : 1;
+
+    if (c->vsh) {
+        int r;
+        for (r = 0; r < 16; r++)
+            if ((c->vu.inputs[r][3] & 15) == 2 && (c->vu.inputs[r][3] >> 4) >= 3)
+                break;
+        if (r == 16)
+            return false;
+        base = (uint32_t)c->vu.inputs[r][0] + (uint32_t)c->vu.inputs[r][2];
+        stride = (uint32_t)c->vu.inputs[r][1];
+    } else {
+        base = (uint32_t)f->fvf_us[c->fvf].layout0[0];
+        stride = (uint32_t)f->fvf_us[c->fvf].layout0[1];
+    }
+    for (int k = 0; k < 2; k++) {
+        uint32_t at = base + (k ? (n - 1) * stride : 0);
+        if (at + 16 > f->nblob)
+            return false;
+        memcpy(out + k * 4, f->blob + at, 16);
+    }
+    return true;
+}
+
+/* How far apart two alike draws are, to pair a group nearest first: where
+ * their vertices are, and their matrices (fixed-function) or constant sets
+ * (programs; what all objects share is equal and adds nothing). */
 static float draw_distance(const frame_data *pf, const command *pc, const frame_data *cf, const command *c)
 {
-    float d = 0.0f;
+    float d = 0.0f, a4[8], b4[8];
+
+    if (draw_corners(pf, pc, a4) && draw_corners(cf, c, b4))
+        for (int i = 0; i < 8; i++)
+            if (a4[i] == a4[i] && b4[i] == b4[i])     /* not NaN */
+                d += SDL_fabsf(a4[i] - b4[i]);
 
     if (c->vsh) {
         const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
@@ -2744,7 +2779,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
                     pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
                     const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
-                    float x0, y0, x1, y1;
+                    float x0, y0, x1, y1, a4[8], b4[8];
+                    if ((u->layout0[2] & PDO_FVF_PRE) && draw_corners(prev, pc, a4) && draw_corners(cur, c, b4) &&
+                        (SDL_fabsf(a4[0] - b4[0]) > u->rt[0] * 0.25f || SDL_fabsf(a4[1] - b4[1]) > u->rt[1] * 0.25f))
+                        continue;       /* a sprite that jumped: not blended */
                     if (!(u->layout0[2] & PDO_FVF_PRE)) {
                         fvf_pairs++;
                         if (origin_ndc(pu->wvp, &x0, &y0) != origin_ndc(u->wvp, &x1, &y1) ||
