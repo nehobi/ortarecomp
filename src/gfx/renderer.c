@@ -2619,9 +2619,11 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
 /* ── Frame interpolation ─────────────────────────────────────────────────
  * The game runs at 60; frames between two of its frames are drawn by
  * blending each draw of the newer frame with the same draw in the frame
- * before. "The same draw" is a guess from what the draw drew from: the kind
- * of draw, its program (or fixed-function layout), the host address of its
- * vertex data, vertex and index counts and first texture. Draws alike in
+ * before. "The same draw" is a guess from what the draw is: the kind of
+ * draw, its program (or fixed-function layout), vertex and index counts and
+ * first texture -- not the address of its vertices, which for everything
+ * the game writes each frame (menus, HUD, much of the scene) moves every
+ * frame, so nothing paired. Draws alike in
  * all of that (a flock of one enemy) pair up nearest first: by how little
  * their matrices, or their program constants, differ between the frames.
  * The game's draw order is no guide -- it sorts see-through things by
@@ -2630,9 +2632,11 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
  * it goes: refusing the whole group made it jump between the blended past
  * and the unblended newer frame as members came and went. A draw whose
  * partner is far beyond its own nearest is not blended either. A
- * fixed-function draw whose position on screen jumps (a teleport, a new
- * object recycling a buffer) is not blended either, and when many do, the
- * camera cut and nothing is. Unblended draws show the newer frame. */
+ * fixed-function draw whose origin is on screen in both frames and jumps
+ * (a teleport, a new object recycling a buffer) is not blended either, and
+ * when over half of those on screen do, the camera cut and nothing is.
+ * Draws are keyed without their vertex data address: dynamic vertices sit
+ * somewhere new every frame. Unblended draws show the newer frame. */
 
 typedef struct draw_key {
     uint64_t h;
@@ -2648,7 +2652,7 @@ static uint64_t key_of(const frame_data *f, const command *c)
     v[1] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[0]
          : c->fvf >= 0 ? ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1]
          : c->draw.ps.topology;
-    v[2] = c->id_src;
+    v[2] = 0;       /* not the address: dynamic vertices move every frame */
     v[3] = c->id_nv;
     v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
@@ -2739,17 +2743,19 @@ static bool draw_corners(const frame_data *f, const command *c, float out[8])
 /* How far apart two alike draws are, to pair a group nearest first: where
  * their vertices are, and their matrices (fixed-function) or constant sets
  * (programs; what all objects share is equal and adds nothing). */
-static float draw_distance(const frame_data *pf, const command *pc, const frame_data *cf, const command *c)
+static float draw_distance(const frame_data *pf, const command *pc, const frame_data *cf, const command *c,
+                           bool cheap)
 {
-    float d = 0.0f, a4[8], b4[8];
+    float d = pc->id_src == c->id_src ? 0.0f : 1e-3f;   /* same data: a tie-breaker */
+    float a4[8], b4[8];
 
     if (draw_corners(pf, pc, a4) && draw_corners(cf, c, b4))
         for (int i = 0; i < 8; i++)
             if (a4[i] == a4[i] && b4[i] == b4[i])     /* not NaN */
                 d += SDL_fabsf(a4[i] - b4[i]);
 
-    if (!c->vsh && c->fvf < 0)
-        return d;                           /* CPU-made: positions only */
+    if (cheap || (!c->vsh && c->fvf < 0))
+        return d;                           /* positions only */
     if (c->vsh) {
         const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
         for (int i = 0; i < 192 * 4; i++)
@@ -2773,6 +2779,8 @@ static int cmp_cand(const void *x, const void *y)
     const pair_cand *a = x, *b = y;
     return a->d < b->d ? -1 : a->d > b->d;
 }
+
+static uint32_t st_frames, st_draws, st_blendable, st_paired, st_jumps, st_cuts;
 
 /* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
 static void match_frames(frame_data *prev, frame_data *cur)
@@ -2825,7 +2833,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 cand = grow(cand, &cap_cand, na * n, sizeof *cand);
                 for (uint32_t a = 0; a < na; a++)
                     for (uint32_t b = 0; b < n; b++) {
-                        cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd]);
+                        cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd],
+                                                    na * n > 1024);
                         cand[nc2].a = (uint16_t)a;
                         cand[nc2].b = (uint16_t)b;
                         nc2++;
@@ -2874,10 +2883,15 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     if ((u->layout0[2] & PDO_FVF_PRE) && draw_corners(prev, pc, a4) && draw_corners(cur, c, b4) &&
                         (SDL_fabsf(a4[0] - b4[0]) > u->rt[0] * 0.25f || SDL_fabsf(a4[1] - b4[1]) > u->rt[1] * 0.25f))
                         continue;       /* a sprite that jumped: not blended */
-                    if (!(u->layout0[2] & PDO_FVF_PRE)) {
+                    /* Jumped: only judged with the origin on screen in both
+                     * frames -- near the eye or off screen it swings far
+                     * while the object hardly moves, and judged there it
+                     * made every turn of the camera look like a cut. */
+                    if (!(u->layout0[2] & PDO_FVF_PRE) && origin_ndc(pu->wvp, &x0, &y0) &&
+                        origin_ndc(u->wvp, &x1, &y1) && SDL_fabsf(x0) < 1.0f && SDL_fabsf(y0) < 1.0f &&
+                        SDL_fabsf(x1) < 1.0f && SDL_fabsf(y1) < 1.0f) {
                         fvf_pairs++;
-                        if (origin_ndc(pu->wvp, &x0, &y0) != origin_ndc(u->wvp, &x1, &y1) ||
-                            (origin_ndc(u->wvp, &x1, &y1) && (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f))) {
+                        if (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f) {
                             fvf_jumps++;
                             continue;   /* jumped: not blended */
                         }
@@ -2895,8 +2909,27 @@ static void match_frames(frame_data *prev, frame_data *cur)
         j = j2;
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
-    if (fvf_pairs >= 8 && fvf_jumps * 3 > fvf_pairs)
+    if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
         match_frames(NULL, cur);
+        st_cuts++;
+    }
+    {   /* Every 300 frames: how much pairs. */
+        uint32_t b = 0, p = 0;
+        for (uint32_t k = 0; k < cur->ncmds; k++)
+            if (blendable(&cur->cmds[k])) {
+                b++;
+                p += !cur->cmds[k].unpaired;
+            }
+        st_draws += cur->ncmds;
+        st_blendable += b;
+        st_paired += p;
+        st_jumps += fvf_jumps;
+        if (++st_frames == 300) {
+            SDL_Log("interp: per frame %.0f commands, %.0f could pair, %.0f paired; %u jumps, %u camera cuts in 300",
+                    st_draws / 300.0, st_blendable / 300.0, st_paired / 300.0, st_jumps, st_cuts);
+            st_frames = st_draws = st_blendable = st_paired = st_jumps = st_cuts = 0;
+        }
+    }
 }
 
 /* ── The two threads ──────────────────────────────────────────────────── */
