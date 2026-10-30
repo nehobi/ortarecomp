@@ -2569,9 +2569,12 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
  * before. "The same draw" is a guess from what the draw drew from: the kind
  * of draw, its program (or fixed-function layout), the host address of its
  * vertex data, vertex and index counts and first texture. Draws alike in
- * all of that pair up in order -- but only when the group is as large in
- * both frames; otherwise (objects appearing, vanishing, reordering) the
- * group is not blended rather than blended with the wrong partner. A
+ * all of that (a flock of one enemy) pair up nearest first: by how little
+ * their matrices, or their program constants, differ between the frames.
+ * The game's draw order is no guide -- it sorts see-through things by
+ * depth, and pairing in order swapped them as they flew. A group only
+ * pairs when it is as large in both frames; otherwise (objects appearing,
+ * vanishing) it is not blended rather than blended with the wrong partner. A
  * fixed-function draw whose position on screen jumps (a teleport, a new
  * object recycling a buffer) is not blended either, and when many do, the
  * camera cut and nothing is. Unblended draws show the newer frame. */
@@ -2638,6 +2641,37 @@ static bool origin_ndc(const float *wvp, float *x, float *y)
     return true;
 }
 
+/* How far apart two alike draws are, to pair a group nearest first: their
+ * matrices (fixed-function), or their constant sets (programs; what all
+ * objects share is equal and adds nothing). */
+static float draw_distance(const frame_data *pf, const command *pc, const frame_data *cf, const command *c)
+{
+    float d = 0.0f;
+
+    if (c->vsh) {
+        const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
+        for (int i = 0; i < 192 * 4; i++)
+            d += SDL_fabsf(a[i] - b[i]);
+    } else {
+        const float *a = pf->fvf_us[pc->fvf].wvp, *b = cf->fvf_us[c->fvf].wvp;
+        const float *aw = pf->fvf_us[pc->fvf].world, *bw = cf->fvf_us[c->fvf].world;
+        for (int i = 0; i < 16; i++)
+            d += SDL_fabsf(a[i] - b[i]) + SDL_fabsf(aw[i] - bw[i]);
+    }
+    return d;
+}
+
+typedef struct pair_cand {
+    float d;
+    uint16_t a, b;      /* index in the group: previous frame, this frame */
+} pair_cand;
+
+static int cmp_cand(const void *x, const void *y)
+{
+    const pair_cand *a = x, *b = y;
+    return a->d < b->d ? -1 : a->d > b->d;
+}
+
 /* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
 static void match_frames(frame_data *prev, frame_data *cur)
 {
@@ -2666,9 +2700,35 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (pk[i].h > ck[j].h) { j++; continue; }
         while (i2 < np && pk[i2].h == pk[i].h) i2++;
         while (j2 < nc && ck[j2].h == ck[j].h) j2++;
-        if (i2 - i == j2 - j) {
-            for (uint32_t k = 0; k < i2 - i; k++) {
-                const command *pc = &prev->cmds[pk[i + k].cmd];
+        if (i2 - i == j2 - j && i2 - i <= 256) {
+            uint32_t n = i2 - i, order[256];
+            static pair_cand *cand;
+            static uint32_t cap_cand;
+
+            /* Which previous draw each one pairs with: alone, the one;
+             * in a group, nearest first. */
+            if (n == 1) {
+                order[0] = 0;
+            } else {
+                bool used_a[256] = { false }, used_b[256] = { false };
+                uint32_t nc2 = 0;
+                cand = grow(cand, &cap_cand, n * n, sizeof *cand);
+                for (uint32_t a = 0; a < n; a++)
+                    for (uint32_t b = 0; b < n; b++) {
+                        cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd]);
+                        cand[nc2].a = (uint16_t)a;
+                        cand[nc2].b = (uint16_t)b;
+                        nc2++;
+                    }
+                qsort(cand, nc2, sizeof *cand, cmp_cand);
+                for (uint32_t k = 0; k < nc2; k++)
+                    if (!used_a[cand[k].a] && !used_b[cand[k].b]) {
+                        used_a[cand[k].a] = used_b[cand[k].b] = true;
+                        order[cand[k].b] = cand[k].a;
+                    }
+            }
+            for (uint32_t k = 0; k < n; k++) {
+                const command *pc = &prev->cmds[pk[i + order[k]].cmd];
                 command *c = &cur->cmds[ck[j + k].cmd];
                 if (c->vsh && pc->vsh) {
                     bool same_in = true;
