@@ -181,7 +181,16 @@ typedef struct frame_data {
 } frame_data;
 
 static frame_data pool[5];
-static PDO_TLS frame_data *F;
+/* F: the frame being recorded (rec_F) -- one for all the game's threads,
+ * which take turns under the guest CPU lock: kept per thread, a second
+ * game thread that draws went on with a slot of its own from long before,
+ * one the main thread had drawn since, and that frame's texture uploads
+ * were skipped as already done (the black dragon, the rainbow sky) -- or,
+ * while the main thread draws (draw_frame, capture_interp), the frame it
+ * draws (draw_F). */
+static frame_data *rec_F, *draw_F;
+static PDO_TLS bool tls_drawing;
+#define F (*(tls_drawing ? &draw_F : &rec_F))
 
 static SDL_Mutex *q_lock;
 static SDL_Condition *q_cond;
@@ -2466,7 +2475,7 @@ static void capture_vsh(void)
  * _t100): matched draws should sit halfway in the middle one. */
 static void match_frames(frame_data *prev, frame_data *cur);
 
-static void capture_interp(frame_data *prev, frame_data *cur)
+static void capture_interp_main(frame_data *prev, frame_data *cur)
 {
     const char *e = getenv("PDO_CAPTURE_INTERP");
     static const float ts[3] = { 0.0f, 0.5f, 1.0f };
@@ -2497,6 +2506,92 @@ static void capture_interp(frame_data *prev, frame_data *cur)
     }
     P = NULL;
     blend = 1.0f;
+}
+
+static void capture_interp(frame_data *prev, frame_data *cur)
+{
+    tls_drawing = true;
+    capture_interp_main(prev, cur);
+    tls_drawing = false;
+}
+
+/* At the capture frame: each texture's GPU copy, every mip level, against
+ * what its guest memory decodes to now. A level that differs while its
+ * texture is marked uploaded with the same hash lost an upload. */
+static void capture_check_textures(void)
+{
+    uint32_t bad = 0, checked = 0;
+
+    SDL_WaitForGPUIdle(dev);
+    for (int i = 0; i < ntextures; i++) {
+        gtex *g = &textures[i];
+        pdo_xtex_info info;
+        uint32_t levels;
+        const uint8_t *src;
+
+        if (!g->uploaded || g->last_used + 2 < F->frame)
+            continue;
+        pdo_xtex_describe(g->format_word, g->size_word, &info);
+        if (!info.known)
+            continue;
+        levels = tex_level0 ? 1 : pdo_xtex_level_count(&info);
+        src = (const uint8_t *)((uintptr_t)(g->data | 0x80000000u) + g_xbox_mem_offset);
+        for (uint32_t l = 0; l < levels; l++) {
+            pdo_xtex_info li;
+            uint32_t off, need, diff = 0;
+            uint8_t *want;
+            SDL_GPUTransferBufferCreateInfo tbi = { SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, 0, 0 };
+            SDL_GPUTransferBuffer *tb;
+            SDL_GPUCommandBuffer *cmd;
+            SDL_GPUCopyPass *copy;
+            SDL_GPUTextureRegion r;
+            SDL_GPUTextureTransferInfo dst;
+            SDL_GPUFence *fence;
+            const uint8_t *got;
+
+            pdo_xtex_level(&info, l, &li, &off);
+            need = li.width * li.height * 4;
+            want = SDL_malloc(need);
+            pdo_xtex_decode(&li, src + off, want);
+            tbi.size = need;
+            tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
+            cmd = SDL_AcquireGPUCommandBuffer(dev);
+            copy = SDL_BeginGPUCopyPass(cmd);
+            SDL_zero(r);
+            r.texture = g->tex;
+            r.mip_level = l;
+            r.w = li.width;
+            r.h = li.height;
+            r.d = 1;
+            SDL_zero(dst);
+            dst.transfer_buffer = tb;
+            SDL_DownloadFromGPUTexture(copy, &r, &dst);
+            SDL_EndGPUCopyPass(copy);
+            fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+            SDL_WaitForGPUFences(dev, true, &fence, 1);
+            SDL_ReleaseGPUFence(dev, fence);
+            got = SDL_MapGPUTransferBuffer(dev, tb, false);
+            for (uint32_t k = 0; k < need; k++)
+                diff += got[k] != want[k];
+            SDL_UnmapGPUTransferBuffer(dev, tb);
+            SDL_ReleaseGPUTransferBuffer(dev, tb);
+            SDL_free(want);
+            checked++;
+            if (diff) {
+                pdo_xtex_info last;
+                uint32_t lo;
+                pdo_xtex_level(&info, levels - 1, &last, &lo);
+                bad++;
+                SDL_Log("capture: texture %08x fmt %08x level %u (%ux%u of %u levels): %u of %u bytes differ on the GPU"
+                        " (hash kept %016llx, now %016llx, last used %llu, staged in %llu, frame %llu)",
+                        g->data, g->format_word, l, li.width, li.height, levels, diff, need,
+                        (unsigned long long)g->hash, (unsigned long long)hash_bytes(src, lo + last.bytes),
+                        (unsigned long long)g->last_used, (unsigned long long)g->staged_in,
+                        (unsigned long long)F->frame);
+            }
+        }
+    }
+    SDL_Log("capture: %u texture levels checked against guest memory, %u differ", checked, bad);
 }
 
 static void capture_steps(void)
@@ -3052,7 +3147,7 @@ static bool shot_frame(const frame_data *f)
 /* Main thread: draw a handed-over frame and present it; with prev, the
  * frame between prev and f at t (0 prev, 1 f). Captures and screenshots
  * are of frames as they are. */
-static void draw_frame(frame_data *f, frame_data *prev, float t)
+static void draw_frame_main(frame_data *f, frame_data *prev, float t)
 {
     SDL_GPUCommandBuffer *cmd;
     bool shot = !prev && shot_frame(f);
@@ -3067,6 +3162,8 @@ static void draw_frame(frame_data *f, frame_data *prev, float t)
     if (!prev && f->frame == capture_frame) {
         capture_steps();
         capture_shadows();
+        if (getenv("PDO_CAPTURE_TEXCHECK"))
+            capture_check_textures();
         capture_vsh();
     }
     apply_quality();
@@ -3085,6 +3182,13 @@ static void draw_frame(frame_data *f, frame_data *prev, float t)
     if (cmd)
         SDL_SubmitGPUCommandBuffer(cmd);
     pdo_overlay_frame();
+}
+
+static void draw_frame(frame_data *f, frame_data *prev, float t)
+{
+    tls_drawing = true;
+    draw_frame_main(f, prev, t);
+    tls_drawing = false;
 }
 
 /* The options menu is open: the game waits at its next Swap and the sound
