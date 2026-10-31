@@ -37,6 +37,11 @@ static SDL_Window *window;
 static SDL_ThreadID window_thread;
 static bool have_swapchain;
 static SDL_GPUTexture *frame_color, *frame_depth, *white;
+/* What a stage with no texture reads: opaque black, as the NV2A's texture
+ * units in mode NONE give (xemu, PS_TEXTUREMODES_NONE). White there drew
+ * the title screen's untextured MODULATE quads in their vertex colour, as
+ * solid red bars, where the Xbox shows dark bands. */
+static SDL_GPUTexture *unbound;
 static SDL_GPUTextureFormat depth_format;
 static int frame_w, frame_h;
 static uint64_t frames;
@@ -1134,6 +1139,11 @@ static uint32_t nchecks, cap_checks;
 
 /* Find or create the GPU texture for t, and queue it for check_textures
  * the first time it is used in a frame. */
+/* Tests for wrong textures (PDO_TEX_ALWAYS=1: decode and upload every
+ * texture every frame, never trusting the hash; PDO_TEX_LEVEL0=1: the
+ * first mip level only, as before they were all uploaded). */
+static bool tex_always, tex_level0;
+
 static tex_slot texture_for(const pdo_tex_ref *t)
 {
     pdo_xtex_info info;
@@ -1142,8 +1152,10 @@ static tex_slot texture_for(const pdo_tex_ref *t)
     uint32_t levels;
     tex_slot slot = { white, 0, 0, 0 };
 
-    if (!t->data)
+    if (!t->data) {
+        slot.tex = unbound;
         return slot;
+    }
     pdo_xtex_describe(t->format_word, t->size_word, &info);
     if (!info.width || !info.height || info.width > 4096 || info.height > 4096)
         return slot;
@@ -1183,7 +1195,7 @@ static tex_slot texture_for(const pdo_tex_ref *t)
         { slot.tex = g->tex; return slot; }      /* already checked this frame */
     /* The CPU view of a resource is Data | 0x80000000, as D3D computes it. */
     src = (const uint8_t *)((uintptr_t)(t->data | 0x80000000u) + g_xbox_mem_offset);
-    levels = info.known ? pdo_xtex_level_count(&info) : 1;
+    levels = info.known && !tex_level0 ? pdo_xtex_level_count(&info) : 1;
     if (!g) {
         SDL_GPUTextureCreateInfo ti;
         if (ntextures == MAX_TEXTURES)
@@ -1265,7 +1277,7 @@ static void check_textures(uint8_t **staging, uint32_t *staging_len, uint32_t *s
         uint32_t levels = checks[i].levels;
         uint64_t h = checks[i].hash;
 
-        if ((g->uploaded && g->hash == h) || *nups + (int)levels > MAX_UPLOADS)
+        if ((g->uploaded && g->hash == h && !tex_always) || *nups + (int)levels > MAX_UPLOADS)
             continue;
         /* Every mip level: sampled with only level 0, distant textures
          * shimmered and looked grainy. */
@@ -1691,21 +1703,27 @@ static bool init_here(int width, int height)
     ti.layer_count_or_depth = 1;
     ti.num_levels = 1;
     white = SDL_CreateGPUTexture(dev, &ti);
-    if (!frame_color || !frame_depth || !white) {
+    unbound = SDL_CreateGPUTexture(dev, &ti);
+    tex_always = getenv("PDO_TEX_ALWAYS") && atoi(getenv("PDO_TEX_ALWAYS"));
+    tex_level0 = getenv("PDO_TEX_LEVEL0") && atoi(getenv("PDO_TEX_LEVEL0"));
+    if (tex_always || tex_level0)
+        SDL_Log("gfx: texture test:%s%s", tex_always ? " every texture uploaded every frame" : "",
+                tex_level0 ? " first mip level only" : "");
+    if (!frame_color || !frame_depth || !white || !unbound) {
         SDL_Log("gfx: cannot create the frame targets (%s)", SDL_GetError());
         return false;
     }
     {
-        /* Fill the 1x1 stand-in for an unbound stage. */
-        static const uint8_t px[4] = { 255, 255, 255, 255 };
-        SDL_GPUTransferBufferCreateInfo tbi = { SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, 4, 0 };
+        /* Fill the 1x1 stand-ins: white, and black for an unbound stage. */
+        static const uint8_t px[8] = { 255, 255, 255, 255, 0, 0, 0, 255 };
+        SDL_GPUTransferBufferCreateInfo tbi = { SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, 8, 0 };
         SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
         SDL_GPUCommandBuffer *c = SDL_AcquireGPUCommandBuffer(dev);
         SDL_GPUTextureTransferInfo src;
         SDL_GPUTextureRegion dst;
         SDL_GPUCopyPass *copy;
 
-        memcpy(SDL_MapGPUTransferBuffer(dev, tb, false), px, 4);
+        memcpy(SDL_MapGPUTransferBuffer(dev, tb, false), px, 8);
         SDL_UnmapGPUTransferBuffer(dev, tb);
         copy = SDL_BeginGPUCopyPass(c);
         SDL_zero(src);
@@ -1713,6 +1731,9 @@ static bool init_here(int width, int height)
         SDL_zero(dst);
         dst.texture = white;
         dst.w = dst.h = dst.d = 1;
+        SDL_UploadToGPUTexture(copy, &src, &dst, false);
+        src.offset = 4;
+        dst.texture = unbound;
         SDL_UploadToGPUTexture(copy, &src, &dst, false);
         SDL_EndGPUCopyPass(copy);
         SDL_SubmitGPUCommandBuffer(c);
@@ -1759,6 +1780,7 @@ void pdo_gfx_shutdown(void)
     SDL_ReleaseGPUShader(dev, screen_vs);
     SDL_ReleaseGPUShader(dev, screen_fs);
     SDL_ReleaseGPUTexture(dev, white);
+    SDL_ReleaseGPUTexture(dev, unbound);
     SDL_ReleaseGPUTexture(dev, output);
     SDL_ReleaseGPUTexture(dev, gamma_lut);
     SDL_ReleaseGPUSampler(dev, nearest);
@@ -1961,8 +1983,10 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
         if (!t->data && d->ff.color_op[s][0] <= 1)
             continue;
         pdo_xtex_describe(t->format_word, t->size_word, &ti);
-        if (tex[s] == white)
-            what = t->data ? " (WHITE: no usable texture)" : " (none)";
+        if (tex[s] == unbound)
+            what = " (none: black)";
+        else if (tex[s] == white)
+            what = " (WHITE: no usable texture)";
         else if (find_target(t->data, ti.width, ti.height))
             what = " (render target)";
         SDL_Log("capture:     stage %d cop %d %x %x %x aop %d %x %x %x tex %08x fmt %08x size %08x %s %ux%u%s",
