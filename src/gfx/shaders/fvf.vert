@@ -30,8 +30,8 @@ layout(set = 1, binding = 0, std140) uniform Draw {
                          // to the light), attenuation (a0, a1, a2, |direction|),
                          // cone (cos theta/2, cos phi/2)
     // Interpolation (renderer.c, match_frames): x the matching draw's byte
-    // base in the previous frame's streams (-1: its vertices are not
-    // blended), y 1 if its matrices are below (blended), z 1 to tint it (PDO_INTERP_TINT: it could not pair);
+    // base in the previous frame's streams (-1: none), y 1 if its matrices
+    // are below, z 1 to tint it (PDO_INTERP_TINT: it could not pair);
     // blend_t.x how far from the previous frame (1: this frame).
     ivec4 interp;
     vec4  blend_t;
@@ -152,12 +152,11 @@ void main()
     vec3 nrm = hn ? vec3(f32(v + uint(offs.x)), f32(v + uint(offs.x) + 4u), f32(v + uint(offs.x) + 8u)) : vec3(0.0);
     float rhw = pre ? f32(v + 12u) : 1.0;
     bool blend = blend_t.x < 1.0 && interp.x >= 0;
-    bool bm = blend_t.x < 1.0 && interp.y != 0;
 
     // Interpolation: positions (and normals, rhw) from the previous game
-    // frame's vertices, blended; the matrices too when they are given (or
-    // alone: a draw whose vertex count changed).
+    // frame's vertices, blended; the matrices too when they are given.
     for (int i = 0; i < 4; i++) {
+        bool bm = blend && interp.y != 0;
         mwvp[i] = bm ? mix(prev_wvp[i], wvp[i], blend_t.x) : wvp[i];
         mwv[i] = bm ? mix(prev_wv[i], wv[i], blend_t.x) : wv[i];
         mworld[i] = bm ? mix(prev_world[i], world[i], blend_t.x) : world[i];
