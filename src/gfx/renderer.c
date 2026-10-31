@@ -279,6 +279,7 @@ void pdo_gfx_clear(uint32_t flags, uint32_t color, float z, uint32_t stencil)
 
 static uintptr_t draw_src;     /* pdo_gfx_set_draw_source, for the next draw */
 
+
 void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
                   const uint32_t *idx, uint32_t ni)
 {
@@ -293,7 +294,6 @@ void pdo_gfx_draw(const pdo_draw *d, const pdo_vertex *v, uint32_t nv,
     memcpy(F->verts + F->nverts, v, nv * sizeof *v);
     for (uint32_t i = 0; i < ni; i++)
         F->indices[F->nindices + i] = F->nverts + idx[i];
-
     {
         /* PDO_GFX_DEBUG=n: describe the draws of frame n. */
         static long debug_frame = -2;
@@ -338,6 +338,7 @@ void pdo_gfx_set_draw_source(const void *src)
 {
     draw_src = (uintptr_t)src;
 }
+
 
 int32_t pdo_gfx_vsh_program(const uint32_t *code, uint32_t count)
 {
@@ -2812,22 +2813,27 @@ static void draw_features(const frame_data *f, command *c)
     c->feat_ok = true;
 }
 
-/* How far a draw of this frame is from where an alike draw of the
- * previous one was going: its place there moved on by how it moved since
- * the frame before. Without that guess, a shot or a flock member that
- * moves further in a frame than the gap to the next one paired with that
- * next one (or with none) and jittered. */
+/* How far a draw of this frame is from an alike draw of the previous one:
+ * from where that one was, or from where it was going (its place moved on
+ * by how it moved since the frame before), whichever is nearer. Without
+ * the guess, a shot or a flock member that moves further in a frame than
+ * the gap to the next one paired with that next one (or with none); with
+ * the guess alone, something that stopped (a menu piece done sliding in)
+ * was looked for one step on, where an alike neighbour could be nearer. */
 static float draw_distance(const command *pc, const command *c)
 {
-    float d = pc->id_src == c->id_src ? 0.0f : 1e-3f;   /* same data: a tie-breaker */
+    float tie = pc->id_src == c->id_src ? 0.0f : 1e-3f;   /* same data: a tie-breaker */
+    float d = 0.0f, dv = 0.0f;
 
-    if (pc->has_vel)
+    for (int i = 0; i < PDO_FEAT; i++)
+        d += SDL_fabsf(pc->feat[i] - c->feat[i]);
+    if (pc->has_vel) {
         for (int i = 0; i < PDO_FEAT; i++)
-            d += SDL_fabsf(pc->feat[i] + pc->vel[i] - c->feat[i]);
-    else
-        for (int i = 0; i < PDO_FEAT; i++)
-            d += SDL_fabsf(pc->feat[i] - c->feat[i]);
-    return d;
+            dv += SDL_fabsf(pc->feat[i] + pc->vel[i] - c->feat[i]);
+        if (dv < d)
+            d = dv;
+    }
+    return d + tie;
 }
 
 /* A pair made: how the draw moved, for the guess in the next frame. */
@@ -2851,7 +2857,7 @@ static int cmp_cand(const void *x, const void *y)
     return a->d < b->d ? -1 : a->d > b->d;
 }
 
-static uint32_t st_frames, st_draws, st_blendable, st_paired, st_jumps, st_cuts, st_far, st_sprite;
+static uint32_t st_frames, st_draws, st_blendable, st_paired, st_jumps, st_cuts, st_far, st_sprite, st_ambig;
 
 /* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
 static void match_frames(frame_data *prev, frame_data *cur)
@@ -2932,12 +2938,16 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         cand[nc2].b = (uint16_t)b;
                         nc2++;
                     }
-                float best[256];
+                float best[256], second[256];
                 for (uint32_t b = 0; b < n; b++)
-                    best[b] = 3.4e38f;
+                    best[b] = second[b] = 3.4e38f;
                 for (uint32_t k = 0; k < nc2; k++)
-                    if (cand[k].d < best[cand[k].b])
+                    if (cand[k].d < best[cand[k].b]) {
+                        second[cand[k].b] = best[cand[k].b];
                         best[cand[k].b] = cand[k].d;
+                    } else if (cand[k].d < second[cand[k].b]) {
+                        second[cand[k].b] = cand[k].d;
+                    }
                 qsort(cand, nc2, sizeof *cand, cmp_cand);
                 for (uint32_t k = 0; k < nc2; k++)
                     if (!used_a[cand[k].a] && !used_b[cand[k].b]) {
@@ -2947,6 +2957,16 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * far (the end of a chain of alike segments that
                          * each moved one along). Not blended. */
                         forced[cand[k].b] = cand[k].d > best[cand[k].b] * 2.0f + 1e-3f;
+                        /* No clear nearest: two alike draws (the pieces of a
+                         * turning ring, a pack of one enemy) fit about as
+                         * well. Blending with the wrong one sends it across
+                         * the screen and back; not blended, it only moves at
+                         * the game's rate. Something that did not move
+                         * (distance near 0) is never in doubt. */
+                        if (!forced[cand[k].b] && cand[k].d > 1e-2f && second[cand[k].b] < cand[k].d * 1.25f) {
+                            forced[cand[k].b] = true;
+                            st_ambig++;
+                        }
                     }
             }
             for (uint32_t k = 0; k < n; k++) {
@@ -3050,11 +3070,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (++st_frames == 300) {
             SDL_Log("interp: per frame %.0f commands, %.0f could pair, %.0f paired; %u jumps, %u camera cuts in 300",
                     st_draws / 300.0, st_blendable / 300.0, st_paired / 300.0, st_jumps, st_cuts);
-            SDL_Log("interp: unpaired per frame %.1f without an alike draw, %.1f far, %.1f jumping sprites",
-                    (st_blendable - st_paired - st_far - st_sprite - st_jumps) / 300.0, st_far / 300.0,
-                    st_sprite / 300.0);
+            SDL_Log("interp: unpaired per frame %.1f without an alike draw, %.1f far, %.1f in doubt, %.1f jumping sprites",
+                    (st_blendable - st_paired - st_far - st_sprite - st_jumps) / 300.0, (st_far - st_ambig) / 300.0,
+                    st_ambig / 300.0, st_sprite / 300.0);
             st_frames = st_draws = st_blendable = st_paired = st_jumps = st_cuts = 0;
-            st_far = st_sprite = 0;
+            st_far = st_sprite = st_ambig = 0;
         }
     }
 }
@@ -3110,6 +3130,8 @@ static void hand_over(void)
      * GPU slower than the game) is dropped for this newer one. */
     while (paused)
         SDL_WaitCondition(q_cond, q_lock);
+    while (ready && ready->frame == capture_frame)
+        SDL_WaitConditionTimeout(q_cond, q_lock, 2);   /* a capture is never dropped */
     next = ready ? ready : free_frame();
     if (ready) {
         /* What the dropped frame alone carried goes with this one: its
