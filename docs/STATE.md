@@ -42,8 +42,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    updates through 0x00111BC0, a function behind a jump table that
    recomp.py now seeds). Tentacles confirmed right; some enemies white (a missing
    texture in a fixed-function draw gives white).
-2. Sound effects feel loud against the music. The game sets them itself
-   (music -26.0 dB, most effects -22.5 dB at equal option levels).
+2. Sound balance: matches xemu (episode 1 flying, in-game options at
+   defaults: -11.4 LUFS in both). The loud effects were in-game options
+   turned down. The game sets music -26.0 dB, most effects -22.5 dB.
 3. Episode 4 crash after event st04_ev81: fixed and confirmed (episode 4
    beaten, no [POOL] reports). A virtual function (0x0015EB10) cut short
    by a false start jumped to a stub instead of its own epilogue, and the
