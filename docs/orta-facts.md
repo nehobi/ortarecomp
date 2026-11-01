@@ -171,3 +171,14 @@ virtual addresses in the USA `default.xbe`.
   1030, 0.011, 100, 60, 5000 Hz) from the boss cutscene (event
   st01_ev5b) through the fight. DownloadEffectsImage gets a 30,720-byte
   image each stage; SetEffectData is not called.
+
+## Widescreen
+
+Orta has an anamorphic 16:9 mode. The display setup (0x0003D020) asks its
+display object (pointer at 0x0041A06C, query method 0x00281330, id 15) for
+the video mode: the low byte (1 or 2) picks the pixel aspect stored at
+0x00342724 (1.0 or 0.909), and with bit 8 set it multiplies that by 4/3 and
+sets the widescreen flag at 0x00342754, which the camera and the screen
+layout read (the HUD's radar is drawn narrow, to be stretched to 16:9).
+Our kernel's video flags never set bit 8; src/guest/widescreen.c does when
+the aspect setting is 16:9. The game reads it once, at start.

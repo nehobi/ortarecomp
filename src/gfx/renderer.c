@@ -2697,7 +2697,8 @@ bool pdo_gfx_pump_events(void)
     return keep_going;
 }
 
-/* The finished frame onto the window, 4:3 or stretched, softened if asked,
+/* The finished frame onto the window, 4:3, 16:9 (the game's widescreen
+ * mode) or stretched, softened if asked,
  * with the overlay over it. */
 /* The window's image, taken before the frame was drawn (draw_frame_main,
  * interpolating): present_to_window then uses it. */
@@ -2763,9 +2764,10 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     if (st->aspect == PDO_ASPECT_STRETCH) {
         vp.w = (float)sw;
         vp.h = (float)sh;
-    } else {    /* the game's 4:3, scaled to fit, bars elsewhere */
-        float k = SDL_min((float)sw / frame_w, (float)sh / frame_h);
-        vp.w = SDL_floorf(frame_w * k);
+    } else {    /* the game's 4:3 (or its widescreen 16:9), scaled to fit, bars elsewhere */
+        float aw = pdo_widescreen_active() ? frame_h * 16.0f / 9.0f : (float)frame_w;
+        float k = SDL_min((float)sw / aw, (float)sh / frame_h);
+        vp.w = SDL_floorf(aw * k);
         vp.h = SDL_floorf(frame_h * k);
         vp.x = SDL_floorf((sw - vp.w) / 2);
         vp.y = SDL_floorf((sh - vp.h) / 2);

@@ -13,7 +13,7 @@ typedef struct pdo_config {
 typedef struct pdo_settings {
     int  render_scale;      /* 1-4: render targets at this multiple of the game's size */
     int  msaa;              /* 1, 2, 4 or 8 samples */
-    int  aspect;            /* PDO_ASPECT_* */
+    int  aspect;            /* PDO_ASPECT_*; 16:9 is the game's own widescreen mode */
     bool soft_filter;       /* TV-like vertical softening at presentation */
     int  master_volume;     /* 0-100 % */
     bool show_fps;
@@ -22,7 +22,12 @@ typedef struct pdo_settings {
     bool frame_interp;      /* frames between the game's 60, blended (renderer.c) */
 } pdo_settings;
 
-enum { PDO_ASPECT_4_3, PDO_ASPECT_STRETCH, PDO_ASPECT_COUNT };
+enum { PDO_ASPECT_4_3, PDO_ASPECT_STRETCH, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };
+
+/* Whether the game set itself up in its widescreen mode (anamorphic 16:9:
+ * a wider view squeezed into 640x480), which it reads once at start:
+ * src/guest/widescreen.c. */
+bool pdo_widescreen_active(void);
 
 /* The current settings: defaults until pdo_config_load reads the file. */
 pdo_settings *pdo_settings_get(void);

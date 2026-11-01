@@ -182,7 +182,7 @@ static void text(float col, float row, const char *s)
 static void draw_menu(void)
 {
     const pdo_settings *s = pdo_settings_get();
-    static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "Stretch" };
+    static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "Stretch", "16:9" };
     char lines[ITEM_COUNT][48];
     const float x0 = 4, y0 = 6, w = 32, h = 3 + ITEM_COUNT * 2 + 3;
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
@@ -192,7 +192,9 @@ static void draw_menu(void)
         snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15s%dx", "Anti-aliasing", s->msaa);
     else
         snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15sOff", "Anti-aliasing");
-    snprintf(lines[ITEM_ASPECT], sizeof lines[0], "%-15s%s", "Aspect ratio", aspects[s->aspect]);
+    /* The game reads widescreen once, at start: say so until it has. */
+    snprintf(lines[ITEM_ASPECT], sizeof lines[0], "%-15s%s%s", "Aspect ratio", aspects[s->aspect],
+             (s->aspect == PDO_ASPECT_16_9) != pdo_widescreen_active() ? " (restart)" : "");
     snprintf(lines[ITEM_SOFT], sizeof lines[0], "%-15s%s", "TV softening", s->soft_filter ? "On" : "Off");
     snprintf(lines[ITEM_VOLUME], sizeof lines[0], "%-15s%d%%", "Volume", s->master_volume);
     snprintf(lines[ITEM_FPS], sizeof lines[0], "%-15s%s", "Show FPS", s->show_fps ? "On" : "Off");

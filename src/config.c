@@ -81,7 +81,9 @@ bool pdo_config_load(pdo_config *cfg)
             int m = SDL_atoi(eq + 1);
             settings.msaa = m >= 8 ? 8 : m >= 4 ? 4 : m >= 2 ? 2 : 1;
         } else if (strcmp(line, "aspect") == 0)
-            settings.aspect = strcmp(eq + 1, "stretch") == 0 ? PDO_ASPECT_STRETCH : PDO_ASPECT_4_3;
+            settings.aspect = strcmp(eq + 1, "stretch") == 0 ? PDO_ASPECT_STRETCH
+                            : strcmp(eq + 1, "16:9") == 0    ? PDO_ASPECT_16_9
+                                                             : PDO_ASPECT_4_3;
         else if (strcmp(line, "soft_filter") == 0)
             settings.soft_filter = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "master_volume") == 0)
@@ -118,7 +120,10 @@ bool pdo_config_save(const pdo_config *cfg)
                  "gpu_fixed=%d\n"
                  "frame_interp=%d\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
-                 settings.aspect == PDO_ASPECT_STRETCH ? "stretch" : "4:3", settings.soft_filter,
+                 settings.aspect == PDO_ASPECT_STRETCH ? "stretch"
+                 : settings.aspect == PDO_ASPECT_16_9  ? "16:9"
+                                                       : "4:3",
+                 settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
                  settings.gpu_fixed, settings.frame_interp);
     if (n < 0 || (size_t)n >= sizeof text)
