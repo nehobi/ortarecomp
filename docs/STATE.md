@@ -70,8 +70,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    locking, so two threads could share a token. Still open:
    PsCreateSystemThreadEx ignores CreateSuspended (CRI's threads ask).
 6. Title red bars: a shadow map's memory reused for a colour texture was
-   still taken as the depth target (fix b86af73, to confirm). Unbound
-   stages read opaque black (xemu), untested beyond that.
+   still taken as the depth target (b86af73; not seen since). Unbound
+   stages read white (menu highlights need it; black turned them black).
 
 ## Performance
 
