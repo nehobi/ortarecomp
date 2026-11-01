@@ -2342,7 +2342,10 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             SDL_SetGPUStencilReference(pass, c->draw.stencil_ref);
         if (gpu) {
             float t = P ? blend : 1.0f;
-            int tint = P && interp_tint && c->unpaired;
+            /* Not screen-space draws (the HUD, full-screen passes): a
+             * storm layer over the whole screen tinted everything. */
+            int tint = P && interp_tint && c->unpaired &&
+                       !(gpu != 1 && (F->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE));
             if (gpu == 1) {
                 c->vu.blend_t[0] = t;
                 c->vu.interp[2] = tint;
@@ -2355,7 +2358,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             SDL_DrawGPUIndexedPrimitives(pass, c->vsh_index_count, 1, c->vsh_first_index, 0, 0);
         } else {
             float b[4] = { P ? blend : 1.0f, P && c->prev_vbase >= 0 ? 1.0f : 0.0f,
-                           P && interp_tint && c->unpaired && c->id_src ? 1.0f : 0.0f, 0.0f };
+                           0.0f, 0.0f };   /* CPU-made: screen-space effects, not tinted */
             SDL_PushGPUVertexUniformData(cmd, 0, b, sizeof b);
             SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, -(Sint32)c->vbase, 0);
         }
@@ -2480,6 +2483,7 @@ static void capture_vsh(void)
  * _t100): matched draws should sit halfway in the middle one. */
 static void match_frames(frame_data *prev, frame_data *cur);
 static bool dbg_groups;
+static bool draw_corners(const frame_data *f, const command *c, float out[8]);
 
 static void capture_interp_main(frame_data *prev, frame_data *cur)
 {
@@ -2491,6 +2495,20 @@ static void capture_interp_main(frame_data *prev, frame_data *cur)
         return;
     match_frames(prev, cur);
     dbg_groups = false;
+    if (getenv("PDO_DBG_GROUPS"))
+        for (uint32_t i = 0; i < cur->ncmds; i++) {
+            const command *c = &cur->cmds[i];
+            float a4[8];
+            if (c->kind != CMD_DRAW || !c->unpaired)
+                continue;
+            if (!draw_corners(cur, c, a4))
+                memset(a4, 0, sizeof a4);
+            SDL_Log("unp: cmd %u kind %d pre %d src %d nv %u idx %u tex %08x blend %d v0 %.1f %.1f %.1f %.1f",
+                    i, c->vsh ? 1 : c->fvf >= 0 ? 2 : 3,
+                    c->fvf >= 0 ? !!(cur->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE) : 0, c->id_src != 0, c->id_nv,
+                    c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count, (unsigned)c->draw.tex[0].data,
+                    c->draw.ps.blend_enable, a4[0], a4[1], a4[2], a4[3]);
+        }
     for (int k = 0; k < 3; k++) {
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
         char path[64];
@@ -2767,7 +2785,8 @@ typedef struct draw_key {
     uint32_t cmd;
 } draw_key;
 
-static uint64_t key_of(const frame_data *f, const command *c)
+/* any_src: whatever vertex data it drew from (match_frames' second pass). */
+static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
 {
     uint64_t h = 1469598103934665603ull;
     uint64_t v[7];
@@ -2776,7 +2795,7 @@ static uint64_t key_of(const frame_data *f, const command *c)
     v[1] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[0]
          : c->fvf >= 0 ? ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1]
          : c->draw.ps.topology;
-    v[2] = c->id_src;
+    v[2] = any_src ? 0 : c->id_src;
     v[3] = c->id_nv;
     v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
@@ -2801,13 +2820,14 @@ static bool blendable(const command *c)
     return c->kind == CMD_DRAW && c->id_src;
 }
 
-static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap)
+/* any_src: only the draws skip[] does not mark, keyed without their data. */
+static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, bool any_src, const uint8_t *skip)
 {
     uint32_t n = 0;
     for (uint32_t i = 0; i < f->ncmds; i++)
-        if (blendable(&f->cmds[i])) {
+        if (blendable(&f->cmds[i]) && !(any_src && skip[i])) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
-            (*keys)[n].h = key_of(f, &f->cmds[i]);
+            (*keys)[n].h = key_of(f, &f->cmds[i], any_src);
             (*keys)[n].cmd = i;
             n++;
         }
@@ -2906,7 +2926,8 @@ static int cmp_cand(const void *x, const void *y)
 static void match_frames(frame_data *prev, frame_data *cur)
 {
     static draw_key *pk, *ck;
-    static uint32_t cap_pk, cap_ck;
+    static uint8_t *taken, *grouped;    /* prev draws paired; cur draws that had alike ones */
+    static uint32_t cap_pk, cap_ck, cap_taken, cap_grouped;
     uint32_t np = 0, nc, i = 0, j = 0, fvf_pairs = 0, fvf_jumps = 0;
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
@@ -2924,14 +2945,33 @@ static void match_frames(frame_data *prev, frame_data *cur)
     }
     if (!prev)
         return;
-    np = keys_of(prev, &pk, &cap_pk);
-    nc = keys_of(cur, &ck, &cap_ck);
+    taken = grow(taken, &cap_taken, prev->ncmds + 1, 1);
+    grouped = grow(grouped, &cap_grouped, cur->ncmds + 1, 1);
+    memset(taken, 0, prev->ncmds);
+    memset(grouped, 0, cur->ncmds);
+    /* Two passes: draws from the same vertex data; then a draw that found
+     * none, with the one left in the previous frame that is alike but for
+     * its data -- only when it is the one such in both frames. The game
+     * builds some vertices (the dragon's) into a buffer that alternates
+     * between two places: those parts never paired and showed a frame
+     * ahead of the rest of the dragon. */
+    for (int pass = 0; pass < 2; pass++) {
+    np = keys_of(prev, &pk, &cap_pk, pass, taken);
+    nc = keys_of(cur, &ck, &cap_ck, pass, grouped);
+    i = j = 0;
     while (i < np && j < nc) {
         uint32_t i2 = i, j2 = j;
         if (pk[i].h < ck[j].h) { i++; continue; }
         if (pk[i].h > ck[j].h) { j++; continue; }
         while (i2 < np && pk[i2].h == pk[i].h) i2++;
         while (j2 < nc && ck[j2].h == ck[j].h) j2++;
+        for (uint32_t k = j; k < j2; k++)
+            grouped[ck[k].cmd] = 1;
+        if (pass == 1 && (i2 - i != 1 || j2 - j != 1)) {
+            i = i2;
+            j = j2;
+            continue;               /* not the one such in both */
+        }
         if (i2 - i <= 256 && j2 - j <= 256) {
             uint32_t na = i2 - i, n = j2 - j, order[256];
             bool forced[256] = { false };
@@ -2995,6 +3035,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
                     c->prev_vbase = (int32_t)pc->vbase;
                     c->unpaired = false;
+                    taken[pk[i + order[k]].cmd] = 1;
                 } else if (c->vsh && pc->vsh) {
                     bool same_in = true;
                     for (int r = 0; r < 16; r++) {
@@ -3006,6 +3047,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->vu.interp[0] = pc->vu.info[2];
                     c->vu.interp[1] = same_in;
                     c->unpaired = false;
+                    taken[pk[i + order[k]].cmd] = 1;
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
                     pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
                     const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
@@ -3032,6 +3074,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
                     c->unpaired = false;
+                    taken[pk[i + order[k]].cmd] = 1;
                     memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
                     memcpy(u->prev_wv, pu->wv, sizeof u->prev_wv);
                     memcpy(u->prev_world, pu->world, sizeof u->prev_world);
@@ -3040,6 +3083,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         }
         i = i2;
         j = j2;
+    }
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
