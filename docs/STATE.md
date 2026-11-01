@@ -106,19 +106,20 @@ drawing). All game threads share one recording frame (rec_F): kept per
 thread, a second game thread recorded into a slot already drawn and its
 texture uploads were lost (black dragon, rainbow sky; fixed, confirmed).
 Above 60: "Frame interp" (F1, ini frame_interp) draws between the last two
-game frames, one behind. match_frames pairs draws by the vertex data they
-draw from (alike copies nearest first), then a lone 3D draw whose data
-moved (alternating buffers: the dragon). Not blended: jumps on screen,
-draws rebuilt in another order (glide wing reticle), all on a camera cut
-(over half on screen jumped). Blend t is chosen after the window's image
-is acquired; frames are stamped with their Swap's vblank. Blending holds
-off 5 s when the screen is under 1.5x the game rate or frames are
-skipped (`main:` log line). Keying without the data address paired wrong
-copies (menus, reticle, packs): reverted. Player: packs fine now; the GPU
-limits 4x (~85 fps in play). Debug: PDO_INTERP_TINT (3D only),
-PDO_CAPTURE_INTERP (+PDO_CAPTURE_SEQ=n, PDO_DBG_GROUPS),
-PDO_CAPTURE_TEXCHECK (GPU textures vs guest memory), PDO_TEX_ALWAYS,
-PDO_TEX_LEVEL0. Glide wing: script `13000:y:8,13100:y:8`. PDO_BENCHMARK=1
+game frames, one behind, timed after the window's image is acquired, over
+the gap between their Swap vblanks. match_frames: 3D draws pair nearest
+first by place (matrices or constants, motion guess for fixed-function),
+data address only a tie-break -- the game reuses vertex buffers between
+fighters (packs warped: fixed de4713b, player: looked good once, watch);
+screen-space draws pair by address (menu words). Not blended: on-screen
+jumps, draws rebuilt in another order (glide wing reticle), all on a camera
+cut. Blending holds off 5 s when the screen is under 1.5x the game rate.
+Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
+pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
+(+_SEQ=n, PDO_DBG_GROUPS), PDO_CAPTURE_TEXCHECK, PDO_TEX_ALWAYS/LEVEL0.
+Glide wing: script `13000:y:8,13100:y:8`. Display: aspect 4:3 or 16:9 (the
+game's own anamorphic mode, src/guest/widescreen.c, read at start), fit
+bars/stretch/zoom, Alt+Enter fullscreen. PDO_BENCHMARK=1
 runs the game unpaced (measuring only). Player's PC, benchmark at 2x:
 ~190 fps in play (game thread bound); at 4x+4xAA the GPU caps ~60-80.
 Goal: headroom on lesser PCs; phones later (Vulkan/Turnip). For that:
