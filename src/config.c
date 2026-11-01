@@ -11,7 +11,7 @@
 
 static char data_dir[PDO_PATH_MAX];
 
-static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, false, 100, false, true, true, false, false };
+static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -80,10 +80,14 @@ bool pdo_config_load(pdo_config *cfg)
         else if (strcmp(line, "msaa") == 0) {
             int m = SDL_atoi(eq + 1);
             settings.msaa = m >= 8 ? 8 : m >= 4 ? 4 : m >= 2 ? 2 : 1;
-        } else if (strcmp(line, "aspect") == 0)
-            settings.aspect = strcmp(eq + 1, "stretch") == 0 ? PDO_ASPECT_STRETCH
-                            : strcmp(eq + 1, "16:9") == 0    ? PDO_ASPECT_16_9
-                                                             : PDO_ASPECT_4_3;
+        } else if (strcmp(line, "aspect") == 0) {
+            settings.aspect = strcmp(eq + 1, "16:9") == 0 ? PDO_ASPECT_16_9 : PDO_ASPECT_4_3;
+            if (strcmp(eq + 1, "stretch") == 0)     /* a file from before the fit setting */
+                settings.fit = PDO_FIT_STRETCH;
+        } else if (strcmp(line, "fit") == 0)
+            settings.fit = strcmp(eq + 1, "stretch") == 0 ? PDO_FIT_STRETCH
+                         : strcmp(eq + 1, "zoom") == 0    ? PDO_FIT_ZOOM
+                                                          : PDO_FIT_BARS;
         else if (strcmp(line, "soft_filter") == 0)
             settings.soft_filter = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "master_volume") == 0)
@@ -115,6 +119,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  "render_scale=%d\n"
                  "msaa=%d\n"
                  "aspect=%s\n"
+                 "fit=%s\n"
                  "soft_filter=%d\n"
                  "master_volume=%d\n"
                  "show_fps=%d\n"
@@ -123,9 +128,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  "frame_interp=%d\n"
                  "fullscreen=%d\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
-                 settings.aspect == PDO_ASPECT_STRETCH ? "stretch"
-                 : settings.aspect == PDO_ASPECT_16_9  ? "16:9"
-                                                       : "4:3",
+                 settings.aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3",
+                 settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
                  settings.gpu_fixed, settings.frame_interp, settings.fullscreen);

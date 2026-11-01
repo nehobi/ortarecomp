@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_CLOSE, ITEM_COUNT };
 
 static bool open_, dirty = true, swallow;
 static int selected;
@@ -68,6 +68,7 @@ static void change(int dir)
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
     case ITEM_MSAA:   s->msaa = next_msaa(s->msaa, dir); break;
     case ITEM_ASPECT: s->aspect = (s->aspect + PDO_ASPECT_COUNT + dir) % PDO_ASPECT_COUNT; break;
+    case ITEM_FIT:    s->fit = (s->fit + PDO_FIT_COUNT + dir) % PDO_FIT_COUNT; break;
     case ITEM_SOFT:   s->soft_filter = !s->soft_filter; break;
     case ITEM_VOLUME: s->master_volume = SDL_clamp(s->master_volume + 5 * dir, 0, 100); break;
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
@@ -182,9 +183,10 @@ static void text(float col, float row, const char *s)
 static void draw_menu(void)
 {
     const pdo_settings *s = pdo_settings_get();
-    static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "Stretch", "16:9" };
+    static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "16:9" };
+    static const char *fits[PDO_FIT_COUNT] = { "Bars", "Stretch", "Zoom" };
     char lines[ITEM_COUNT][48];
-    const float x0 = 4, y0 = 6, w = 32, h = 3 + ITEM_COUNT * 2 + 3;
+    const float x0 = 4, y0 = 2, w = 32, h = 3 + ITEM_COUNT * 2 + 3;    /* fits the 240 rows */
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
     snprintf(lines[ITEM_SCALE], sizeof lines[0], "%-15s%dx", "Resolution", s->render_scale);
@@ -195,6 +197,7 @@ static void draw_menu(void)
     /* The game reads widescreen once, at start: say so until it has. */
     snprintf(lines[ITEM_ASPECT], sizeof lines[0], "%-15s%s%s", "Aspect ratio", aspects[s->aspect],
              (s->aspect == PDO_ASPECT_16_9) != pdo_widescreen_active() ? " (restart)" : "");
+    snprintf(lines[ITEM_FIT], sizeof lines[0], "%-15s%s", "Fit to window", fits[s->fit]);
     snprintf(lines[ITEM_SOFT], sizeof lines[0], "%-15s%s", "TV softening", s->soft_filter ? "On" : "Off");
     snprintf(lines[ITEM_VOLUME], sizeof lines[0], "%-15s%d%%", "Volume", s->master_volume);
     snprintf(lines[ITEM_FPS], sizeof lines[0], "%-15s%s", "Show FPS", s->show_fps ? "On" : "Off");

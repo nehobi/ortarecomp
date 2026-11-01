@@ -2724,7 +2724,7 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     bool changed;
     SDL_GPUColorTargetInfo ct;
     SDL_GPURenderPass *pass;
-    SDL_GPUViewport vp;
+    SDL_GPUViewport vp, fitv;
 
     if (!have_swapchain || !screen_pipeline)
         return;
@@ -2770,19 +2770,32 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
         if (!ok || !swap)
             return;
     }
-    SDL_zero(vp);
-    if (st->aspect == PDO_ASPECT_STRETCH) {
-        vp.w = (float)sw;
-        vp.h = (float)sh;
-    } else {    /* the game's 4:3 (or its widescreen 16:9), scaled to fit, bars elsewhere */
+    {   /* The picture: the game's 4:3, or 16:9 in its widescreen mode. fit:
+         * all of it, bars elsewhere -- also where the overlay goes, so it is
+         * whole in every mode; zoomed to fill, the overflow cut off;
+         * stretched to the window. */
         float aw = pdo_widescreen_active() ? frame_h * 16.0f / 9.0f : (float)frame_w;
-        float k = SDL_min((float)sw / aw, (float)sh / frame_h);
-        vp.w = SDL_floorf(aw * k);
-        vp.h = SDL_floorf(frame_h * k);
-        vp.x = SDL_floorf((sw - vp.w) / 2);
-        vp.y = SDL_floorf((sh - vp.h) / 2);
+        float kf = SDL_min((float)sw / aw, (float)sh / frame_h);
+        float kz = SDL_max((float)sw / aw, (float)sh / frame_h);
+        float k = st->fit == PDO_FIT_ZOOM ? kz : kf;
+        SDL_zero(fitv);
+        fitv.w = SDL_floorf(aw * kf);
+        fitv.h = SDL_floorf(frame_h * kf);
+        fitv.x = SDL_floorf((sw - fitv.w) / 2);
+        fitv.y = SDL_floorf((sh - fitv.h) / 2);
+        fitv.max_depth = 1.0f;
+        SDL_zero(vp);
+        if (st->fit == PDO_FIT_STRETCH) {
+            vp.w = (float)sw;
+            vp.h = (float)sh;
+        } else {
+            vp.w = SDL_floorf(aw * k);
+            vp.h = SDL_floorf(frame_h * k);
+            vp.x = SDL_floorf((sw - vp.w) / 2);
+            vp.y = SDL_floorf((sh - vp.h) / 2);
+        }
+        vp.max_depth = 1.0f;
     }
-    vp.max_depth = 1.0f;
     SDL_zero(ct);
     ct.texture = swap;
     ct.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -2803,6 +2816,7 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     if (img && overlay_tex && overlay_pipeline) {
         SDL_GPUTextureSamplerBinding tsb = { overlay_tex, linear };
         float params[4] = { 0, 0, 0, 0 };
+        SDL_SetGPUViewport(pass, &fitv);
         SDL_BindGPUGraphicsPipeline(pass, overlay_pipeline);
         SDL_BindGPUFragmentSamplers(pass, 0, &tsb, 1);
         SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof params);
