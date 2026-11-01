@@ -2474,15 +2474,18 @@ static void capture_vsh(void)
  * one before and it at t 0, 0.5 and 1 (capture_<frame>_t000.bmp, _t050,
  * _t100): matched draws should sit halfway in the middle one. */
 static void match_frames(frame_data *prev, frame_data *cur);
+static bool dbg_groups;
 
 static void capture_interp_main(frame_data *prev, frame_data *cur)
 {
+    dbg_groups = getenv("PDO_DBG_GROUPS") != NULL;
     const char *e = getenv("PDO_CAPTURE_INTERP");
     static const float ts[3] = { 0.0f, 0.5f, 1.0f };
 
     if (!e || !atoi(e))
         return;
     match_frames(prev, cur);
+    dbg_groups = false;
     for (int k = 0; k < 3; k++) {
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
         char path[64];
@@ -2750,8 +2753,9 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
  * and the unblended newer frame as members came and went. A draw whose
  * partner is far beyond its own nearest is not blended either. A
  * fixed-function draw whose position on screen jumps (a teleport, a new
- * object recycling a buffer) is not blended either, and when many do, the
- * camera cut and nothing is. Unblended draws show the newer frame. */
+ * object recycling a buffer) is not blended either, and when over half of
+ * those on screen do, the camera cut and nothing is. Unblended draws show
+ * the newer frame. */
 
 typedef struct draw_key {
     uint64_t h;
@@ -2964,6 +2968,17 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * far (the end of a chain of alike segments that
                          * each moved one along). Not blended. */
                         forced[cand[k].b] = cand[k].d > best[cand[k].b] * 2.0f + 1e-3f;
+                        if (dbg_groups) {
+                            const command *c0 = &cur->cmds[ck[j + cand[k].b].cmd];
+                            float sec = 3.4e38f;
+                            for (uint32_t q = 0; q < nc2; q++)
+                                if (cand[q].b == cand[k].b && q != k && cand[q].d < sec)
+                                    sec = cand[q].d;
+                            SDL_Log("grp: cmd %u kind %d na %u n %u nv %u b %u -> a %u d %g best %g second %g%s",
+                                    ck[j + cand[k].b].cmd, c0->vsh ? 1 : c0->fvf >= 0 ? 2 : 3, na, n, c0->id_nv,
+                                    cand[k].b, cand[k].a, cand[k].d, best[cand[k].b], sec,
+                                    forced[cand[k].b] ? " FORCED" : "");
+                        }
                     }
             }
             for (uint32_t k = 0; k < n; k++) {
@@ -2993,10 +3008,18 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     if ((u->layout0[2] & PDO_FVF_PRE) && draw_corners(prev, pc, a4) && draw_corners(cur, c, b4) &&
                         (SDL_fabsf(a4[0] - b4[0]) > u->rt[0] * 0.25f || SDL_fabsf(a4[1] - b4[1]) > u->rt[1] * 0.25f))
                         continue;       /* a sprite that jumped: not blended */
-                    if (!(u->layout0[2] & PDO_FVF_PRE)) {
+                    /* Jumped: only judged with the origin on screen in both
+                     * frames -- near the eye, behind it or off screen it
+                     * swings far while the object hardly moves, and judged
+                     * there it made ordinary frames look like camera cuts:
+                     * the whole frame then showed unblended, and flying
+                     * packs flashed and jittered as frames went in and out
+                     * of blending. */
+                    if (!(u->layout0[2] & PDO_FVF_PRE) && origin_ndc(pu->wvp, &x0, &y0) &&
+                        origin_ndc(u->wvp, &x1, &y1) && SDL_fabsf(x0) < 1.0f && SDL_fabsf(y0) < 1.0f &&
+                        SDL_fabsf(x1) < 1.0f && SDL_fabsf(y1) < 1.0f) {
                         fvf_pairs++;
-                        if (origin_ndc(pu->wvp, &x0, &y0) != origin_ndc(u->wvp, &x1, &y1) ||
-                            (origin_ndc(u->wvp, &x1, &y1) && (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f))) {
+                        if (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f) {
                             fvf_jumps++;
                             continue;   /* jumped: not blended */
                         }
@@ -3014,8 +3037,19 @@ static void match_frames(frame_data *prev, frame_data *cur)
         j = j2;
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
-    if (fvf_pairs >= 8 && fvf_jumps * 3 > fvf_pairs)
-        match_frames(NULL, cur);
+    {   /* A camera cut: over half of those on screen jumped. */
+        static uint32_t st_frames, st_cuts;
+        if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
+            match_frames(NULL, cur);
+            st_cuts++;
+            if (dbg_groups)
+                SDL_Log("interp: camera cut (%u of %u on screen jumped)", fvf_jumps, fvf_pairs);
+        }
+        if (++st_frames == 300) {
+            SDL_Log("interp: %u camera cuts in the last 300 frames", st_cuts);
+            st_frames = st_cuts = 0;
+        }
+    }
 }
 
 /* ── The two threads ──────────────────────────────────────────────────── */
