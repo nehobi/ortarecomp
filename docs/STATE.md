@@ -69,6 +69,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    fixed by patch 0026: the kernel's handle table was claimed without
    locking, so two threads could share a token. Still open:
    PsCreateSystemThreadEx ignores CreateSuspended (CRI's threads ask).
+6. Title red bars: a shadow map's memory reused for a colour texture was
+   still taken as the depth target (fix b86af73, to confirm). Unbound
+   stages read opaque black (xemu), untested beyond that.
 
 ## Performance
 
@@ -99,11 +102,23 @@ Linux only: win32_compat's WaitForMultipleObjects polls with sleeps
 (three stream workers at ~58 ms/s each); matters for Android.
 Threads: the game runs on its own thread; the main thread owns the
 window and draws (renderer.c, frame_data pool; the game never waits on
-drawing). Above 60: "Frame interp" (F1, ini frame_interp, off by
-default) draws frames between the last two game frames at the display
-rate, one game frame behind; draws are matched by what they draw from
-(match_frames) and blend vertices, matrices, program constants.
-PDO_CAPTURE_INTERP=1 saves t 0/0.5/1 at the capture frame. PDO_BENCHMARK=1
+drawing). All game threads share one recording frame (rec_F): kept per
+thread, a second game thread recorded into a slot already drawn and its
+texture uploads were lost (black dragon, rainbow sky; fixed, confirmed).
+Above 60: "Frame interp" (F1, ini frame_interp) draws between the last two
+game frames, one behind. match_frames pairs draws by the vertex data they
+draw from (alike copies nearest first), then a lone 3D draw whose data
+moved (alternating buffers: the dragon). Not blended: jumps on screen,
+draws rebuilt in another order (glide wing reticle), all on a camera cut
+(over half on screen jumped). Blend t is chosen after the window's image
+is acquired; frames are stamped with their Swap's vblank. Blending holds
+off 5 s when the screen is under 1.5x the game rate or frames are
+skipped (`main:` log line). Keying without the data address paired wrong
+copies (menus, reticle, packs): reverted. Player: packs fine now; the GPU
+limits 4x (~85 fps in play). Debug: PDO_INTERP_TINT (3D only),
+PDO_CAPTURE_INTERP (+PDO_CAPTURE_SEQ=n, PDO_DBG_GROUPS),
+PDO_CAPTURE_TEXCHECK (GPU textures vs guest memory), PDO_TEX_ALWAYS,
+PDO_TEX_LEVEL0. Glide wing: script `13000:y:8,13100:y:8`. PDO_BENCHMARK=1
 runs the game unpaced (measuring only). Player's PC, benchmark at 2x:
 ~190 fps in play (game thread bound); at 4x+4xAA the GPU caps ~60-80.
 Goal: headroom on lesser PCs; phones later (Vulkan/Turnip). For that:
