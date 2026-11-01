@@ -3383,7 +3383,16 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
             swap_wait_ns += SDL_GetTicksNS() - t0;
             main_wait_ns += SDL_GetTicksNS() - t0;
         }
-        d = (double)(SDL_GetTicksNS() - f->stamp) / frame_interval;
+        {
+            /* Over the gap between these two frames: stamped on the vblanks
+             * their Swaps waited for, a frame that took the game two
+             * vblanks (busy scenes) spans two -- over the usual one the
+             * blend ran to its end early, stopped, and jumped. */
+            double gap = prev ? (double)(f->stamp - prev->stamp) : 0;
+            if (!(gap > 8e6 && gap < 70e6))
+                gap = frame_interval;
+            d = (double)(SDL_GetTicksNS() - f->stamp) / gap;
+        }
         blend = t = (float)(d < 0 ? 0 : d > 1 ? 1 : d);
     }
     {
@@ -3466,8 +3475,8 @@ void pdo_gfx_main_loop(void)
     /* Interpolation only pays when the screen gets well over the game's
      * rate: near it, game frames are skipped and the blends land unevenly
      * -- worse than showing each frame once. Checked each second; off for
-     * five seconds when the screen is under 1.5 times the game's rate or
-     * game frames were skipped, then tried again. */
+     * five seconds when the screen is under 1.5 times the game's rate,
+     * then tried again. */
     bool interp_ok = true;
     Uint64 win_start = SDL_GetTicksNS(), retry_at = 0;
     uint32_t win_games = 0, win_shown = 0, win_drops = drops_total, log_n = 0;
@@ -3482,7 +3491,10 @@ void pdo_gfx_main_loop(void)
             double secs = (double)(now - win_start) / 1e9;
             double games = win_games / secs, shown = win_shown / secs;
             uint32_t skipped = drops_total - win_drops;
-            if (want && interp_ok && games > 30 && (shown < games * 1.5 || skipped > 2)) {
+            /* Skipped game frames alone do not count: in busy scenes the
+             * game itself runs late, and holding blending off then made
+             * it worse. */
+            if (want && interp_ok && games > 30 && shown < games * 1.5) {
                 interp_ok = false;
                 retry_at = now + 5000000000ull;
                 SDL_Log("interp: off for 5 s: %.0f fps on screen for %.0f game frames, %u skipped", shown, games,
