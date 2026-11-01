@@ -1,0 +1,34 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -574,6 +574,30 @@
+     return th;
+ }
+ 
++/* A worker the title asked to create suspended (CreateSuspended): the host
++ * thread is created suspended too, and runs when the title resumes it
++ * (NtResumeThread, which resumes a thread it did not suspend on the host).
++ * Started at once, a worker could run before its creator had set up what
++ * it reads -- CRI's sound and streaming threads ask for this. */
++static HANDLE bridge_spawn_thread_as(recomp_func_t fn, uint32_t ctx1, uint32_t ctx2, uint32_t stack_top,
++                                     int suspended)
++{
++    struct bridge_thread_start *s;
++    HANDLE th;
++
++    if (!suspended)
++        return bridge_spawn_thread(fn, ctx1, ctx2, stack_top);
++    s = malloc(sizeof(*s));
++    if (!s) return NULL;
++    s->fn = fn; s->ctx1 = ctx1; s->ctx2 = ctx2; s->stack_top = stack_top;
++    s->kthread = g_spawn_kthread;
++    g_spawn_kthread = 0;
++    th = CreateThread(NULL, 0, bridge_thread_main, s, CREATE_SUSPENDED, NULL);
++    if (!th) free(s);
++    else xbox_set_game_thread(th);
++    return th;
++}
++
+ /* Two ways a title expects its first PsCreateSystemThreadEx to behave.
+  *
+  * INLINE (default): the first call IS the game starting -- run the routine
