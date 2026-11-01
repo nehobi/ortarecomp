@@ -3344,6 +3344,41 @@ static bool shot_frame(const frame_data *f)
  * are of frames as they are. */
 static double frame_interval = 1e9 / 59.94;    /* between game frames, smoothed */
 
+/* Frames in flight on the GPU, for the timing log (draw_frame_main). */
+static struct { SDL_GPUFence *fence; Uint64 submitted; } gpu_q[8];
+static int gpu_n;
+static Uint64 gpu_busy_ns, gpu_last_end, main_submit_ns;
+static uint32_t gpu_frames;
+
+/* Take finished frames off the queue (polled: their end is known to the
+ * time between polls, about a frame), then queue this one. */
+static void gpu_note(SDL_GPUFence *fence, Uint64 now)
+{
+    int k = 0;
+    for (int i = 0; i < gpu_n; i++) {
+        if (SDL_QueryGPUFence(dev, gpu_q[i].fence)) {
+            Uint64 start = gpu_q[i].submitted > gpu_last_end ? gpu_q[i].submitted : gpu_last_end;
+            gpu_busy_ns += now > start ? now - start : 0;
+            gpu_last_end = now;
+            gpu_frames++;
+            SDL_ReleaseGPUFence(dev, gpu_q[i].fence);
+        } else {
+            gpu_q[k++] = gpu_q[i];
+        }
+    }
+    gpu_n = k;
+    if (!fence)
+        return;
+    if (gpu_n == 8) {
+        SDL_ReleaseGPUFence(dev, gpu_q[0].fence);
+        memmove(gpu_q, gpu_q + 1, 7 * sizeof *gpu_q);
+        gpu_n = 7;
+    }
+    gpu_q[gpu_n].fence = fence;
+    gpu_q[gpu_n].submitted = now;
+    gpu_n++;
+}
+
 /* t < 0: interpolating, work t out once the window's image is in hand. */
 static void draw_frame_main(frame_data *f, frame_data *prev, float t)
 {
@@ -3408,8 +3443,17 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
         save_screenshot(&cmd, ".", "capture");
         SDL_Log("capture: saved capture_%05llu.bmp", (unsigned long long)f->frame);
     }
-    if (cmd)
-        SDL_SubmitGPUCommandBuffer(cmd);
+    if (cmd) {
+        /* Timing: how long submitting blocks, and when the GPU finishes
+         * each frame (its fence, looked at on later frames): a frame's GPU
+         * time is from its submit, or from the previous frame's end if
+         * that was later. */
+        Uint64 s0 = SDL_GetTicksNS();
+        SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        Uint64 s1 = SDL_GetTicksNS();
+        main_submit_ns += s1 - s0;
+        gpu_note(fence, s1);
+    }
     pdo_overlay_frame();
 }
 
@@ -3504,9 +3548,12 @@ void pdo_gfx_main_loop(void)
             }
             if (++log_n % 5 == 0)
                 SDL_Log("main: %.0f fps on screen, %.0f game frames; per second %.0f ms recording, %.0f ms waiting "
-                        "for the window; blending %s", shown, games, main_record_ns / 1e6 / secs,
-                        main_wait_ns / 1e6 / secs, !want ? "off" : interp_ok ? "on" : "held off");
-            main_record_ns = main_wait_ns = 0;
+                        "for the window, %.0f ms submitting; GPU about %.1f ms a frame; blending %s", shown, games,
+                        main_record_ns / 1e6 / secs, main_wait_ns / 1e6 / secs, main_submit_ns / 1e6 / secs,
+                        gpu_frames ? gpu_busy_ns / 1e6 / gpu_frames : 0.0,
+                        !want ? "off" : interp_ok ? "on" : "held off");
+            main_record_ns = main_wait_ns = main_submit_ns = gpu_busy_ns = 0;
+            gpu_frames = 0;
             win_start = now;
             win_games = win_shown = 0;
             win_drops = drops_total;
