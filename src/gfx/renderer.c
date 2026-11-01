@@ -122,6 +122,7 @@ typedef struct command {
     bool has_mvel;
     float mvel[32];
     uint32_t pair_prev;     /* the paired draw in the frame before (match_frames) */
+    bool strayed;           /* its vertices strayed over a fifth of its size from its partner's */
 } command;
 
 /* ── Threads ──────────────────────────────────────────────────────────────
@@ -3011,21 +3012,21 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
     return d;
 }
 
-/* Whether a draw's vertices moved together since the frame before: none
- * strayed from their average move (a draw carried along whole blends
- * well) by over half of the draw's own size. The ring of arcs round the
+/* How far a draw's vertices strayed from their average move since the
+ * frame before (a draw carried along whole blends well), as a share of
+ * the draw's own size (0: together). The ring of arcs round the
  * glide wing's reticle is one draw rebuilt each frame in another order --
  * a vertex moved 7.6 in a draw 9.8 across -- and blended vertex by vertex
  * its arcs scattered over the screen. Positions: the first three floats
  * of each vertex, stride apart; ncur, nprev: bytes there to read. */
-static bool coherent(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
+static float stray(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
                      uint32_t nprev)
 {
     float lo[3] = { 3e38f, 3e38f, 3e38f }, hi[3] = { -3e38f, -3e38f, -3e38f }, dmax = 0.0f, size = 0.0f;
     float mean[3] = { 0.0f, 0.0f, 0.0f };
 
     if (!nv || !stride || (uint64_t)(nv - 1) * stride + 12 > ncur || (uint64_t)(nv - 1) * stride + 12 > nprev)
-        return true;
+        return 0.0f;
     for (int pass = 0; pass < 2; pass++)
         for (uint32_t v = 0; v < nv; v++) {
             float p1[3], p0[3], d = 0.0f;
@@ -3045,10 +3046,7 @@ static bool coherent(const uint8_t *cur, const uint8_t *prev, uint32_t stride, u
         }
     for (int k = 0; k < 3; k++)
         size += hi[k] - lo[k];
-    /* Half the draw's size: the reticle strayed 78%; at a fifth, animated
-     * parts (a dragon's flapping wings) went in and out of blending from
-     * frame to frame and flickered. */
-    return !(dmax > size * 0.5f && dmax > 1e-3f);     /* NaN: coherent, as before */
+    return dmax > 1e-3f && size > 0.0f ? dmax / size : 0.0f;  /* NaN: 0, coherent as before */
 }
 
 typedef struct pair_cand {
@@ -3081,6 +3079,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         c->prev_vbase = -1;
         c->unpaired = true;
         c->has_mvel = false;
+        c->strayed = false;
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
@@ -3227,10 +3226,18 @@ static void match_frames(frame_data *prev, frame_data *cur)
                             continue;   /* jumped: not blended */
                         }
                     }
-                    if (!coherent(cur->blob + u->layout0[0], prev->blob + pu->layout0[0], (uint32_t)u->layout0[1],
-                                  c->id_nv, cur->nblob - (uint32_t)u->layout0[0],
-                                  prev->nblob - (uint32_t)pu->layout0[0]))
-                    {
+                    /* How far its vertices strayed from their common move, in
+                     * the draw's size: over half, rebuilt in another order
+                     * (the reticle, 78%); over a fifth twice running, too --
+                     * a scramble lasts (reticle, packs), while animated
+                     * parts (an episode 5 dragon's wings) only now and then
+                     * pass a fifth, and left unblended for that one frame
+                     * they flickered. */
+                    float sv = stray(cur->blob + u->layout0[0], prev->blob + pu->layout0[0], (uint32_t)u->layout0[1],
+                                     c->id_nv, cur->nblob - (uint32_t)u->layout0[0],
+                                     prev->nblob - (uint32_t)pu->layout0[0]);
+                    c->strayed = sv > 0.2f;
+                    if (sv > 0.5f || (c->strayed && pc->strayed)) {
                         st_rebuilt++;
                         if (dbg_groups)
                             SDL_Log("rebuilt: cmd %u nv %u tex %08x", ck[j + k].cmd, c->id_nv,
