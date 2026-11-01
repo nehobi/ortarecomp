@@ -2820,12 +2820,21 @@ static bool blendable(const command *c)
     return c->kind == CMD_DRAW && c->id_src;
 }
 
-/* any_src: only the draws skip[] does not mark, keyed without their data. */
+/* A 3D draw: by a vertex program, or fixed-function not pretransformed --
+ * not one placed on the screen by its vertices (HUD, menus, CPU-made). */
+static bool is_3d(const frame_data *f, const command *c)
+{
+    return c->vsh || (c->fvf >= 0 && !(f->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE));
+}
+
+/* any_src: only the 3D draws skip[] does not mark, keyed without their
+ * data. Screen-space ones stay out: menu words drawn alike (EASY, NORMAL,
+ * HARD) each looked like the lone partner of another and jittered. */
 static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, bool any_src, const uint8_t *skip)
 {
     uint32_t n = 0;
     for (uint32_t i = 0; i < f->ncmds; i++)
-        if (blendable(&f->cmds[i]) && !(any_src && skip[i])) {
+        if (blendable(&f->cmds[i]) && !(any_src && (skip[i] || !is_3d(f, &f->cmds[i])))) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
             (*keys)[n].h = key_of(f, &f->cmds[i], any_src);
             (*keys)[n].cmd = i;
