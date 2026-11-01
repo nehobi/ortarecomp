@@ -1,0 +1,46 @@
+diff --git a/src/kernel/kernel_rtl.c b/src/kernel/kernel_rtl.c
+index 9760735..adc197b 100644
+--- a/src/kernel/kernel_rtl.c
++++ b/src/kernel/kernel_rtl.c
+@@ -470,11 +470,41 @@ static void xbox_cs_clear_owner(CRITICAL_SECTION* cs)
+     }
+ }
+ 
++int xbox_thread_suspend_pending(void);   /* kernel_thread.c */
++
++static void enter_cs(PRTL_CRITICAL_SECTION CriticalSection, CRITICAL_SECTION* cs);
++
++/* A thread the guest suspended while it waited here must not take the lock
++ * meanwhile: on the console it is not scheduled, so it does not own the
++ * section until it is resumed and runs. Under the guest CPU lock the
++ * suspension only holds it back when it comes to run guest code again, by
++ * which time the host section was its own -- and the threads waiting on
++ * that section, the one the suspender was waiting for among them, waited
++ * for good (Panzer Dragoon Orta: a CRI worker, at a new game). Taken for the
++ * first time while suspended, the section is given back until resumed. */
+ VOID __stdcall xbox_RtlEnterCriticalSection(PRTL_CRITICAL_SECTION CriticalSection)
+ {
+     CRITICAL_SECTION* cs = xbox_cs_shadow(CriticalSection);
+     if (!cs)
+         return;
++    for (;;) {
++        enter_cs(CriticalSection, cs);
++#ifdef _WIN32
++        if (cs->RecursionCount == 1 && xbox_thread_suspend_pending()) {
++            InterlockedIncrement(&g_cs_leaves);
++            xbox_cs_clear_owner(cs);
++            LeaveCriticalSection(cs);
++            while (xbox_thread_suspend_pending())
++                Sleep(1);
++            continue;
++        }
++#endif
++        return;
++    }
++}
++
++static void enter_cs(PRTL_CRITICAL_SECTION CriticalSection, CRITICAL_SECTION* cs)
++{
+     InterlockedIncrement(&g_cs_enters);
+     crt_lock_trace("take", CriticalSection);
+     if (TryEnterCriticalSection(cs)) {
