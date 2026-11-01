@@ -72,8 +72,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    later in the stream destructor (0x0029FB40: SetEvent on the worker's
    stop event, ResumeThread, wait): the worker never woke. Likely cause,
    fixed by patch 0026: the kernel's handle table was claimed without
-   locking, so two threads could share a token. Still open:
-   PsCreateSystemThreadEx ignores CreateSuspended (CRI's threads ask).
+   locking, so two threads could share a token. Workers asked for
+   suspended are now created suspended (0021, 0029; CRI's 8 workers).
 6. Title red bars: a shadow map's memory reused for a colour texture was
    still taken as the depth target (b86af73; not seen since). Unbound
    stages read white (menu highlights need it; black turned them black).
