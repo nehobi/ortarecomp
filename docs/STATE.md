@@ -57,7 +57,11 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    episode 1 canyon on Windows. 3D voices send at their SetI3DL2Source
    room level; the game picks a room per scene (0x00012930 with entries
    1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
-   in open stages. Not done: source HF levels, obstruction/occlusion.
+   in open stages. Episode 1 trace: the game leaves source HF levels,
+   obstruction and occlusion at no effect and uses no envelopes, LFOs or
+   filters. It does turn HRTF on (Sensaura, via DirectSound): for phones
+   with headphones later, as "3D audio: Off / Headphones" -- first see
+   whether the XBE's own HRTF tables are usable at run time.
 5. Hang skipping the cutscenes after episode 1 (Start): fix to confirm.
    The wait tracer caught it: the main thread, stopping a worker
    (0x00225B80, worker routine 0x002266B0), asked "am I that worker?" and
