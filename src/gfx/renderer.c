@@ -116,6 +116,12 @@ typedef struct command {
     uint32_t vbase;
     int32_t prev_vbase;
     bool unpaired;
+    /* Fixed-function: how its matrices (wvp, then world) moved since its
+     * partner in the frame before (has_mvel), to guess where it is next
+     * (draw_distance). */
+    bool has_mvel;
+    float mvel[32];
+    uint32_t pair_prev;     /* the paired draw in the frame before (match_frames) */
 } command;
 
 /* ── Threads ──────────────────────────────────────────────────────────────
@@ -2976,10 +2982,25 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
         for (int i = 0; i < 192 * 4; i++)
             d += SDL_fabsf(a[i] - b[i]);
     } else {
+        /* From where it was, or from where it was going (moved on by how it
+         * moved the frame before), whichever is nearer: in a pack flying in
+         * formation a fighter moves about as far in a frame as the gap to
+         * the next, and nearest from where it was paired fighters with
+         * their neighbours now and then -- they warped between each
+         * other's places. Something that stopped is still found where it
+         * was. */
         const float *a = pf->fvf_us[pc->fvf].wvp, *b = cf->fvf_us[c->fvf].wvp;
         const float *aw = pf->fvf_us[pc->fvf].world, *bw = cf->fvf_us[c->fvf].world;
+        float ds = 0.0f, dp = 0.0f;
         for (int i = 0; i < 16; i++)
-            d += SDL_fabsf(a[i] - b[i]) + SDL_fabsf(aw[i] - bw[i]);
+            ds += SDL_fabsf(a[i] - b[i]) + SDL_fabsf(aw[i] - bw[i]);
+        if (pc->has_mvel) {
+            for (int i = 0; i < 16; i++)
+                dp += SDL_fabsf(a[i] + pc->mvel[i] - b[i]) + SDL_fabsf(aw[i] + pc->mvel[16 + i] - bw[i]);
+            if (dp < ds)
+                ds = dp;
+        }
+        d += ds;
     }
     return d;
 }
@@ -3033,6 +3054,9 @@ static int cmp_cand(const void *x, const void *y)
 }
 
 /* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
+static uint32_t st_close;   /* alike draws paired with a runner-up near as good (log) */
+static uint32_t st_swapped; /* pairs undone: another draw was far nearer (log) */
+
 static void match_frames(frame_data *prev, frame_data *cur)
 {
     static draw_key *pk, *ck;
@@ -3046,6 +3070,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
             continue;
         c->prev_vbase = -1;
         c->unpaired = true;
+        c->has_mvel = false;
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
@@ -3108,12 +3133,16 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         cand[nc2].b = (uint16_t)b;
                         nc2++;
                     }
-                float best[256];
+                float best[256], second[256];
                 for (uint32_t b = 0; b < n; b++)
-                    best[b] = 3.4e38f;
+                    best[b] = second[b] = 3.4e38f;
                 for (uint32_t k = 0; k < nc2; k++)
-                    if (cand[k].d < best[cand[k].b])
+                    if (cand[k].d < best[cand[k].b]) {
+                        second[cand[k].b] = best[cand[k].b];
                         best[cand[k].b] = cand[k].d;
+                    } else if (cand[k].d < second[cand[k].b]) {
+                        second[cand[k].b] = cand[k].d;
+                    }
                 qsort(cand, nc2, sizeof *cand, cmp_cand);
                 for (uint32_t k = 0; k < nc2; k++)
                     if (!used_a[cand[k].a] && !used_b[cand[k].b]) {
@@ -3123,6 +3152,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * far (the end of a chain of alike segments that
                          * each moved one along). Not blended. */
                         forced[cand[k].b] = cand[k].d > best[cand[k].b] * 2.0f + 1e-3f;
+                        /* A close call (the log): the runner-up within 25%,
+                         * and not the same (a draw made twice in one place). */
+                        if (cand[k].d > 1e-2f && second[cand[k].b] < cand[k].d * 1.25f &&
+                            second[cand[k].b] > cand[k].d * 1.02f)
+                            st_close++;
                         if (dbg_groups) {
                             const command *c0 = &cur->cmds[ck[j + cand[k].b].cmd];
                             float sec = 3.4e38f;
@@ -3146,6 +3180,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->prev_vbase = (int32_t)pc->vbase;
                     c->unpaired = false;
                     taken[pk[i + order[k]].cmd] = 1;
+                    c->pair_prev = pk[i + order[k]].cmd;
                 } else if (c->vsh && pc->vsh) {
                     bool same_in = true;
                     for (int r = 0; r < 16; r++) {
@@ -3158,6 +3193,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->vu.interp[1] = same_in;
                     c->unpaired = false;
                     taken[pk[i + order[k]].cmd] = 1;
+                    c->pair_prev = pk[i + order[k]].cmd;
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
                     pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
                     const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
@@ -3188,7 +3224,13 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
                     c->unpaired = false;
+                    for (int m = 0; m < 16; m++) {
+                        c->mvel[m] = u->wvp[m] - pu->wvp[m];
+                        c->mvel[16 + m] = u->world[m] - pu->world[m];
+                    }
+                    c->has_mvel = true;
                     taken[pk[i + order[k]].cmd] = 1;
+                    c->pair_prev = pk[i + order[k]].cmd;
                     memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
                     memcpy(u->prev_wv, pu->wv, sizeof u->prev_wv);
                     memcpy(u->prev_world, pu->world, sizeof u->prev_world);
@@ -3198,6 +3240,59 @@ static void match_frames(frame_data *prev, frame_data *cur)
         i = i2;
         j = j2;
     }
+    }
+    /* A check on every 3D pair, data aside: paired by the address of its
+     * vertex data, a draw is taken on trust when it alone has that address
+     * in both frames -- but the game hands out vertex buffers from a pool,
+     * and a fighter in a pack could be drawn from the buffer another used
+     * the frame before: blended toward that one, the pack warped between
+     * each other's places (episode 1). Among the alike draws of the frame
+     * before (data aside), one under half as far as the partner means the
+     * pair is wrong: not blended. */
+    {
+        static draw_key *lk;
+        static uint32_t cap_lk;
+        uint32_t nl;
+        memset(taken, 0, prev->ncmds);      /* keys_of's skip: none */
+        nl = keys_of(prev, &lk, &cap_lk, true, taken);
+        for (uint32_t k = 0; k < cur->ncmds; k++) {
+            command *c = &cur->cmds[k];
+            uint64_t h;
+            uint32_t lo = 0, hi = nl, e;
+            float dc, dmin = 3.4e38f;
+            if (c->kind != CMD_DRAW || c->unpaired || !is_3d(cur, c))
+                continue;
+            h = key_of(cur, c, true);
+            while (lo < hi) {               /* the first key >= h */
+                uint32_t m = (lo + hi) / 2;
+                if (lk[m].h < h) lo = m + 1; else hi = m;
+            }
+            for (e = lo; e < nl && lk[e].h == h; e++)
+                ;
+            if (e - lo < 2 || e - lo > 64)
+                continue;                   /* alone, or too many to look at */
+            dc = draw_distance(prev, &prev->cmds[c->pair_prev], cur, c);
+            for (uint32_t m = lo; m < e; m++)
+                if (lk[m].cmd != c->pair_prev) {
+                    float d = draw_distance(prev, &prev->cmds[lk[m].cmd], cur, c);
+                    if (d < dmin)
+                        dmin = d;
+                }
+            if (dmin * 2.0f < dc) {
+                c->unpaired = true;
+                c->prev_vbase = -1;
+                if (c->vsh) {
+                    c->vu.interp[0] = -1;
+                    c->vu.interp[1] = 0;
+                }
+                if (c->fvf >= 0) {
+                    cur->fvf_us[c->fvf].interp[0] = -1;
+                    cur->fvf_us[c->fvf].interp[1] = 0;
+                }
+                c->has_mvel = false;
+                st_swapped++;
+            }
+        }
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
@@ -3209,8 +3304,9 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 SDL_Log("interp: camera cut (%u of %u on screen jumped)", fvf_jumps, fvf_pairs);
         }
         if (++st_frames == 300) {
-            SDL_Log("interp: %u camera cuts in the last 300 frames", st_cuts);
-            st_frames = st_cuts = 0;
+            SDL_Log("interp: %u camera cuts in the last 300 frames; %.1f close calls, %.1f wrong pairs undone a frame",
+                    st_cuts, st_close / 300.0, st_swapped / 300.0);
+            st_frames = st_cuts = st_close = st_swapped = 0;
         }
     }
 }
