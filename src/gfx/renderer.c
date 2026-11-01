@@ -1052,24 +1052,34 @@ static rtarget *target_for_surface_as(const pdo_surface *s, bool depth_only)
  * the same way as they are made (target_for_surface_as, target_of): which
  * textures are targets has to be known at Swap, on the game thread, while
  * the targets themselves are made on the main thread as it replays. */
-static struct { uint32_t data, w, h; } tkeys[MAX_TARGETS];
+static struct { uint32_t data, w, h; bool depth_only; } tkeys[MAX_TARGETS];
 static int ntkeys;
 
-static bool target_known(uint32_t data, uint32_t w, uint32_t h)
+static int target_index(uint32_t data, uint32_t w, uint32_t h)
 {
     for (int i = 0; i < ntkeys; i++)
         if (tkeys[i].data == phys(data) && tkeys[i].w == w && tkeys[i].h == h)
-            return true;
-    return false;
+            return i;
+    return -1;
 }
 
-static void note_target(const pdo_surface *s)
+static bool target_known(uint32_t data, uint32_t w, uint32_t h)
+{
+    return target_index(data, w, h) >= 0;
+}
+
+static void note_target(const pdo_surface *s, bool depth_only)
 {
     int w, h, i;
 
     pdo_gfx_surface_size(s, &w, &h);
-    if (!s->data || w <= 0 || h <= 0 || w > 4096 || h > 4096 || target_known(s->data, (uint32_t)w, (uint32_t)h))
+    if (!s->data || w <= 0 || h <= 0 || w > 4096 || h > 4096)
         return;
+    i = target_index(s->data, (uint32_t)w, (uint32_t)h);
+    if (i >= 0) {
+        tkeys[i].depth_only = depth_only;       /* drawn now with colour, or not */
+        return;
+    }
     for (i = 0; i < ntkeys; i++)        /* same memory, other size: the old one is gone */
         if (tkeys[i].data == phys(s->data)) {
             tkeys[i] = tkeys[--ntkeys];
@@ -1080,6 +1090,7 @@ static void note_target(const pdo_surface *s)
     tkeys[ntkeys].data = phys(s->data);
     tkeys[ntkeys].w = (uint32_t)w;
     tkeys[ntkeys].h = (uint32_t)h;
+    tkeys[ntkeys].depth_only = depth_only;
     ntkeys++;
 }
 
@@ -1088,14 +1099,14 @@ static void note_target_of(const pdo_surface *s, const pdo_surface *z)
     pdo_surface scratch;
 
     if (s->data) {
-        note_target(s);
+        note_target(s, false);
         return;
     }
     if (!s->format_word)
         return;
     scratch = *s;
     scratch.data = z && z->data ? z->data : NO_COLOUR_DATA;
-    note_target(&scratch);
+    note_target(&scratch, true);
 }
 
 static pdo_surface cur_depth_surface;
@@ -1130,7 +1141,7 @@ void pdo_gfx_copy_rect(const pdo_surface *src, const pdo_surface *dst,
     c->rect[0] = x; c->rect[1] = y; c->rect[2] = w; c->rect[3] = h;
     c->rect[4] = dx; c->rect[5] = dy;
     if (dst->data)
-        note_target(dst);
+        note_target(dst, false);
 }
 
 typedef struct pending_upload {
@@ -1173,7 +1184,13 @@ static tex_slot texture_for(const pdo_tex_ref *t)
     pdo_xtex_describe(t->format_word, t->size_word, &info);
     if (!info.width || !info.height || info.width > 4096 || info.height > 4096)
         return slot;
-    if (target_known(t->data, info.width, info.height)) {
+    /* A depth-only target (a shadow map) sampled as a colour texture: the
+     * game has put a texture in that memory since -- the title screen's
+     * menu bands sit where a shadow map was, and drew as solid red, the
+     * shadow map's depth read as colour. The texture is in memory. */
+    if (target_known(t->data, info.width, info.height) &&
+        !(tkeys[target_index(t->data, info.width, info.height)].depth_only &&
+          !(info.format >= 0x2A && info.format <= 0x31))) {
         slot.tex = NULL;
         slot.target_data = t->data;
         slot.target_w = info.width;
