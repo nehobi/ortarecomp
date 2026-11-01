@@ -199,6 +199,7 @@ static SDL_Mutex *q_lock;
 static SDL_Condition *q_cond;
 static frame_data *ready;           /* handed over, not drawn yet */
 static uint32_t frames_dropped;     /* replaced before they were drawn */
+static uint32_t drops_total;        /* the same, never reset (main loop's check) */
 static uint32_t frames_drawn;       /* by the main thread */
 
 void pdo_gfx_take_frame_counts(uint32_t *drawn, uint32_t *dropped)
@@ -612,6 +613,7 @@ void pdo_gfx_take_pass_counts(uint32_t out[4])
 }
 
 static Uint64 swap_wait_ns;              /* waiting for a swapchain image, for the timing log */
+static Uint64 main_wait_ns, main_record_ns;    /* the same, and recording frames: the main loop's log */
 
 uint64_t pdo_gfx_take_swap_wait_ns(void)
 {
@@ -2729,6 +2731,7 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
             pre_swap = NULL;
         }
         swap_wait_ns += SDL_GetTicksNS() - t0;
+        main_wait_ns += SDL_GetTicksNS() - t0;
         if (!ok || !swap)
             return;
     }
@@ -3185,6 +3188,7 @@ static void hand_over(void)
          * texture uploads (this frame skipped a texture the dropped one
          * uploaded, and would draw it never filled), programs and gamma. */
         frames_dropped++;
+        drops_total++;
         for (int i = 0; i < F->nups; i++)
             F->ups[i].t->staged_in = F->frame;
         for (int i = 0; i < ready->nups; i++) {
@@ -3299,12 +3303,17 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
             if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &pre_swap, &pre_sw, &pre_sh))
                 pre_swap = NULL;
             swap_wait_ns += SDL_GetTicksNS() - t0;
+            main_wait_ns += SDL_GetTicksNS() - t0;
         }
         d = (double)(SDL_GetTicksNS() - f->stamp) / frame_interval;
         blend = t = (float)(d < 0 ? 0 : d > 1 ? 1 : d);
     }
-    replay(cmd);
-    present_pass(cmd);
+    {
+        Uint64 r0 = SDL_GetTicksNS();
+        replay(cmd);
+        present_pass(cmd);
+        main_record_ns += SDL_GetTicksNS() - r0;
+    }
     present_to_window(cmd);
     if (shot)
         save_screenshot(&cmd, shot_dir, "frame");
@@ -3376,9 +3385,42 @@ void pdo_gfx_main_loop(void)
 
     interp_tint = getenv("PDO_INTERP_TINT") && atoi(getenv("PDO_INTERP_TINT"));
 
+    /* Interpolation only pays when the screen gets well over the game's
+     * rate: near it, game frames are skipped and the blends land unevenly
+     * -- worse than showing each frame once. Checked each second; off for
+     * five seconds when the screen is under 1.5 times the game's rate or
+     * game frames were skipped, then tried again. */
+    bool interp_ok = true;
+    Uint64 win_start = SDL_GetTicksNS(), retry_at = 0;
+    uint32_t win_games = 0, win_shown = 0, win_drops = drops_total, log_n = 0;
+
     for (;;) {
         frame_data *f;
-        bool interp = pdo_settings_get()->frame_interp && !getenv("PDO_BENCHMARK");
+        bool want = pdo_settings_get()->frame_interp && !getenv("PDO_BENCHMARK");
+        bool interp = want && interp_ok;
+        Uint64 now = SDL_GetTicksNS();
+
+        if (now - win_start >= 1000000000ull) {
+            double secs = (double)(now - win_start) / 1e9;
+            double games = win_games / secs, shown = win_shown / secs;
+            uint32_t skipped = drops_total - win_drops;
+            if (want && interp_ok && games > 30 && (shown < games * 1.5 || skipped > 2)) {
+                interp_ok = false;
+                retry_at = now + 5000000000ull;
+                SDL_Log("interp: off for 5 s: %.0f fps on screen for %.0f game frames, %u skipped", shown, games,
+                        skipped);
+            } else if (!interp_ok && now >= retry_at) {
+                interp_ok = true;
+            }
+            if (++log_n % 5 == 0)
+                SDL_Log("main: %.0f fps on screen, %.0f game frames; per second %.0f ms recording, %.0f ms waiting "
+                        "for the window; blending %s", shown, games, main_record_ns / 1e6 / secs,
+                        main_wait_ns / 1e6 / secs, !want ? "off" : interp_ok ? "on" : "held off");
+            main_record_ns = main_wait_ns = 0;
+            win_start = now;
+            win_games = win_shown = 0;
+            win_drops = drops_total;
+        }
 
         if (dev && !pdo_gfx_pump_events()) {
             SDL_Log("d3d: window closed");
@@ -3403,6 +3445,7 @@ void pdo_gfx_main_loop(void)
         }
         f = ready;
         ready = NULL;
+        win_games += f != NULL;
         if (f) {
             held_prev = cur;
             held_cur = f;
@@ -3423,6 +3466,7 @@ void pdo_gfx_main_loop(void)
             /* Captures and screenshots are of the frame as it is. */
             if (!interp || !prev || shot_frame(f) || f->frame == capture_frame) {
                 draw_frame(f, NULL, 1.0f);
+                win_shown++;
                 SDL_LockMutex(q_lock);
                 frames_drawn++;
                 SDL_UnlockMutex(q_lock);
@@ -3437,6 +3481,7 @@ void pdo_gfx_main_loop(void)
              * before; as the next is due, the newest (t worked out in
              * draw_frame_main, once the window's image is in hand). */
             draw_frame(cur, prev, -1.0f);
+            win_shown++;
             SDL_LockMutex(q_lock);
             frames_drawn++;
             SDL_UnlockMutex(q_lock);
