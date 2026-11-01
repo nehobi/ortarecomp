@@ -2906,7 +2906,12 @@ static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, boo
     for (uint32_t i = 0; i < f->ncmds; i++)
         if (blendable(&f->cmds[i]) && !(any_src && (skip[i] || !is_3d(f, &f->cmds[i])))) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
-            (*keys)[n].h = key_of(f, &f->cmds[i], any_src);
+            /* 3D draws always without their data's address: the game hands
+             * vertex buffers out from a pool, so the same buffer is not
+             * the same object (fighters in a pack warped between each
+             * other's places); they pair by where they are. Screen-space
+             * ones (menu words drawn alike) keep it. */
+            (*keys)[n].h = key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i]));
             (*keys)[n].cmd = i;
             n++;
         }
@@ -2968,7 +2973,7 @@ static bool draw_corners(const frame_data *f, const command *c, float out[8])
  * (programs; what all objects share is equal and adds nothing). */
 static float draw_distance(const frame_data *pf, const command *pc, const frame_data *cf, const command *c)
 {
-    float d = 0.0f, a4[8], b4[8];
+    float d = pc->id_src == c->id_src ? 0.0f : 1e-3f, a4[8], b4[8];   /* the same data: only a tie-break */
 
     if (draw_corners(pf, pc, a4) && draw_corners(cf, c, b4))
         for (int i = 0; i < 8; i++)
@@ -2980,7 +2985,8 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
     if (c->vsh) {
         const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
         for (int i = 0; i < 192 * 4; i++)
-            d += SDL_fabsf(a[i] - b[i]);
+            if (SDL_fabsf(a[i]) < 1e6f && SDL_fabsf(b[i]) < 1e6f)  /* not stale, huge or NaN registers */
+                d += SDL_fabsf(a[i] - b[i]);
     } else {
         /* From where it was, or from where it was going (moved on by how it
          * moved the frame before), whichever is nearer: in a pack flying in
