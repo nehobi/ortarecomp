@@ -2500,6 +2500,26 @@ static void capture_interp_main(frame_data *prev, frame_data *cur)
     if (getenv("PDO_DBG_GROUPS"))
         for (uint32_t i = 0; i < cur->ncmds; i++) {
             const command *c = &cur->cmds[i];
+            float b4[8], pa[8];
+            if (c->kind != CMD_DRAW || c->unpaired || !draw_corners(cur, c, b4))
+                continue;
+            if (c->fvf >= 0 && !(cur->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE)) {
+                const pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
+                float x0 = u->prev_wvp[12] / u->prev_wvp[15], y0 = u->prev_wvp[13] / u->prev_wvp[15];
+                float x1 = u->wvp[12] / u->wvp[15], y1 = u->wvp[13] / u->wvp[15];
+                if (SDL_fabsf(x1 - x0) + SDL_fabsf(y1 - y0) > 0.1f)
+                    SDL_Log("moved: cmd %u kind 2 nv %u tex %08x ndc %.2f,%.2f -> %.2f,%.2f", i, c->id_nv,
+                            (unsigned)c->draw.tex[0].data, x0, y0, x1, y1);
+            } else if (!c->vsh && c->fvf < 0 && c->prev_vbase >= 0) {
+                memcpy(pa, prev->verts[c->prev_vbase].pos, 16);
+                if (SDL_fabsf(pa[0] / pa[3] - b4[0] / b4[3]) + SDL_fabsf(pa[1] / pa[3] - b4[1] / b4[3]) > 0.1f)
+                    SDL_Log("moved: cmd %u kind 3 nv %u tex %08x clip %.2f,%.2f -> %.2f,%.2f", i, c->id_nv,
+                            (unsigned)c->draw.tex[0].data, pa[0] / pa[3], pa[1] / pa[3], b4[0] / b4[3], b4[1] / b4[3]);
+            }
+        }
+    if (getenv("PDO_DBG_GROUPS"))
+        for (uint32_t i = 0; i < cur->ncmds; i++) {
+            const command *c = &cur->cmds[i];
             float a4[8];
             if (c->kind != CMD_DRAW || !c->unpaired)
                 continue;
@@ -2934,6 +2954,43 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
     return d;
 }
 
+/* Whether a draw's vertices moved together since the frame before: none
+ * strayed from their average move (a draw carried along whole blends
+ * well) by over a fifth of the draw's own size. The ring of arcs round the
+ * glide wing's reticle is one draw rebuilt each frame in another order --
+ * a vertex moved 7.6 in a draw 9.8 across -- and blended vertex by vertex
+ * its arcs scattered over the screen. Positions: the first three floats
+ * of each vertex, stride apart; ncur, nprev: bytes there to read. */
+static bool coherent(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
+                     uint32_t nprev)
+{
+    float lo[3] = { 3e38f, 3e38f, 3e38f }, hi[3] = { -3e38f, -3e38f, -3e38f }, dmax = 0.0f, size = 0.0f;
+    float mean[3] = { 0.0f, 0.0f, 0.0f };
+
+    if (!nv || !stride || (uint64_t)(nv - 1) * stride + 12 > ncur || (uint64_t)(nv - 1) * stride + 12 > nprev)
+        return true;
+    for (int pass = 0; pass < 2; pass++)
+        for (uint32_t v = 0; v < nv; v++) {
+            float p1[3], p0[3], d = 0.0f;
+            memcpy(p1, cur + (size_t)v * stride, 12);
+            memcpy(p0, prev + (size_t)v * stride, 12);
+            for (int k = 0; k < 3; k++) {
+                if (pass == 0) {
+                    lo[k] = SDL_min(lo[k], p1[k]);
+                    hi[k] = SDL_max(hi[k], p1[k]);
+                    mean[k] += (p1[k] - p0[k]) / (float)nv;
+                } else {
+                    d += SDL_fabsf(p1[k] - p0[k] - mean[k]);
+                }
+            }
+            if (d > dmax)
+                dmax = d;
+        }
+    for (int k = 0; k < 3; k++)
+        size += hi[k] - lo[k];
+    return !(dmax > size * 0.2f && dmax > 1e-3f);     /* NaN: coherent, as before */
+}
+
 typedef struct pair_cand {
     float d;
     uint16_t a, b;      /* index in the group: previous frame, this frame */
@@ -3094,6 +3151,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
                             continue;   /* jumped: not blended */
                         }
                     }
+                    if (!coherent(cur->blob + u->layout0[0], prev->blob + pu->layout0[0], (uint32_t)u->layout0[1],
+                                  c->id_nv, cur->nblob - (uint32_t)u->layout0[0],
+                                  prev->nblob - (uint32_t)pu->layout0[0]))
+                        continue;       /* rebuilt in another order: not blended */
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
                     c->unpaired = false;
