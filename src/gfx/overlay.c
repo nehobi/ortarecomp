@@ -240,8 +240,17 @@ SDL_Surface *pdo_overlay_image(bool *changed)
             return NULL;
         }
         SDL_SetRenderDrawBlendMode(painter, SDL_BLENDMODE_NONE);
-        SDL_SetRenderScale(painter, SCALE, SCALE);
         dirty = true;
+    }
+    {   /* The layer is shown with the game's frame: in its widescreen mode
+         * that is stretched to 16:9, so draw a quarter narrower to come out
+         * right (the FPS box and the menu were widened over the picture). */
+        static int wide = -1;
+        if (wide != (int)pdo_widescreen_active()) {
+            wide = pdo_widescreen_active();
+            SDL_SetRenderScale(painter, SCALE * (wide ? 0.75f : 1.0f), SCALE);
+            dirty = true;
+        }
     }
     if (!dirty)
         return image;
