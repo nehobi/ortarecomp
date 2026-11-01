@@ -287,6 +287,8 @@ void sub_002BAFC0(void)
         while (current_vblank() < last_vblank + (Uint64)swap_interval)
             wait_vblank_for(true);
         last_vblank = current_vblank();
+        if (!benchmark())
+            pdo_gfx_set_frame_time(epoch + last_vblank * vblank_ns());
     }
 
     {

@@ -2673,6 +2673,11 @@ bool pdo_gfx_pump_events(void)
 
 /* The finished frame onto the window, 4:3 or stretched, softened if asked,
  * with the overlay over it. */
+/* The window's image, taken before the frame was drawn (draw_frame_main,
+ * interpolating): present_to_window then uses it. */
+static SDL_GPUTexture *pre_swap;
+static Uint32 pre_sw, pre_sh;
+
 static void present_to_window(SDL_GPUCommandBuffer *cmd)
 {
     const pdo_settings *st = pdo_settings_get();
@@ -2716,7 +2721,13 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     }
     {   /* Blocks while the GPU still has the frames in flight: GPU-bound time. */
         Uint64 t0 = SDL_GetTicksNS();
-        bool ok = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh);
+        bool ok = pre_swap ? true : SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh);
+        if (pre_swap) {
+            swap = pre_swap;
+            sw = pre_sw;
+            sh = pre_sh;
+            pre_swap = NULL;
+        }
         swap_wait_ns += SDL_GetTicksNS() - t0;
         if (!ok || !swap)
             return;
@@ -3124,13 +3135,18 @@ static frame_data *free_frame(void)
 
 /* Game thread, at Swap: resolve the frame's textures while guest memory
  * still holds them, then hand it over and go on recording into another. */
+static uint64_t frame_time_ns;     /* pdo_gfx_set_frame_time, for the next hand_over */
+
 static void hand_over(void)
 {
     Uint64 tex_t0 = SDL_GetTicksNS();
     frame_data *next = NULL;
 
     F->frame = frames;
-    F->stamp = tex_t0;
+    /* On the vblank grid: stamped when recording ended, frames wobbled by
+     * however long the game took, and blending with them did too. */
+    F->stamp = frame_time_ns ? frame_time_ns : tex_t0;
+    frame_time_ns = 0;
     F->tex = grow(F->tex, &F->cap_tex, F->ncmds * 4 + 4, sizeof *F->tex);
     if (!F->ups)
         F->ups = SDL_malloc(MAX_UPLOADS * sizeof *F->ups);
@@ -3208,6 +3224,11 @@ static void hand_over(void)
     reset_frame(F);
 }
 
+void pdo_gfx_set_frame_time(uint64_t ns)
+{
+    frame_time_ns = ns;
+}
+
 bool pdo_gfx_present(void)
 {
     RECORDING();
@@ -3239,6 +3260,9 @@ static bool shot_frame(const frame_data *f)
 /* Main thread: draw a handed-over frame and present it; with prev, the
  * frame between prev and f at t (0 prev, 1 f). Captures and screenshots
  * are of frames as they are. */
+static double frame_interval = 1e9 / 59.94;    /* between game frames, smoothed */
+
+/* t < 0: interpolating, work t out once the window's image is in hand. */
 static void draw_frame_main(frame_data *f, frame_data *prev, float t)
 {
     SDL_GPUCommandBuffer *cmd;
@@ -3262,6 +3286,23 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
     cmd = SDL_AcquireGPUCommandBuffer(dev);
     if (!cmd)
         return;
+    if (t < 0.0f) {
+        /* Interpolating: where between the frames, worked out once the
+         * window has an image for it -- that wait (up to a refresh, two
+         * when one is missed) came after the blend was chosen, so what
+         * reached the screen was late by a different amount each time
+         * and fast movers (flying packs) jittered. */
+        double d;
+        pre_swap = NULL;
+        if (have_swapchain && screen_pipeline) {
+            Uint64 t0 = SDL_GetTicksNS();
+            if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &pre_swap, &pre_sw, &pre_sh))
+                pre_swap = NULL;
+            swap_wait_ns += SDL_GetTicksNS() - t0;
+        }
+        d = (double)(SDL_GetTicksNS() - f->stamp) / frame_interval;
+        blend = t = (float)(d < 0 ? 0 : d > 1 ? 1 : d);
+    }
     replay(cmd);
     present_pass(cmd);
     present_to_window(cmd);
@@ -3331,7 +3372,7 @@ void pdo_gfx_game_finished(void)
 void pdo_gfx_main_loop(void)
 {
     frame_data *cur = NULL, *prev = NULL;
-    double interval = 1e9 / 59.94;     /* between game frames, smoothed */
+
 
     interp_tint = getenv("PDO_INTERP_TINT") && atoi(getenv("PDO_INTERP_TINT"));
 
@@ -3372,7 +3413,7 @@ void pdo_gfx_main_loop(void)
             if (cur) {
                 double d = (double)(f->stamp - cur->stamp);
                 if (d > 8e6 && d < 50e6)
-                    interval += (d - interval) * 0.1;
+                    frame_interval += (d - frame_interval) * 0.1;
             }
             prev = cur;
             cur = f;
@@ -3393,9 +3434,9 @@ void pdo_gfx_main_loop(void)
             continue;
         {
             /* One game frame behind: as the newest arrives, show the one
-             * before; as the next is due, the newest. */
-            double t = (double)(SDL_GetTicksNS() - cur->stamp) / interval;
-            draw_frame(cur, prev, (float)(t < 0 ? 0 : t > 1 ? 1 : t));
+             * before; as the next is due, the newest (t worked out in
+             * draw_frame_main, once the window's image is in hand). */
+            draw_frame(cur, prev, -1.0f);
             SDL_LockMutex(q_lock);
             frames_drawn++;
             SDL_UnlockMutex(q_lock);
