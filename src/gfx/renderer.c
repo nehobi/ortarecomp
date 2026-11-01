@@ -3013,7 +3013,7 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
 
 /* Whether a draw's vertices moved together since the frame before: none
  * strayed from their average move (a draw carried along whole blends
- * well) by over a fifth of the draw's own size. The ring of arcs round the
+ * well) by over half of the draw's own size. The ring of arcs round the
  * glide wing's reticle is one draw rebuilt each frame in another order --
  * a vertex moved 7.6 in a draw 9.8 across -- and blended vertex by vertex
  * its arcs scattered over the screen. Positions: the first three floats
@@ -3045,7 +3045,10 @@ static bool coherent(const uint8_t *cur, const uint8_t *prev, uint32_t stride, u
         }
     for (int k = 0; k < 3; k++)
         size += hi[k] - lo[k];
-    return !(dmax > size * 0.2f && dmax > 1e-3f);     /* NaN: coherent, as before */
+    /* Half the draw's size: the reticle strayed 78%; at a fifth, animated
+     * parts (a dragon's flapping wings) went in and out of blending from
+     * frame to frame and flickered. */
+    return !(dmax > size * 0.5f && dmax > 1e-3f);     /* NaN: coherent, as before */
 }
 
 typedef struct pair_cand {
@@ -3062,6 +3065,7 @@ static int cmp_cand(const void *x, const void *y)
 /* Pair cur's draws with prev's (prev may be NULL: nothing pairs). */
 static uint32_t st_close;   /* alike draws paired with a runner-up near as good (log) */
 static uint32_t st_swapped; /* pairs undone: another draw was far nearer (log) */
+static uint32_t st_rebuilt; /* pairs not blended: vertices rebuilt in another order (log) */
 
 static void match_frames(frame_data *prev, frame_data *cur)
 {
@@ -3226,7 +3230,13 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     if (!coherent(cur->blob + u->layout0[0], prev->blob + pu->layout0[0], (uint32_t)u->layout0[1],
                                   c->id_nv, cur->nblob - (uint32_t)u->layout0[0],
                                   prev->nblob - (uint32_t)pu->layout0[0]))
+                    {
+                        st_rebuilt++;
+                        if (dbg_groups)
+                            SDL_Log("rebuilt: cmd %u nv %u tex %08x", ck[j + k].cmd, c->id_nv,
+                                    (unsigned)c->draw.tex[0].data);
                         continue;       /* rebuilt in another order: not blended */
+                    }
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
                     c->unpaired = false;
@@ -3310,9 +3320,9 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 SDL_Log("interp: camera cut (%u of %u on screen jumped)", fvf_jumps, fvf_pairs);
         }
         if (++st_frames == 300) {
-            SDL_Log("interp: %u camera cuts in the last 300 frames; %.1f close calls, %.1f wrong pairs undone a frame",
-                    st_cuts, st_close / 300.0, st_swapped / 300.0);
-            st_frames = st_cuts = st_close = st_swapped = 0;
+            SDL_Log("interp: %u camera cuts in the last 300 frames; %.1f close calls, %.1f wrong pairs undone, "
+                    "%.1f rebuilt draws a frame", st_cuts, st_close / 300.0, st_swapped / 300.0, st_rebuilt / 300.0);
+            st_frames = st_cuts = st_close = st_swapped = st_rebuilt = 0;
         }
     }
 }
