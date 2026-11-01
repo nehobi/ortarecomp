@@ -107,7 +107,7 @@ static Uint64 vblank_ns(void)
 /* Where the game thread's time goes, summed over the fps line's period:
  * draws (of which vertex programs and fixed-function vertices), the
  * renderer's frame (of which textures), and waiting for vblank. */
-enum { PERF_DRAWS, PERF_VSH, PERF_FVF, PERF_PRESENT, PERF_VBLANK, PERF_COUNT };
+enum { PERF_DRAWS, PERF_VSH, PERF_FVF, PERF_PRESENT, PERF_VBLANK, PERF_LOCK, PERF_COUNT };
 static Uint64 perf_ns[PERF_COUNT];
 
 int guest_cpu_yield_begin(void);       /* xboxrecomp, patch 0023 */
@@ -155,8 +155,14 @@ static Uint64 wait_vblank_for(bool skip)
         /* A kernel wait on the console: the other threads run meanwhile
          * (the guest CPU lock, see guest.c). */
         int held = guest_cpu_yield_begin();
+        Uint64 back;
         SDL_DelayPrecise(at - now);
+        back = SDL_GetTicksNS();
         guest_cpu_yield_end(held);
+        /* Taking the guest CPU back: another guest thread (sound,
+         * streaming) may still be running when the vblank comes, and the
+         * game waits for it -- counted apart, it was in "vblank wait". */
+        perf_ns[PERF_LOCK] += SDL_GetTicksNS() - back;
         perf_ns[PERF_VBLANK] += vblank_clock() - now;   /* same clock as now (benchmark) */
     }
     return index;
@@ -332,9 +338,11 @@ void sub_002BAFC0(void)
                 Uint64 known = perf_ns[PERF_DRAWS] + perf_ns[PERF_PRESENT] + perf_ns[PERF_VBLANK];
                 Uint64 span = now - t0;
                 SDL_Log("d3d: ms per second: draws %.0f (vertex programs %.0f, fixed-function vertices %.0f), "
-                        "renderer %.0f (textures %.0f, new pipelines %.0f, waiting for the GPU %.0f), vblank wait %.0f, the rest (game code) %.0f",
+                        "renderer %.0f (textures %.0f, new pipelines %.0f, waiting for the GPU %.0f), vblank wait %.0f "
+                        "(of it waiting for other game threads %.0f), the rest (game code) %.0f",
                         perf_ns[PERF_DRAWS] * k, perf_ns[PERF_VSH] * k, perf_ns[PERF_FVF] * k,
                         perf_ns[PERF_PRESENT] * k, tex * k, pipe * k, gpu * k, perf_ns[PERF_VBLANK] * k,
+                        perf_ns[PERF_LOCK] * k,
                         span > known ? (span - known) * k : 0.0);
                 if (made)
                     SDL_Log("d3d: %u new pipelines made in the last %.1f s", made, (double)span / 1e9);
