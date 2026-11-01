@@ -113,7 +113,8 @@ first by place (matrices or constants, motion guess for fixed-function),
 data address only a tie-break -- the game reuses vertex buffers between
 fighters (packs warped: fixed de4713b, player: looked good once, watch);
 screen-space draws pair by address (menu words). Not blended: on-screen
-jumps, draws rebuilt in another order (glide wing reticle), all on a camera
+jumps, draws whose vertices stray over half their size (glide wing
+reticle; a fifth made episode 5's dragon wings flicker), all on a camera
 cut. Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
 pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
