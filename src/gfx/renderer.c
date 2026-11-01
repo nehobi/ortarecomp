@@ -2812,7 +2812,7 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
         return;
     {
         SDL_GPUTextureSamplerBinding tsb = { output, linear };
-        float params[4] = { st->soft_filter ? 1.0f : 0.0f, 1.0f / (float)frame_h, 0, 0 };
+        float params[4] = { st->soft_filter ? 1.0f : 0.0f, 1.0f / (float)frame_h, st->fxaa && st->msaa == 1 ? 1.0f : 0.0f, 0 };
         SDL_SetGPUViewport(pass, &vp);
         SDL_BindGPUGraphicsPipeline(pass, screen_pipeline);
         SDL_BindGPUFragmentSamplers(pass, 0, &tsb, 1);

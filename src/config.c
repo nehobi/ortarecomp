@@ -11,7 +11,7 @@
 
 static char data_dir[PDO_PATH_MAX];
 
-static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false };
+static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false, false };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -102,6 +102,8 @@ bool pdo_config_load(pdo_config *cfg)
             settings.frame_interp = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "fullscreen") == 0)
             settings.fullscreen = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "fxaa") == 0)
+            settings.fxaa = SDL_atoi(eq + 1) != 0;
     }
     SDL_free(text);
     return true;
@@ -126,13 +128,14 @@ bool pdo_config_save(const pdo_config *cfg)
                  "gpu_vertex=%d\n"
                  "gpu_fixed=%d\n"
                  "frame_interp=%d\n"
-                 "fullscreen=%d\n",
+                 "fullscreen=%d\n"
+                 "fxaa=%d\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
                  settings.aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3",
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
-                 settings.gpu_fixed, settings.frame_interp, settings.fullscreen);
+                 settings.gpu_fixed, settings.frame_interp, settings.fullscreen, settings.fxaa);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
     return SDL_SaveFile(path, text, (size_t)n);

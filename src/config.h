@@ -22,6 +22,7 @@ typedef struct pdo_settings {
     bool gpu_fixed;         /* fixed-function vertices on the GPU (shaders/fvf.vert) */
     bool frame_interp;      /* frames between the game's 60, blended (renderer.c) */
     bool fullscreen;        /* borderless, the whole monitor (Alt+Enter) */
+    bool fxaa;              /* edge smoothing on the finished frame (shaders/screen.frag) */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

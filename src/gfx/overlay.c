@@ -49,14 +49,18 @@ static void set_open(bool on)
     }
 }
 
-static int next_msaa(int m, int dir)
+/* Anti-aliasing steps: off, FXAA (cheap, on the finished frame), then
+ * MSAA 2x, 4x, 8x. */
+static void next_aa(pdo_settings *s, int dir)
 {
-    static const int steps[] = { 1, 2, 4, 8 };
-    int i = 0;
-    while (i < 3 && steps[i] != m)
+    static const struct { int msaa; bool fxaa; } steps[] = { { 1, false }, { 1, true }, { 2, false }, { 4, false },
+                                                              { 8, false } };
+    int i = 0, n = (int)SDL_arraysize(steps);
+    while (i < n - 1 && !(steps[i].msaa == s->msaa && steps[i].fxaa == (s->fxaa && s->msaa == 1)))
         i++;
-    i += dir;
-    return steps[i < 0 ? 0 : i > 3 ? 3 : i];
+    i = SDL_clamp(i + dir, 0, n - 1);
+    s->msaa = steps[i].msaa;
+    s->fxaa = steps[i].fxaa;
 }
 
 /* Change the selected line by one step: dir -1 or +1. */
@@ -66,7 +70,7 @@ static void change(int dir)
 
     switch (selected) {
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
-    case ITEM_MSAA:   s->msaa = next_msaa(s->msaa, dir); break;
+    case ITEM_MSAA:   next_aa(s, dir); break;
     case ITEM_ASPECT: s->aspect = (s->aspect + PDO_ASPECT_COUNT + dir) % PDO_ASPECT_COUNT; break;
     case ITEM_FIT:    s->fit = (s->fit + PDO_FIT_COUNT + dir) % PDO_FIT_COUNT; break;
     case ITEM_SOFT:   s->soft_filter = !s->soft_filter; break;
@@ -191,7 +195,9 @@ static void draw_menu(void)
 
     snprintf(lines[ITEM_SCALE], sizeof lines[0], "%-15s%dx", "Resolution", s->render_scale);
     if (s->msaa > 1)
-        snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15s%dx", "Anti-aliasing", s->msaa);
+        snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15s%dx MSAA", "Anti-aliasing", s->msaa);
+    else if (s->fxaa)
+        snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15sFXAA", "Anti-aliasing");
     else
         snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15sOff", "Anti-aliasing");
     /* The game reads widescreen once, at start: say so until it has. */
