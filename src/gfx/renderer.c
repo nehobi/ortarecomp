@@ -79,6 +79,9 @@ static int shot_every = 1;
  * ("capture:" lines) and save it as capture_<frame>.bmp in the working
  * directory. */
 static uint64_t capture_frame = UINT64_MAX;
+/* PDO_CAPTURE_SEQ=n: PDO_CAPTURE_INTERP's pictures for n frames from the
+ * capture frame on (none of them dropped), to see motion. */
+static uint64_t capture_seq = 1;
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -1755,6 +1758,8 @@ static bool init_here(int width, int height)
             nsamples, nsamples == 1 ? "" : "s");
     warm_pipelines();
 
+    if (getenv("PDO_CAPTURE_SEQ") && atoi(getenv("PDO_CAPTURE_SEQ")) > 0)
+        capture_seq = (uint64_t)atoi(getenv("PDO_CAPTURE_SEQ"));
     if (getenv("PDO_CAPTURE"))      /* same as F12 at that frame */
         capture_frame = (uint64_t)atoll(getenv("PDO_CAPTURE"));
     SDL_DetachThread(SDL_CreateThread(watchdog, "watchdog", NULL));
@@ -3103,7 +3108,7 @@ static void hand_over(void)
      * GPU slower than the game) is dropped for this newer one. */
     while (paused)
         SDL_WaitCondition(q_cond, q_lock);
-    while (ready && ready->frame == capture_frame)
+    while (ready && ready->frame >= capture_frame && ready->frame < capture_frame + capture_seq)
         SDL_WaitConditionTimeout(q_cond, q_lock, 2);   /* a capture is never dropped */
     next = ready ? ready : free_frame();
     if (ready) {
@@ -3319,7 +3324,7 @@ void pdo_gfx_main_loop(void)
             prev = cur;
             cur = f;
             match_frames(interp ? prev : NULL, cur);
-            if (prev && f->frame == capture_frame)
+            if (prev && f->frame >= capture_frame && f->frame < capture_frame + capture_seq)
                 capture_interp(prev, cur);
             /* Captures and screenshots are of the frame as it is. */
             if (!interp || !prev || shot_frame(f) || f->frame == capture_frame) {
