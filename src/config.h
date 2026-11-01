@@ -20,6 +20,7 @@ typedef struct pdo_settings {
     bool gpu_vertex;        /* vertex programs on the GPU (shaders/vsh.vert), not the CPU */
     bool gpu_fixed;         /* fixed-function vertices on the GPU (shaders/fvf.vert) */
     bool frame_interp;      /* frames between the game's 60, blended (renderer.c) */
+    bool fullscreen;        /* borderless, the whole monitor (Alt+Enter) */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_STRETCH, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

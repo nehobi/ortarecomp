@@ -1673,7 +1673,8 @@ static bool init_here(int width, int height)
     SDL_Log("gfx: GPU driver %s", SDL_GetGPUDeviceDriver(dev));
 
     window_thread = SDL_GetCurrentThreadID();
-    window = SDL_CreateWindow(WINDOW_TITLE, width * 2, height * 2, SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow(WINDOW_TITLE, width * 2, height * 2,
+                              SDL_WINDOW_RESIZABLE | (pdo_settings_get()->fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
     if (window && SDL_ClaimWindowForGPUDevice(dev, window))
         have_swapchain = true;
     else
@@ -2688,6 +2689,15 @@ bool pdo_gfx_pump_events(void)
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F11 && !ev.key.repeat) {
             pdo_dump_threads();
             pdo_dump_guest_waits();
+        }
+        /* Alt+Enter: borderless fullscreen (the desktop's mode) or back. */
+        if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT) &&
+            !ev.key.repeat && window) {
+            pdo_settings *st = pdo_settings_get();
+            st->fullscreen = !st->fullscreen;
+            SDL_SetWindowFullscreen(window, st->fullscreen);
+            pdo_settings_save();
+            continue;
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
             capture_frame = frames + 1;

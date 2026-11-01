@@ -266,8 +266,10 @@ static void read_port(int port, pad_state *s)
         };
         int16_t lx, ly, rx, ry;
 
+        /* With Alt held, Enter is the fullscreen toggle (renderer.c), not Start. */
+        bool alt = (SDL_GetModState() & SDL_KMOD_ALT) != 0;
         for (size_t i = 0; i < SDL_arraysize(kd); i++)
-            if (k[kd[i].key])
+            if (k[kd[i].key] && !(alt && kd[i].key == SDL_SCANCODE_RETURN))
                 s->buttons |= kd[i].bit;
         for (size_t i = 0; i < SDL_arraysize(ka); i++)
             if (k[ka[i].key])
