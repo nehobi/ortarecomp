@@ -3130,6 +3130,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
     static uint8_t *taken, *grouped;    /* prev draws paired; cur draws that had alike ones */
     static uint32_t cap_pk, cap_ck, cap_taken, cap_grouped;
     uint32_t np = 0, nc, i = 0, j = 0, fvf_pairs = 0, fvf_jumps = 0;
+    /* Groups of alike 3D draws whose size changed from the frame before
+     * (the log, below): how many, and the first few as before -> now x nv. */
+    uint32_t resized = 0;
+    char resized_txt[96] = "";
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
         command *c = &cur->cmds[k];
@@ -3174,6 +3178,13 @@ static void match_frames(frame_data *prev, frame_data *cur)
             i = i2;
             j = j2;
             continue;               /* not the one such in both */
+        }
+        if (pass == 0 && i2 - i != j2 - j && is_3d(cur, &cur->cmds[ck[j].cmd])) {
+            if (resized++ < 6) {
+                size_t len = strlen(resized_txt);
+                snprintf(resized_txt + len, sizeof resized_txt - len, " %u->%ux%u", i2 - i, j2 - j,
+                         cur->cmds[ck[j].cmd].id_nv);
+            }
         }
         if (i2 - i <= 256 && j2 - j <= 256) {
             uint32_t na = i2 - i, n = j2 - j, order[256];
@@ -3375,6 +3386,25 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 st_swapped++;
             }
         }
+    }
+    /* What did not blend, when it is a lot or alike groups changed size:
+     * a one-frame freeze with a ghost of the dragon as the boost ends
+     * (episodes 2, 3) is still unexplained. At most ten lines in 300 frames. */
+    {
+        static uint32_t odd_frames, odd_logs;
+        uint32_t unp3d = 0, all3d = 0;
+        for (uint32_t k = 0; k < cur->ncmds; k++) {
+            const command *c = &cur->cmds[k];
+            if (c->kind == CMD_DRAW && blendable(c) && is_3d(cur, c)) {
+                all3d++;
+                unp3d += c->unpaired;
+            }
+        }
+        if (++odd_frames >= 300)
+            odd_frames = odd_logs = 0;
+        if ((resized >= 3 || unp3d * 4 > all3d) && odd_logs++ < 10)
+            SDL_Log("interp: frame %llu: %u of %u 3D draws not blended; %u alike groups changed size:%s",
+                    (unsigned long long)cur->frame, unp3d, all3d, resized, resized_txt);
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
