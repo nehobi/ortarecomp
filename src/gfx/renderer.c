@@ -4,6 +4,7 @@
 
 #include "audio/mixer.h"
 #include "config.h"
+#include "input_map.h"
 #include "gfx/overlay.h"
 
 #include "gfx/shaders_spv.h"
@@ -2702,6 +2703,9 @@ static void capture_steps(void)
 
 /* Handles window and key events. Only the thread that made the window may
  * (Windows sends its messages there); elsewhere this does nothing. */
+/* Escape gave the mouse back to the desktop (pdo_gfx_pump_events). */
+static bool mouse_released;
+
 bool pdo_gfx_pump_events(void)
 {
     SDL_Event ev;
@@ -2712,6 +2716,12 @@ bool pdo_gfx_pump_events(void)
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_EVENT_QUIT)
             keep_going = false;
+        if (ev.type == SDL_EVENT_MOUSE_MOTION && window && SDL_GetWindowRelativeMouseMode(window))
+            pdo_mouse_add(ev.motion.xrel, ev.motion.yrel);
+        if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE && !pdo_overlay_open())
+            mouse_released = true;      /* Escape gives the mouse back */
+        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_WINDOW_FOCUS_LOST)
+            mouse_released = false;     /* a click (or coming back) takes it again */
         /* Remember the window (saved when the game closes, see note_quit):
          * its place and size when neither fullscreen nor maximized. */
         if ((ev.type == SDL_EVENT_WINDOW_MOVED || ev.type == SDL_EVENT_WINDOW_RESIZED ||
@@ -2745,6 +2755,14 @@ bool pdo_gfx_pump_events(void)
             capture_frame = frames + 1;
             SDL_Log("capture: frame %llu", (unsigned long long)capture_frame);
         }
+    }
+    if (window) {
+        /* The game has the mouse (hidden, held in the window) for mouse
+         * aim while it is the window in front and the options are shut. */
+        bool want = pdo_settings_get()->mouse_aim && !mouse_released && !pdo_overlay_open() &&
+                    (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
+        if (want != SDL_GetWindowRelativeMouseMode(window))
+            SDL_SetWindowRelativeMouseMode(window, want);
     }
     return keep_going;
 }

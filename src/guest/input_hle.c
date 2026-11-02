@@ -22,6 +22,7 @@
 
 #include "recomp_types.h"
 #include "input_map.h"
+#include "config.h"
 
 #include "guest/guest.h"
 #include "xbox_memory_layout.h"
@@ -200,6 +201,14 @@ static void apply_script(pad_state *s)
                 if (names[j].ab >= 0)
                     s->analog[names[j].ab] = 255;
             }
+        /* The left stick, full over: lsl, lsr, lsu, lsd. */
+        if (SDL_strncmp(script[i].button, "ls", 2) == 0) {
+            char d = script[i].button[2];
+            if (d == 'l') s->thumb[0] = -32767;
+            if (d == 'r') s->thumb[0] = 32767;
+            if (d == 'u') s->thumb[1] = 32767;
+            if (d == 'd') s->thumb[1] = -32767;
+        }
     }
 }
 
@@ -268,6 +277,17 @@ static void read_port(int port, pad_state *s)
         ry = axis_from_keys(k, SDL_SCANCODE_K, SDL_SCANCODE_I);
         if (lx) s->thumb[0] = lx;
         if (ly) s->thumb[1] = ly;
+        {   /* Mouse aim: the mouse's motion this frame tilts the left stick,
+             * full over at about 15 pixels a frame at speed 100 %, so the
+             * game's own aiming (its speed, limits, camera follow) moves the
+             * reticle. A still mouse leaves the stick to the controller. */
+            float dx, dy, k = (float)pdo_settings_get()->mouse_speed / 100.0f * (32767.0f / 15.0f);
+            pdo_mouse_take(&dx, &dy);
+            if (dx != 0.0f)
+                s->thumb[0] = clamp16((int)(dx * k));
+            if (dy != 0.0f)
+                s->thumb[1] = clamp16((int)(-dy * k));
+        }
         if (rx) s->thumb[2] = rx;
         if (ry) s->thumb[3] = ry;
         apply_script(s);

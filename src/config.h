@@ -25,6 +25,8 @@ typedef struct pdo_settings {
     bool fxaa;              /* edge smoothing on the finished frame (shaders/screen.frag) */
     int  win_x, win_y, win_w, win_h;    /* the window when not fullscreen (w 0: not set yet) */
     bool win_maximized;
+    bool mouse_aim;         /* the mouse steers the left stick (input_hle.c) */
+    int  mouse_speed;       /* 10-400 % */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

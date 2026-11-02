@@ -24,7 +24,7 @@ enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITE
 
 /* The Controls page: a line per Xbox button, then these two. While a line
  * waits for its new key or controller button, capture is set. */
-enum { CTL_RESET = PDO_IN_COUNT, CTL_BACK, CTL_COUNT };
+enum { CTL_MOUSE = PDO_IN_COUNT, CTL_MSPEED, CTL_RESET, CTL_BACK, CTL_COUNT };
 static bool controls, capture;
 
 static bool open_, dirty = true, swallow;
@@ -105,7 +105,13 @@ static void move(int dir)
  * Left clears the line's key and controller input. */
 static void control_act(int a, int dir)
 {
-    if (selected == CTL_BACK || (a < 0 && dir < 0 && selected >= PDO_IN_COUNT)) {
+    pdo_settings *st = pdo_settings_get();
+
+    if (selected == CTL_MOUSE) {
+        st->mouse_aim = !st->mouse_aim;
+    } else if (selected == CTL_MSPEED) {
+        st->mouse_speed = SDL_clamp(st->mouse_speed + 10 * dir, 10, 400);
+    } else if (selected == CTL_BACK || (a < 0 && dir < 0 && selected >= PDO_IN_COUNT)) {
         controls = false;
         selected = ITEM_CONTROLS;
     } else if (selected == CTL_RESET) {
@@ -271,6 +277,10 @@ static void draw_controls(void)
                      pdo_input_pad_name(b[i].pad));
             if (i == selected && capture)
                 snprintf(line, sizeof line, "%-10s press a key or button", pdo_input_button_name(i));
+        } else if (i == CTL_MOUSE) {
+            snprintf(line, sizeof line, "%-10s %s", "Mouse aim", pdo_settings_get()->mouse_aim ? "On" : "Off");
+        } else if (i == CTL_MSPEED) {
+            snprintf(line, sizeof line, "%-10s %d%%", "Mouse spd", pdo_settings_get()->mouse_speed);
         } else {
             snprintf(line, sizeof line, "%s", i == CTL_RESET ? "Reset to defaults" : "Back");
         }
@@ -286,7 +296,7 @@ static void draw_controls(void)
     }
     SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
     text(x0, y0 + h - 2, "A/Enter: rebind  Left: clear");
-    text(x0, y0 + h - 1, "B/Esc: back");
+    text(x0, y0 + h - 1, "B/Esc: back   Mouse: Esc frees it");
 }
 
 static void draw_menu(void)

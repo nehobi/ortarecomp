@@ -35,6 +35,11 @@ void pdo_input_reset(void);                     /* the defaults */
 int pdo_input_pad_level(SDL_Gamepad *g, int pad);
 const char *pdo_input_pad_name(int pad);        /* "a", "lefttrigger", "-" */
 
+/* Mouse motion while the game has the mouse (renderer.c adds it, in window
+ * pixels; input_hle.c takes it once a game frame). */
+void pdo_mouse_add(float dx, float dy);
+void pdo_mouse_take(float *dx, float *dy);
+
 /* Settings file lines (config.c): key_<button>=<key name>,
  * pad_<button>=<controller input name>. */
 bool pdo_input_load_line(const char *name, const char *value);

@@ -31,6 +31,25 @@ static const struct {
 };
 
 static pdo_binding bindings[PDO_IN_COUNT];
+static SDL_SpinLock mouse_lock;
+static float mouse_dx, mouse_dy;
+
+void pdo_mouse_add(float dx, float dy)
+{
+    SDL_LockSpinlock(&mouse_lock);
+    mouse_dx += dx;
+    mouse_dy += dy;
+    SDL_UnlockSpinlock(&mouse_lock);
+}
+
+void pdo_mouse_take(float *dx, float *dy)
+{
+    SDL_LockSpinlock(&mouse_lock);
+    *dx = mouse_dx;
+    *dy = mouse_dy;
+    mouse_dx = mouse_dy = 0.0f;
+    SDL_UnlockSpinlock(&mouse_lock);
+}
 static bool ready;
 
 pdo_binding *pdo_input_bindings(void)
