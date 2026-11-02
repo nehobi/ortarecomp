@@ -14,11 +14,18 @@
 #include "overlay.h"
 
 #include "../config.h"
+#include "../input_map.h"
 
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP,
+       ITEM_CONTROLS, ITEM_CLOSE, ITEM_COUNT };
+
+/* The Controls page: a line per Xbox button, then these two. While a line
+ * waits for its new key or controller button, capture is set. */
+enum { CTL_RESET = PDO_IN_COUNT, CTL_BACK, CTL_COUNT };
+static bool controls, capture;
 
 static bool open_, dirty = true, swallow;
 static int selected;
@@ -41,8 +48,10 @@ static void set_open(bool on)
         return;
     open_ = on;
     dirty = true;
-    if (on)
+    if (on) {
         selected = 0;
+        controls = capture = false;
+    }
     else {
         swallow = true;
         pdo_settings_save();
@@ -79,6 +88,7 @@ static void change(int dir)
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
     case ITEM_INTERP: s->frame_interp = !s->frame_interp; break;
+    case ITEM_CONTROLS: if (dir > 0) { controls = true; selected = 0; } break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     }
     dirty = true;
@@ -86,7 +96,27 @@ static void change(int dir)
 
 static void move(int dir)
 {
-    selected = (selected + ITEM_COUNT + dir) % ITEM_COUNT;
+    int n = controls ? CTL_COUNT : ITEM_COUNT;
+    selected = (selected + n + dir) % n;
+    dirty = true;
+}
+
+/* Controls page: OK on a button waits for its new key or controller input;
+ * Left clears the line's key and controller input. */
+static void control_act(int a, int dir)
+{
+    if (selected == CTL_BACK || (a < 0 && dir < 0 && selected >= PDO_IN_COUNT)) {
+        controls = false;
+        selected = ITEM_CONTROLS;
+    } else if (selected == CTL_RESET) {
+        if (dir > 0)
+            pdo_input_reset();
+    } else if (dir > 0) {
+        capture = true;
+    } else {
+        pdo_input_bindings()[selected].key = SDL_SCANCODE_UNKNOWN;
+        pdo_input_bindings()[selected].pad = -1;
+    }
     dirty = true;
 }
 
@@ -95,6 +125,16 @@ enum { ACT_NONE, ACT_UP, ACT_DOWN, ACT_LEFT, ACT_RIGHT, ACT_OK, ACT_BACK };
 
 static void act(int a)
 {
+    if (controls) {
+        switch (a) {
+        case ACT_UP:    move(-1); break;
+        case ACT_DOWN:  move(+1); break;
+        case ACT_LEFT:  control_act(-1, -1); break;
+        case ACT_RIGHT: case ACT_OK: control_act(0, +1); break;
+        case ACT_BACK:  controls = false; selected = ITEM_CONTROLS; dirty = true; break;
+        }
+        return;
+    }
     switch (a) {
     case ACT_UP:    move(-1); break;
     case ACT_DOWN:  move(+1); break;
@@ -105,8 +145,34 @@ static void act(int a)
     }
 }
 
+/* While a Controls line waits: the next key or controller input is its new
+ * binding (Escape cancels). True: the event was taken. */
+static bool capture_event(const SDL_Event *ev)
+{
+    pdo_binding *b = &pdo_input_bindings()[selected];
+
+    if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat) {
+        if (ev->key.key != SDLK_ESCAPE && ev->key.key != SDLK_F1)
+            b->key = ev->key.scancode;
+    } else if (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        b->pad = ev->gbutton.button;
+    } else if (ev->type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
+               (ev->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || ev->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+               ev->gaxis.value > 16000) {
+        b->pad = PDO_PAD_AXIS + ev->gaxis.axis;
+    } else {
+        return ev->type == SDL_EVENT_GAMEPAD_BUTTON_UP || ev->type == SDL_EVENT_KEY_UP ||
+               ev->type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
+    }
+    capture = false;
+    dirty = true;
+    return true;
+}
+
 bool pdo_overlay_event(const SDL_Event *ev)
 {
+    if (open_ && capture)
+        return capture_event(ev);
     if (ev->type == SDL_EVENT_KEY_DOWN) {
         SDL_Keycode k = ev->key.key;
         if (k == SDLK_F1 && !ev->key.repeat) {
@@ -184,13 +250,52 @@ static void text(float col, float row, const char *s)
     SDL_RenderDebugText(painter, col * CHAR, row * CHAR, s);
 }
 
+static void draw_controls(void)
+{
+    const pdo_binding *b = pdo_input_bindings();
+    const float x0 = 4, y0 = 1, w = 34, h = 2 + CTL_COUNT + 4;
+    SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
+
+    SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
+    SDL_RenderFillRect(painter, &panel);
+    SDL_SetRenderDrawColor(painter, 120, 170, 220, 255);
+    SDL_RenderRect(painter, &panel);
+    SDL_SetRenderDrawColor(painter, 230, 235, 245, 255);
+    text(x0, y0, "Controls        key        pad");
+    for (int i = 0; i < CTL_COUNT; i++) {
+        float y = y0 + 2 + i;
+        char line[64];
+        if (i < PDO_IN_COUNT) {
+            const char *k = b[i].key != SDL_SCANCODE_UNKNOWN ? SDL_GetScancodeName(b[i].key) : "-";
+            snprintf(line, sizeof line, "%-10s %-10.10s %.10s", pdo_input_button_name(i), k[0] ? k : "?",
+                     pdo_input_pad_name(b[i].pad));
+            if (i == selected && capture)
+                snprintf(line, sizeof line, "%-10s press a key or button", pdo_input_button_name(i));
+        } else {
+            snprintf(line, sizeof line, "%s", i == CTL_RESET ? "Reset to defaults" : "Back");
+        }
+        if (i == selected) {
+            SDL_FRect bar = { (x0 - 0.5f) * CHAR, (y - 0.0f) * CHAR - 1, (w + 1) * CHAR, CHAR + 2 };
+            SDL_SetRenderDrawColor(painter, 60, 100, 160, 255);
+            SDL_RenderFillRect(painter, &bar);
+            SDL_SetRenderDrawColor(painter, 255, 255, 255, 255);
+            text(x0, y, ">");
+        } else
+            SDL_SetRenderDrawColor(painter, 200, 205, 215, 255);
+        text(x0 + 2, y, line);
+    }
+    SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
+    text(x0, y0 + h - 2, "A/Enter: rebind  Left: clear");
+    text(x0, y0 + h - 1, "B/Esc: back");
+}
+
 static void draw_menu(void)
 {
     const pdo_settings *s = pdo_settings_get();
     static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "16:9" };
     static const char *fits[PDO_FIT_COUNT] = { "Bars", "Stretch", "Zoom" };
     char lines[ITEM_COUNT][48];
-    const float x0 = 4, y0 = 2, w = 32, h = 3 + ITEM_COUNT * 2 + 3;    /* fits the 240 rows */
+    const float x0 = 4, y0 = 1, w = 32, h = 2 + ITEM_COUNT * 2 + 3;    /* fits the 240 rows */
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
     snprintf(lines[ITEM_SCALE], sizeof lines[0], "%-15s%dx", "Resolution", s->render_scale);
@@ -210,6 +315,7 @@ static void draw_menu(void)
     snprintf(lines[ITEM_VSH], sizeof lines[0], "%-15s%s", "Vertex progs", s->gpu_vertex ? "GPU" : "CPU");
     snprintf(lines[ITEM_FVF], sizeof lines[0], "%-15s%s", "Fixed-func", s->gpu_fixed ? "GPU" : "CPU");
     snprintf(lines[ITEM_INTERP], sizeof lines[0], "%-15s%s", "Frame interp", s->frame_interp ? "On" : "Off");
+    snprintf(lines[ITEM_CONTROLS], sizeof lines[0], "Controls...");
     snprintf(lines[ITEM_CLOSE], sizeof lines[0], "Close");
 
     SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
@@ -219,7 +325,7 @@ static void draw_menu(void)
     SDL_SetRenderDrawColor(painter, 230, 235, 245, 255);
     text(x0, y0, "Orta Recomp options");
     for (int i = 0; i < ITEM_COUNT; i++) {
-        float y = y0 + 3 + i * 2;
+        float y = y0 + 2 + i * 2;
         if (i == selected) {
             SDL_FRect bar = { (x0 - 0.5f) * CHAR, (y - 0.5f) * CHAR, (w + 1) * CHAR, 2 * CHAR };
             SDL_SetRenderDrawColor(painter, 60, 100, 160, 255);
@@ -229,7 +335,7 @@ static void draw_menu(void)
         } else
             SDL_SetRenderDrawColor(painter, 200, 205, 215, 255);
         text(x0 + 2, y, lines[i]);
-        if (i == selected && i != ITEM_CLOSE)
+        if (i == selected && i != ITEM_CLOSE && i != ITEM_CONTROLS)
             text(x0 + w - 4, y, "< >");
     }
     SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
@@ -274,7 +380,9 @@ SDL_Surface *pdo_overlay_image(bool *changed)
         SDL_SetRenderDrawColor(painter, 255, 255, 0, 255);
         text(0.5f, 0.5f, buf);
     }
-    if (open_)
+    if (open_ && controls)
+        draw_controls();
+    else if (open_)
         draw_menu();
     SDL_FlushRenderer(painter);
     dirty = false;

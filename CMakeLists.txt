@@ -31,6 +31,7 @@ add_subdirectory(external/SDL EXCLUDE_FROM_ALL)
 add_executable(OrtaRecomp
     src/main.c
     src/config.c
+    src/input_map.c
     src/assets.c
     src/setup_ui.c
     src/xiso.c

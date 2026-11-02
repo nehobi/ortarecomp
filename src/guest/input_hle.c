@@ -21,6 +21,7 @@
  */
 
 #include "recomp_types.h"
+#include "input_map.h"
 
 #include "guest/guest.h"
 #include "xbox_memory_layout.h"
@@ -217,32 +218,35 @@ static void read_port(int port, pad_state *s)
     SDL_Gamepad *g = pads[port];
 
     memset(s, 0, sizeof *s);
+    {   /* The Xbox buttons, from their bindings (input_map.c): the
+         * controller on every port, the keyboard on the first. */
+        static const struct { uint16_t bit; int ab; } xb[PDO_IN_COUNT] = {
+            [PDO_IN_A] = { 0, AB_A }, [PDO_IN_B] = { 0, AB_B }, [PDO_IN_X] = { 0, AB_X },
+            [PDO_IN_Y] = { 0, AB_Y }, [PDO_IN_BLACK] = { 0, AB_BLACK }, [PDO_IN_WHITE] = { 0, AB_WHITE },
+            [PDO_IN_LTRIG] = { 0, AB_LTRIG }, [PDO_IN_RTRIG] = { 0, AB_RTRIG },
+            [PDO_IN_START] = { XB_START, -1 }, [PDO_IN_BACK] = { XB_BACK, -1 },
+            [PDO_IN_UP] = { XB_DPAD_UP, -1 }, [PDO_IN_DOWN] = { XB_DPAD_DOWN, -1 },
+            [PDO_IN_LEFT] = { XB_DPAD_LEFT, -1 }, [PDO_IN_RIGHT] = { XB_DPAD_RIGHT, -1 },
+            [PDO_IN_LTHUMB] = { XB_LTHUMB, -1 }, [PDO_IN_RTHUMB] = { XB_RTHUMB, -1 },
+        };
+        const pdo_binding *bind = pdo_input_bindings();
+        const bool *k = port == 0 ? SDL_GetKeyboardState(NULL) : NULL;
+        /* With Alt held, Enter is the fullscreen toggle (renderer.c), not a button. */
+        bool alt = (SDL_GetModState() & SDL_KMOD_ALT) != 0;
+        for (int i = 0; i < PDO_IN_COUNT; i++) {
+            int level = pdo_input_pad_level(g, bind[i].pad);
+            if (k && bind[i].key != SDL_SCANCODE_UNKNOWN && k[bind[i].key] &&
+                !(alt && bind[i].key == SDL_SCANCODE_RETURN))
+                level = 255;
+            if (xb[i].ab >= 0) {
+                if (level > s->analog[xb[i].ab])
+                    s->analog[xb[i].ab] = (uint8_t)level;
+            } else if (level > 128) {
+                s->buttons |= xb[i].bit;
+            }
+        }
+    }
     if (g) {
-        static const struct { SDL_GamepadButton b; uint16_t bit; } digital[] = {
-            { SDL_GAMEPAD_BUTTON_DPAD_UP, XB_DPAD_UP },
-            { SDL_GAMEPAD_BUTTON_DPAD_DOWN, XB_DPAD_DOWN },
-            { SDL_GAMEPAD_BUTTON_DPAD_LEFT, XB_DPAD_LEFT },
-            { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, XB_DPAD_RIGHT },
-            { SDL_GAMEPAD_BUTTON_START, XB_START },
-            { SDL_GAMEPAD_BUTTON_BACK, XB_BACK },
-            { SDL_GAMEPAD_BUTTON_LEFT_STICK, XB_LTHUMB },
-            { SDL_GAMEPAD_BUTTON_RIGHT_STICK, XB_RTHUMB },
-        };
-        static const struct { SDL_GamepadButton b; int ab; } analog[] = {
-            { SDL_GAMEPAD_BUTTON_SOUTH, AB_A }, { SDL_GAMEPAD_BUTTON_EAST, AB_B },
-            { SDL_GAMEPAD_BUTTON_WEST, AB_X }, { SDL_GAMEPAD_BUTTON_NORTH, AB_Y },
-            { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, AB_BLACK },
-            { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, AB_WHITE },
-        };
-        for (size_t i = 0; i < SDL_arraysize(digital); i++)
-            if (SDL_GetGamepadButton(g, digital[i].b))
-                s->buttons |= digital[i].bit;
-        for (size_t i = 0; i < SDL_arraysize(analog); i++)
-            if (SDL_GetGamepadButton(g, analog[i].b))
-                s->analog[analog[i].ab] = 255;
-        /* Triggers are 0..32767 in SDL, 0..255 on Xbox. */
-        s->analog[AB_LTRIG] = (uint8_t)(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) * 255 / 32767);
-        s->analog[AB_RTRIG] = (uint8_t)(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) * 255 / 32767);
         /* SDL's Y axes grow downward, Xbox's upward. Negating -32768 would
          * overflow, so clamp. */
         s->thumb[0] = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX);
@@ -253,27 +257,8 @@ static void read_port(int port, pad_state *s)
 
     if (port == 0) {
         const bool *k = SDL_GetKeyboardState(NULL);
-        static const struct { SDL_Scancode key; uint16_t bit; } kd[] = {
-            { SDL_SCANCODE_UP, XB_DPAD_UP }, { SDL_SCANCODE_DOWN, XB_DPAD_DOWN },
-            { SDL_SCANCODE_LEFT, XB_DPAD_LEFT }, { SDL_SCANCODE_RIGHT, XB_DPAD_RIGHT },
-            { SDL_SCANCODE_RETURN, XB_START }, { SDL_SCANCODE_TAB, XB_BACK },
-        };
-        static const struct { SDL_Scancode key; int ab; } ka[] = {
-            { SDL_SCANCODE_SPACE, AB_A }, { SDL_SCANCODE_LSHIFT, AB_B },
-            { SDL_SCANCODE_F, AB_X }, { SDL_SCANCODE_R, AB_Y },
-            { SDL_SCANCODE_C, AB_BLACK }, { SDL_SCANCODE_Z, AB_WHITE },
-            { SDL_SCANCODE_Q, AB_LTRIG }, { SDL_SCANCODE_E, AB_RTRIG },
-        };
         int16_t lx, ly, rx, ry;
 
-        /* With Alt held, Enter is the fullscreen toggle (renderer.c), not Start. */
-        bool alt = (SDL_GetModState() & SDL_KMOD_ALT) != 0;
-        for (size_t i = 0; i < SDL_arraysize(kd); i++)
-            if (k[kd[i].key] && !(alt && kd[i].key == SDL_SCANCODE_RETURN))
-                s->buttons |= kd[i].bit;
-        for (size_t i = 0; i < SDL_arraysize(ka); i++)
-            if (k[ka[i].key])
-                s->analog[ka[i].ab] = 255;
         if (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_LMASK)
             s->analog[AB_A] = 255;
         /* Keys win over a resting stick, not over a held one. */

@@ -1,6 +1,7 @@
 /* Settings file: ortarecomp.ini, simple key=value lines. */
 
 #include "config.h"
+#include "input_map.h"
 
 #include <SDL3/SDL.h>
 
@@ -109,6 +110,8 @@ bool pdo_config_load(pdo_config *cfg)
             SDL_sscanf(eq + 1, "%d,%d,%d,%d", &settings.win_x, &settings.win_y, &settings.win_w, &settings.win_h);
         else if (strcmp(line, "window_maximized") == 0)
             settings.win_maximized = SDL_atoi(eq + 1) != 0;
+        else
+            pdo_input_load_line(line, eq + 1);
     }
     SDL_free(text);
     return true;
@@ -116,7 +119,7 @@ bool pdo_config_load(pdo_config *cfg)
 
 bool pdo_config_save(const pdo_config *cfg)
 {
-    char path[PDO_PATH_MAX], text[PDO_PATH_MAX + 512];
+    char path[PDO_PATH_MAX], text[PDO_PATH_MAX + 2048];
     int n;
 
     config_path(path, sizeof path);
@@ -146,6 +149,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
+    n += (int)pdo_input_save(text + n, sizeof text - (size_t)n);
     return SDL_SaveFile(path, text, (size_t)n);
 }
 
