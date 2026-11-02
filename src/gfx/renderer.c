@@ -3382,8 +3382,9 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
             match_frames(NULL, cur);
             st_cuts++;
-            if (dbg_groups)
-                SDL_Log("interp: camera cut (%u of %u on screen jumped)", fvf_jumps, fvf_pairs);
+            /* Rare, and a whole frame shown unblended: always logged. */
+            SDL_Log("interp: camera cut at frame %llu (%u of %u on screen jumped)",
+                    (unsigned long long)cur->frame, fvf_jumps, fvf_pairs);
         }
         if (++st_frames == 300) {
             SDL_Log("interp: %u camera cuts in the last 300 frames; %.1f close calls, %.1f wrong pairs undone, "
@@ -3801,6 +3802,21 @@ void pdo_gfx_main_loop(void)
         SDL_UnlockMutex(q_lock);
 
         if (f) {
+            if (cur && interp) {
+                /* Whole-screen hitches: a game frame over a vblank late
+                 * (the game took longer), or one that reached this thread
+                 * after the blend toward the one before had run out. */
+                double gap = (double)(f->stamp - cur->stamp), late = (double)(SDL_GetTicksNS() - f->stamp);
+                static Uint64 hitch_window;
+                static uint32_t hitch_logs;
+                if (now - hitch_window > 5000000000ull) {
+                    hitch_window = now;
+                    hitch_logs = 0;
+                }
+                if ((gap > frame_interval * 1.5 || late > frame_interval) && hitch_logs++ < 10)
+                    SDL_Log("interp: frame %llu %.1f ms after the one before, here %.1f ms after its vblank",
+                            (unsigned long long)f->frame, gap / 1e6, late / 1e6);
+            }
             if (cur) {
                 double d = (double)(f->stamp - cur->stamp);
                 if (d > 8e6 && d < 50e6)
