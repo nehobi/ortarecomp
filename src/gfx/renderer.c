@@ -3403,6 +3403,55 @@ static void match_frames(frame_data *prev, frame_data *cur)
             }
         }
     }
+    /* The camera's step this frame, from a fixed-function draw placed in the
+     * world as it is (world matrix identity: its world-view is the view):
+     * the eye at -t R^T. A frame where it steps far less than the ones
+     * before (the freeze as the boost ends: the ground stood still while
+     * the dragon moved) is logged. */
+    {
+        static float eye0[3], steps[8];
+        static bool have_eye;
+        static uint32_t nsteps, cam_logs, cam_frames;
+        const pdo_fvf_uniforms *u = NULL;
+        for (uint32_t k = 0; k < cur->ncmds && !u; k++) {
+            const command *c = &cur->cmds[k];
+            bool ident = true;
+            if (c->kind != CMD_DRAW || c->fvf < 0 || (cur->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE))
+                continue;
+            for (int m = 0; m < 16 && ident; m++)
+                ident = SDL_fabsf(cur->fvf_us[c->fvf].world[m] - (m % 5 == 0 ? 1.0f : 0.0f)) < 1e-5f;
+            if (ident)
+                u = &cur->fvf_us[c->fvf];
+        }
+        if (++cam_frames >= 300)
+            cam_frames = cam_logs = 0;
+        static bool told;
+        if (u && !told) {
+            told = true;
+            SDL_Log("interp: the camera is read from world-placed draws (frame %llu)", (unsigned long long)cur->frame);
+        }
+        if (u) {
+            float eye[3], step = 0.0f, avg = 0.0f;
+            for (int jj = 0; jj < 3; jj++)
+                eye[jj] = -(u->wv[12] * u->wv[jj * 4 + 0] + u->wv[13] * u->wv[jj * 4 + 1] + u->wv[14] * u->wv[jj * 4 + 2]);
+            if (have_eye) {
+                for (int jj = 0; jj < 3; jj++)
+                    step += (eye[jj] - eye0[jj]) * (eye[jj] - eye0[jj]);
+                step = SDL_sqrtf(step);
+                for (uint32_t q = 0; q < SDL_min(nsteps, 8u); q++)
+                    avg += steps[q] / (float)SDL_min(nsteps, 8u);
+                if (nsteps >= 8 && avg > 0.05f && step < avg * 0.3f && cam_logs++ < 10)
+                    SDL_Log("interp: frame %llu: the camera stepped %.3f, against %.3f a frame before",
+                            (unsigned long long)cur->frame, step, avg);
+                steps[nsteps++ % 8] = step;
+            }
+            memcpy(eye0, eye, sizeof eye);
+            have_eye = true;
+        } else {
+            have_eye = false;
+            nsteps = 0;
+        }
+    }
     /* What did not blend, when it is a lot or alike groups changed size:
      * a one-frame freeze with a ghost of the dragon as the boost ends
      * (episodes 2, 3) is still unexplained. At most ten lines in 300 frames. */
