@@ -3133,6 +3133,9 @@ static void match_frames(frame_data *prev, frame_data *cur)
     /* Groups of alike 3D draws whose size changed from the frame before
      * (the log, below): how many, and the first few as before -> now x nv. */
     uint32_t resized = 0;
+    /* Why 3D draws were not blended, and paired fixed-function draws whose
+     * matrices did not change at all (a frame the game held still). */
+    uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
     char resized_txt[96] = "";
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
@@ -3252,8 +3255,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
             for (uint32_t k = 0; k < n; k++) {
                 const command *pc;
                 command *c = &cur->cmds[ck[j + k].cmd];
-                if (forced[k])
+                if (forced[k]) {
+                    n_forced += is_3d(cur, c);
                     continue;           /* no partner (order[k] unset) */
+                }
                 pc = &prev->cmds[pk[i + order[k]].cmd];
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
                     c->prev_vbase = (int32_t)pc->vbase;
@@ -3293,6 +3298,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         fvf_pairs++;
                         if (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f) {
                             fvf_jumps++;
+                            n_jumped++;
                             continue;   /* jumped: not blended */
                         }
                     }
@@ -3309,6 +3315,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->strayed = sv > 0.2f;
                     if (sv > 0.5f || (c->strayed && pc->strayed)) {
                         st_rebuilt++;
+                        n_rebuilt++;
                         if (dbg_groups)
                             SDL_Log("rebuilt: cmd %u nv %u tex %08x", ck[j + k].cmd, c->id_nv,
                                     (unsigned)c->draw.tex[0].data);
@@ -3322,6 +3329,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         c->mvel[16 + m] = u->world[m] - pu->world[m];
                     }
                     c->has_mvel = true;
+                    n_fvf_paired++;
+                    n_still += memcmp(u->wvp, pu->wvp, sizeof u->wvp) == 0;
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
                     memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
@@ -3384,6 +3393,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 }
                 c->has_mvel = false;
                 st_swapped++;
+                n_swapped++;
             }
         }
     }
@@ -3392,6 +3402,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
      * (episodes 2, 3) is still unexplained. At most ten lines in 300 frames. */
     {
         static uint32_t odd_frames, odd_logs;
+        static bool was_still;
+        bool still = n_fvf_paired >= 20 && n_still * 10 >= n_fvf_paired * 9;
         uint32_t unp3d = 0, all3d = 0;
         for (uint32_t k = 0; k < cur->ncmds; k++) {
             const command *c = &cur->cmds[k];
@@ -3402,9 +3414,12 @@ static void match_frames(frame_data *prev, frame_data *cur)
         }
         if (++odd_frames >= 300)
             odd_frames = odd_logs = 0;
-        if ((resized >= 3 || unp3d * 4 > all3d) && odd_logs++ < 10)
-            SDL_Log("interp: frame %llu: %u of %u 3D draws not blended; %u alike groups changed size:%s",
-                    (unsigned long long)cur->frame, unp3d, all3d, resized, resized_txt);
+        if ((resized >= 3 || unp3d * 4 > all3d || (still && !was_still)) && odd_logs++ < 10)
+            SDL_Log("interp: frame %llu: %u of %u 3D draws not blended (%u no partner near, %u jumped, %u rebuilt, "
+                    "%u undone); %u of %u paired did not move; %u alike groups changed size:%s",
+                    (unsigned long long)cur->frame, unp3d, all3d, n_forced, n_jumped, n_rebuilt, n_swapped,
+                    n_still, n_fvf_paired, resized, resized_txt);
+        was_still = still;
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
