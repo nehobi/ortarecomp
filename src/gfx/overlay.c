@@ -22,14 +22,14 @@
 enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP,
        ITEM_CONTROLS, ITEM_CLOSE,
        /* the launcher's own */
-       ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT, ITEM_COUNT };
+       ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_BOX, ITEM_EXIT, ITEM_COUNT };
 
 /* The lines of the menu shown: in the game, or the launcher (before it). */
 static const int game_items[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS,
                                   ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_CONTROLS, ITEM_CLOSE };
 static const int launcher_items[] = { ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_SCALE, ITEM_MSAA,
                                       ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_INTERP,
-                                      ITEM_CONTROLS, ITEM_EXIT };
+                                      ITEM_CONTROLS, ITEM_BOX, ITEM_EXIT };
 static bool launcher;               /* pdo_launcher_begin .. end */
 static int launcher_choice;         /* PDO_LAUNCH_* picked, 0 none yet */
 static const char *launcher_files;  /* the game files, as shown */
@@ -121,6 +121,7 @@ static void change(int dir)
     case ITEM_PICK:   if (dir > 0) launcher_choice = PDO_LAUNCH_PICK; break;
     case ITEM_EXIT:   if (dir > 0) launcher_choice = PDO_LAUNCH_EXIT; break;
     case ITEM_FULLSCREEN: s->fullscreen = !s->fullscreen; break;
+    case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
     case ITEM_MSAA:   next_aa(s, dir); break;
@@ -365,7 +366,7 @@ static void draw_menu(void)
     /* The launcher's lines a row and a half apart, the game's two: both in
      * the 240 rows, help on the last. */
     const float step = launcher ? 1.5f : 2.0f;
-    const float w = launcher ? 36 : 32, h = 2 + NITEMS * step + 1;
+    const float w = launcher ? 36 : 32, h = 2 + NITEMS * step + (launcher ? 1.5f : 1);
     const float x0 = launcher ? 2 : 4, y0 = launcher ? (30 - h) / 2 : 1;     /* the launcher's centred */
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
@@ -392,6 +393,7 @@ static void draw_menu(void)
     snprintf(lines[ITEM_PICK], sizeof lines[0], "%-15s%.19s", "Game files", launcher_files ? launcher_files : "-");
     snprintf(lines[ITEM_GPU], sizeof lines[0], "%-15s%s", "Graphics", "Vulkan");
     snprintf(lines[ITEM_FULLSCREEN], sizeof lines[0], "%-15s%s", "Fullscreen", s->fullscreen ? "On" : "Off");
+    snprintf(lines[ITEM_BOX], sizeof lines[0], "%-15s%s", "Pandora's Box", s->unlock_box ? "All open" : "Normal");
     snprintf(lines[ITEM_EXIT], sizeof lines[0], "Exit");
 
     SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);

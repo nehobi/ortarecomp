@@ -193,3 +193,30 @@ the same values). 0x00033960 records the sticks for demos (4096 entries at
 0x0041CE28). The reticle object (pointer at 0x00472030) holds the reticle's
 screen position in pixels at +0xB8/+0xBC, recomputed every frame (writing it
 does not move the reticle); the state it comes from is not found yet.
+
+## Saves and Pandora's Box
+
+PDOSYSTEM.DAT (16 KB) is a 20-byte signature, then the block the game keeps
+at 0x00424E48: "PDOD", size 0x3B8C, version 0x100 (defaults: 0x00033F00).
+File offset X is address 0x00424E34 + X. 0x00034120 copies it into the
+game's working state and 0x00034340 back: options from 0x00424E78, play
+statistics from 0x004255C0 to 0x003427F4 (total play time in frames at
+0x003427F8, main game at 0x003427FC; 216000 frames an hour), the stage
+records (0xB0 bytes each) from 0x00425604 to 0x00342838, Box unlock bits
+from 0x00428994 to 0x00345D90 and Box "seen" bits from 0x004289A0 to
+0x00345D9C. The story save (episode at 0x00424EA0, difficulty 0x00424E70,
+shown as "EPISODE n" in the save's description) loads only with bit 1 of
+0x00034120's argument.
+
+Box item n (347, table of {bit, hours index} at 0x003CE0A8) is open when its
+bit is negative, set in 0x00345D90, or when the total play time reaches its
+hours (byte table at 0x00346418): 0x000309B0. Every Box check goes through
+it, the Box menu's too (entries of 0x40 bytes at 0x0036D0B0, item number at
++0x38, set open at +0x3C by 0x000B6E60 through 0x000B5A70). 0x00030B60 is
+"new" (open, not seen); 0x00030A10 counts items still waiting on play time
+(for "new pandra's box added!"). src/guest/unlocks.c opens them all when
+the launcher's Pandora's Box setting is on.
+
+0x0034277C, set from launch data tagged "PDLD" (0x00011620), is a kiosk
+mode: everything open, but saving is skipped (0x00034050, 0x000340A0) and
+menus change; not used.
