@@ -83,6 +83,11 @@ static uint64_t capture_frame = UINT64_MAX;
 /* PDO_CAPTURE_SEQ=n: PDO_CAPTURE_INTERP's pictures for n frames from the
  * capture frame on (none of them dropped), to see motion. */
 static uint64_t capture_seq = 1;
+/* PDO_CAPTURE_BOOST=n: up to n times, capture (as F12, with
+ * PDO_CAPTURE_INTERP's blends) the frame where most groups of alike 3D
+ * draws shrank -- the dragon's boost afterimages going -- and the two after. */
+static int capture_boost_left = -1;
+static bool groups_shrank;          /* match_frames: this frame */
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -3132,7 +3137,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
     uint32_t np = 0, nc, i = 0, j = 0, fvf_pairs = 0, fvf_jumps = 0;
     /* Groups of alike 3D draws whose size changed from the frame before
      * (the log, below): how many, and the first few as before -> now x nv. */
-    uint32_t resized = 0;
+    uint32_t resized = 0, shrank = 0;
     /* Why 3D draws were not blended, and paired fixed-function draws whose
      * matrices did not change at all (a frame the game held still). */
     uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
@@ -3183,6 +3188,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
             continue;               /* not the one such in both */
         }
         if (pass == 0 && i2 - i != j2 - j && is_3d(cur, &cur->cmds[ck[j].cmd])) {
+            shrank += i2 - i > j2 - j;
             if (resized++ < 6) {
                 size_t len = strlen(resized_txt);
                 snprintf(resized_txt + len, sizeof resized_txt - len, " %u->%ux%u", i2 - i, j2 - j,
@@ -3420,6 +3426,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     (unsigned long long)cur->frame, unp3d, all3d, n_forced, n_jumped, n_rebuilt, n_swapped,
                     n_still, n_fvf_paired, resized, resized_txt);
         was_still = still;
+        groups_shrank = shrank >= 10;
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
@@ -3869,7 +3876,21 @@ void pdo_gfx_main_loop(void)
             }
             prev = cur;
             cur = f;
+            groups_shrank = false;
             match_frames(interp ? prev : NULL, cur);
+            if (capture_boost_left < 0)
+                capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
+            if (groups_shrank && prev && capture_boost_left > 0 &&
+                (capture_frame == UINT64_MAX || cur->frame >= capture_frame + capture_seq)) {
+                capture_boost_left--;
+                SDL_Log("capture: groups shrank at frame %llu: capturing it and the two after",
+                        (unsigned long long)cur->frame);
+                capture_interp(prev, cur);
+                SDL_LockMutex(q_lock);
+                capture_frame = cur->frame + 1;
+                capture_seq = 2;
+                SDL_UnlockMutex(q_lock);
+            }
             if (prev && f->frame >= capture_frame && f->frame < capture_frame + capture_seq)
                 capture_interp(prev, cur);
             /* Captures and screenshots are of the frame as it is. */
