@@ -123,6 +123,8 @@ cut. Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
 pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
 (+_SEQ=n, PDO_DBG_GROUPS), PDO_CAPTURE_TEXCHECK, PDO_TEX_ALWAYS/LEVEL0.
+Open: a whole-screen jolt as the boost ends (episodes 2, 3; no camera cut
+there); camera cuts and late game frames are now logged one by one.
 Glide wing: script `13000:y:8,13100:y:8`. Display: aspect 4:3 or 16:9 (the
 game's own anamorphic mode, src/guest/widescreen.c, read at start), fit
 bars/stretch/zoom, Alt+Enter fullscreen. PDO_BENCHMARK=1
@@ -139,7 +141,11 @@ Confirmed on Windows. F1, or Back+Start on a controller: resolution scale 1-4x, 
 (MSAA up to what the GPU takes), 4:3 or stretch, TV softening, master
 volume, FPS counter, vertex programs and fixed-function vertices on
 CPU or GPU. The game waits in Swap and the sound holds while it
-is open; settings go to ortarecomp.ini when it closes.
+is open; settings go to ortarecomp.ini when it closes. The launcher (a
+plain start; `--boot` skips it) adds game files, fullscreen, controls and
+"Pandora's Box: All open" (src/guest/unlocks.c; confirmed: the Box's
+episode and boss select reach any episode, the quick way to test later
+ones).
 
 ## Testing
 
