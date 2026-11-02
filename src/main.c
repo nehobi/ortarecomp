@@ -1,12 +1,13 @@
 /*
  * Orta Recomp - entry point.
  *
- *   OrtaRecomp                  normal start (setup on first run)
- *   OrtaRecomp --setup          choose the game files again
+ *   OrtaRecomp                  play (choosing the game files on first run)
+ *   OrtaRecomp --setup          choose the game files again, then play
  *   OrtaRecomp --game-dir DIR   use DIR for this run (not saved)
  *   OrtaRecomp --import-iso F   import a disc image without the dialogs
  *   OrtaRecomp --check          check the game files, print, exit
- *   OrtaRecomp --boot           also run the title (in development)
+ *   OrtaRecomp --no-boot        set the title up without running it
+ *   (--boot, the old way to run it, is still accepted)
  */
 
 #include "assets.h"
@@ -28,7 +29,7 @@
 #define APP_NAME "Orta Recomp"
 
 typedef struct options {
-    bool        setup, check, boot;
+    bool        setup, check, boot, no_boot;
     const char *game_dir;
     const char *import_iso;
 } options;
@@ -45,6 +46,8 @@ static bool parse_args(int argc, char **argv, options *o)
             o->check = true;
         else if (strcmp(argv[i], "--boot") == 0)
             o->boot = true;
+        else if (strcmp(argv[i], "--no-boot") == 0)
+            o->no_boot = true;
         else if (strcmp(argv[i], "--game-dir") == 0 && i + 1 < argc)
             o->game_dir = argv[++i];
         else if (strcmp(argv[i], "--import-iso") == 0 && i + 1 < argc)
@@ -158,7 +161,7 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
         }
     } else if (!boot && pdo_guest_init(xbe, size, game_dir, save_dir)) {
         SDL_Log("game code is linked and the Xbox address space is set up; "
-                "run with --boot to start the title (not playable yet)");
+                "run without --no-boot to start the title");
         rc = 0;
     }
     pdo_guest_shutdown();
@@ -228,7 +231,7 @@ int main(int argc, char **argv)
 #ifdef PDO_HAVE_RECOMP
     {
         int rc;
-        rc = start_guest(cfg.game_dir, &check, opt.boot);
+        rc = start_guest(cfg.game_dir, &check, !opt.no_boot);
         SDL_Quit();
         return rc;
     }

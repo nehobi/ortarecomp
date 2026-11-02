@@ -23,6 +23,8 @@ typedef struct pdo_settings {
     bool frame_interp;      /* frames between the game's 60, blended (renderer.c) */
     bool fullscreen;        /* borderless, the whole monitor (Alt+Enter) */
     bool fxaa;              /* edge smoothing on the finished frame (shaders/screen.frag) */
+    int  win_x, win_y, win_w, win_h;    /* the window when not fullscreen (w 0: not set yet) */
+    bool win_maximized;
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

@@ -1680,8 +1680,29 @@ static bool init_here(int width, int height)
     SDL_Log("gfx: GPU driver %s", SDL_GetGPUDeviceDriver(dev));
 
     window_thread = SDL_GetCurrentThreadID();
-    window = SDL_CreateWindow(WINDOW_TITLE, width * 2, height * 2,
-                              SDL_WINDOW_RESIZABLE | (pdo_settings_get()->fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+    {   /* Where the window was last time (pdo_gfx_pump_events), if it fits
+         * on a display still: else twice the game's size, centred. */
+        const pdo_settings *st = pdo_settings_get();
+        SDL_PropertiesID wp = SDL_CreateProperties();
+        int w = st->win_w >= 320 ? st->win_w : width * 2, h = st->win_h >= 240 ? st->win_h : height * 2;
+        bool placed = false;
+        if (st->win_w >= 320) {
+            SDL_Point c = { st->win_x + w / 2, st->win_y + h / 2 };
+            SDL_DisplayID d = SDL_GetDisplayForPoint(&c);
+            SDL_Rect r;
+            placed = d && SDL_GetDisplayUsableBounds(d, &r) && SDL_PointInRect(&c, &r);
+        }
+        SDL_SetStringProperty(wp, SDL_PROP_WINDOW_CREATE_TITLE_STRING, WINDOW_TITLE);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_X_NUMBER, placed ? st->win_x : (int)SDL_WINDOWPOS_CENTERED);
+        SDL_SetNumberProperty(wp, SDL_PROP_WINDOW_CREATE_Y_NUMBER, placed ? st->win_y : (int)SDL_WINDOWPOS_CENTERED);
+        SDL_SetBooleanProperty(wp, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+        SDL_SetBooleanProperty(wp, SDL_PROP_WINDOW_CREATE_MAXIMIZED_BOOLEAN, st->win_maximized);
+        SDL_SetBooleanProperty(wp, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, st->fullscreen);
+        window = SDL_CreateWindowWithProperties(wp);
+        SDL_DestroyProperties(wp);
+    }
     if (window && SDL_ClaimWindowForGPUDevice(dev, window))
         have_swapchain = true;
     else
@@ -2691,6 +2712,20 @@ bool pdo_gfx_pump_events(void)
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_EVENT_QUIT)
             keep_going = false;
+        /* Remember the window (saved when the game closes, see note_quit):
+         * its place and size when neither fullscreen nor maximized. */
+        if ((ev.type == SDL_EVENT_WINDOW_MOVED || ev.type == SDL_EVENT_WINDOW_RESIZED ||
+             ev.type == SDL_EVENT_WINDOW_MAXIMIZED || ev.type == SDL_EVENT_WINDOW_RESTORED) && window) {
+            pdo_settings *st = pdo_settings_get();
+            SDL_WindowFlags fl = SDL_GetWindowFlags(window);
+            if (!(fl & SDL_WINDOW_FULLSCREEN)) {
+                st->win_maximized = (fl & SDL_WINDOW_MAXIMIZED) != 0;
+                if (!st->win_maximized) {
+                    SDL_GetWindowPosition(window, &st->win_x, &st->win_y);
+                    SDL_GetWindowSize(window, &st->win_w, &st->win_h);
+                }
+            }
+        }
         if (pdo_overlay_event(&ev))
             continue;
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F11 && !ev.key.repeat) {
@@ -3609,6 +3644,7 @@ static void hold_for_overlay(void)
 
         if (!pdo_gfx_pump_events()) {
             SDL_Log("d3d: window closed");
+            pdo_settings_save();        /* the window's place and size */
             exit(0);
         }
         cmd = SDL_AcquireGPUCommandBuffer(dev);
@@ -3693,6 +3729,7 @@ void pdo_gfx_main_loop(void)
 
         if (dev && !pdo_gfx_pump_events()) {
             SDL_Log("d3d: window closed");
+            pdo_settings_save();        /* the window's place and size */
             exit(0);
         }
         if (dev && pdo_overlay_open())     /* opened while no frame comes (loading) */
