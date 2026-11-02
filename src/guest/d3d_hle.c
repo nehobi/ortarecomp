@@ -133,9 +133,12 @@ static bool benchmark(void)
 
 static Uint64 skipped_ns;          /* benchmark: vblank time jumped over */
 
+/* Stopped while the options overlay holds the game: vblanks that went on
+ * coming had CRI's per-vblank server threads (Concept of Love: JSRF) see the
+ * paused mixer's music not advance and drop it. */
 static Uint64 vblank_clock(void)
 {
-    return SDL_GetTicksNS() + skipped_ns;
+    return SDL_GetTicksNS() + skipped_ns - pdo_gfx_paused_ns();
 }
 
 /* skip: a frame's own wait (Swap), which benchmark mode moves past instead
@@ -143,7 +146,15 @@ static Uint64 vblank_clock(void)
  * vblanks in a loop while other threads load, and must let them run. */
 static Uint64 wait_vblank_for(bool skip)
 {
-    Uint64 now = vblank_clock(), index, at;
+    Uint64 now, index, at;
+
+    if (pdo_gfx_paused()) {     /* no vblank comes while the overlay is open */
+        int held = guest_cpu_yield_begin();
+        while (pdo_gfx_paused())
+            SDL_Delay(5);
+        guest_cpu_yield_end(held);
+    }
+    now = vblank_clock();
 
     if (!epoch)
         epoch = now;
@@ -294,7 +305,7 @@ void sub_002BAFC0(void)
             wait_vblank_for(true);
         last_vblank = current_vblank();
         if (!benchmark())
-            pdo_gfx_set_frame_time(epoch + last_vblank * vblank_ns());
+            pdo_gfx_set_frame_time(epoch + last_vblank * vblank_ns() + pdo_gfx_paused_ns());   /* real time */
     }
 
     {

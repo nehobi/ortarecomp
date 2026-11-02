@@ -256,6 +256,12 @@ bool pdo_gfx_present(void);
 /* When the frame about to be presented shows (SDL ticks, ns): the vblank
  * its Swap waited for, so frames sit on an even grid for interpolation. */
 void pdo_gfx_set_frame_time(uint64_t ns);
+
+/* The options overlay holds the game: the vblank clock (d3d_hle.c) stops
+ * with it. How long it has held the game in all (ns), and whether it does
+ * now. */
+uint64_t pdo_gfx_paused_ns(void);
+bool pdo_gfx_paused(void);
 /* Window events between frames (loading, movies): false when the window was
  * closed. */
 bool pdo_gfx_pump_events(void);

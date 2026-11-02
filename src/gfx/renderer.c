@@ -54,6 +54,11 @@ static SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
 static SDL_GPUTexture *frame_ms;
 static bool frame_stale;
 static volatile bool paused;        /* the overlay menu holds the game */
+/* The overlay's holds, for the vblank clock (d3d_hle.c) to stop with the
+ * game: when the current one began (ms, | 1 so never 0; 0: none), and the
+ * ones before, in all. */
+static SDL_AtomicU32 pause_start_ms;
+static SDL_AtomicInt paused_total_ms;
 
 /* Window pass: the frame (aspect, softening) and the overlay over it; and the
  * seed pass that copies a resolved target back into its multisampled one. */
@@ -3657,6 +3662,7 @@ static void hold_for_overlay(void)
     SDL_LockMutex(q_lock);
     paused = true;
     SDL_UnlockMutex(q_lock);
+    SDL_SetAtomicU32(&pause_start_ms, (Uint32)SDL_GetTicks() | 1u);
     pdo_mixer_set_paused(true);
     while (pdo_overlay_open()) {
         SDL_GPUCommandBuffer *cmd;
@@ -3675,10 +3681,27 @@ static void hold_for_overlay(void)
             SDL_Delay(16);
     }
     pdo_mixer_set_paused(false);
+    SDL_AddAtomicInt(&paused_total_ms, (int)((Uint32)SDL_GetTicks() - SDL_GetAtomicU32(&pause_start_ms)));
+    SDL_SetAtomicU32(&pause_start_ms, 0);
     SDL_LockMutex(q_lock);
     paused = false;
     SDL_BroadcastCondition(q_cond);
     SDL_UnlockMutex(q_lock);
+}
+
+uint64_t pdo_gfx_paused_ns(void)
+{
+    Uint32 start = SDL_GetAtomicU32(&pause_start_ms);
+    uint64_t ms = (uint64_t)(Uint32)SDL_GetAtomicInt(&paused_total_ms);
+
+    if (start)
+        ms += (Uint32)SDL_GetTicks() - start;
+    return ms * SDL_NS_PER_MS;
+}
+
+bool pdo_gfx_paused(void)
+{
+    return SDL_GetAtomicU32(&pause_start_ms) != 0;
 }
 
 void pdo_gfx_prepare_threads(void)
