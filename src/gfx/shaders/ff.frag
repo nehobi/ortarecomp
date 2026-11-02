@@ -152,6 +152,16 @@ vec4 sample_stage(int s)
     return sample_tex(s, uv);
 }
 
+// Whether a stage's op reads D3DTA_TEXTURE (2) in an argument it uses:
+// (op, arg1, arg2, arg0); SELECTARG1 (2) reads only arg1, SELECTARG2 (3)
+// only arg2, and only MULTIPLYADD (23) and LERP (24) read arg0.
+bool uses_texture(ivec4 o)
+{
+    if (o.x <= 1) return false;
+    return (o.x != 3 && (o.y & 0xF) == 2) || (o.x != 2 && (o.z & 0xF) == 2) ||
+           ((o.x == 23 || o.x == 24) && (o.w & 0xF) == 2);
+}
+
 vec4 arg(int a, vec4 current, vec4 tex, vec4 temp)
 {
     vec4 v;
@@ -452,6 +462,14 @@ void main()
     for (int s = 0; s < 4; s++) {
         int cop = color_op[s].x;
         if (cop <= 1) break;                         // D3DTOP_DISABLE
+        // A stage with no texture that reads one passes the result on: it
+        // read opaque white and replaced it (Concept of Love: JSRF leaves
+        // stage 1 at SELECTARG1 TEXTURE, unbound, on car shadows and
+        // outlines, which turned white). A first stage modulating a missing
+        // texture with the diffuse colour still gives the diffuse colour
+        // (Orta's menu highlights).
+        if (stage_misc[s].y == 0 && (uses_texture(color_op[s]) || uses_texture(alpha_op[s])))
+            continue;
         vec4 tex = sample_stage(s);
         vec4 c = op(cop, arg(color_op[s].y, current, tex, temp), arg(color_op[s].z, current, tex, temp),
                     arg(color_op[s].w, current, tex, temp), current, tex);
