@@ -182,3 +182,14 @@ sets the widescreen flag at 0x00342754, which the camera and the screen
 layout read (the HUD's radar is drawn narrow, to be stretched to 16:9).
 Our kernel's video flags never set bit 8; src/guest/widescreen.c does when
 the aspect setting is 16:9. The game reads it once, at start.
+
+## Input and the reticle
+
+The pad state is copied per player each frame (0x0004F1D0) into blocks of
+0x258 bytes at 0x004185A8: +0x00 buttons, +0x20/+0x24 left stick X/Y and
++0x28/+0x2C right stick, as floats -1..1. 0x00077CD0 scales the sticks into
+an aiming object (+0x404/+0x408 left, +0x434/+0x438 right; the D-pad nudges
+the same values). 0x00033960 records the sticks for demos (4096 entries at
+0x0041CE28). The reticle object (pointer at 0x00472030) holds the reticle's
+screen position in pixels at +0xB8/+0xBC, recomputed every frame (writing it
+does not move the reticle); the state it comes from is not found yet.
