@@ -1,18 +1,19 @@
 /*
  * Orta Recomp - entry point.
  *
- *   OrtaRecomp                  play (choosing the game files on first run)
- *   OrtaRecomp --setup          choose the game files again, then play
+ *   OrtaRecomp                  the launcher: Start game, game files, settings
+ *   OrtaRecomp --setup          the launcher, on choosing the game files
  *   OrtaRecomp --game-dir DIR   use DIR for this run (not saved)
  *   OrtaRecomp --import-iso F   import a disc image without the dialogs
  *   OrtaRecomp --check          check the game files, print, exit
+ *   OrtaRecomp --boot           play at once, without the launcher
  *   OrtaRecomp --no-boot        set the title up without running it
- *   (--boot, the old way to run it, is still accepted)
  */
 
 #include "assets.h"
 #include "config.h"
 #include "setup_ui.h"
+#include "gfx/overlay.h"
 #include "sha256.h"
 
 #ifdef PDO_HAVE_RECOMP
@@ -170,6 +171,90 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
 }
 #endif
 
+/* The launcher: the options menu in its own window before the game starts,
+ * with Start game, the game files and Exit (gfx/overlay.c). Settings fixed
+ * at start (widescreen, fullscreen; later the graphics driver) are chosen
+ * here. True: start the game, with *have_game usable files in cfg. */
+static bool run_launcher(pdo_config *cfg, pdo_game_check *check, bool *have_game)
+{
+    SDL_Window *win = NULL;
+    SDL_Renderer *ren = NULL;
+    SDL_Texture *tex = NULL;
+    const pdo_settings *st = pdo_settings_get();
+    char shown[PDO_PATH_MAX];
+    int choice = PDO_LAUNCH_NONE;
+
+    SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    if (!SDL_CreateWindowAndRenderer(APP_NAME, st->win_w >= 320 ? st->win_w : 1280, st->win_h >= 240 ? st->win_h : 960,
+                                     SDL_WINDOW_RESIZABLE, &win, &ren)) {
+        SDL_Log("launcher: no window (%s); starting the game", SDL_GetError());
+        return *have_game;
+    }
+    SDL_SetRenderVSync(ren, 1);
+    tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, PDO_OVERLAY_W, PDO_OVERLAY_H);
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+
+    for (;;) {
+        const char *base = cfg->game_dir[0] ? SDL_strrchr(cfg->game_dir, '/') : NULL;
+        const char *base2 = cfg->game_dir[0] ? SDL_strrchr(cfg->game_dir, '\\') : NULL;
+        if (base2 > base)
+            base = base2;
+        SDL_strlcpy(shown, !cfg->game_dir[0] ? "none" : base && base[1] ? base + 1 : cfg->game_dir, sizeof shown);
+        pdo_launcher_begin(shown, *have_game);
+        choice = PDO_LAUNCH_NONE;
+        while (choice == PDO_LAUNCH_NONE) {
+            SDL_Event ev;
+            bool changed;
+            SDL_Surface *img;
+            int w, h;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_EVENT_QUIT)
+                    choice = PDO_LAUNCH_EXIT;
+                else if (ev.type == SDL_EVENT_GAMEPAD_ADDED)
+                    SDL_OpenGamepad(ev.gdevice.which);
+                else
+                    pdo_overlay_event(&ev);
+            }
+            if (choice == PDO_LAUNCH_NONE)
+                choice = pdo_launcher_poll();
+            img = pdo_overlay_image(&changed);
+            if (img && changed)
+                SDL_UpdateTexture(tex, NULL, img->pixels, img->pitch);
+            /* A dark backdrop, the menu over it at 4:3, as large as fits. */
+            SDL_GetRenderOutputSize(ren, &w, &h);
+            SDL_SetRenderDrawColor(ren, 6, 9, 16, 255);
+            SDL_RenderClear(ren);
+            {
+                float k = SDL_min((float)w / PDO_OVERLAY_W, (float)h / PDO_OVERLAY_H);
+                SDL_FRect r = { (w - PDO_OVERLAY_W * k) / 2, (h - PDO_OVERLAY_H * k) / 2, PDO_OVERLAY_W * k,
+                                PDO_OVERLAY_H * k };
+                SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+                SDL_RenderTexture(ren, tex, NULL, &r);
+            }
+            SDL_RenderPresent(ren);
+        }
+        pdo_launcher_end();
+        if (choice != PDO_LAUNCH_PICK)
+            break;
+        /* The game file picker (setup_ui.c), its own window and dialogs. */
+        SDL_HideWindow(win);
+        {
+            pdo_config pick = *cfg;
+            pdo_game_check pc;
+            if (pdo_setup_run(&pick, &pc)) {
+                *cfg = pick;
+                *check = pc;
+                *have_game = true;
+            }
+        }
+        SDL_ShowWindow(win);
+    }
+    SDL_DestroyTexture(tex);
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    return choice == PDO_LAUNCH_START && *have_game;
+}
+
 int main(int argc, char **argv)
 {
     options opt;
@@ -206,12 +291,7 @@ int main(int argc, char **argv)
 
     if (opt.game_dir)
         SDL_strlcpy(cfg.game_dir, opt.game_dir, sizeof cfg.game_dir);
-    if (pdo_settings_get()->choose_files && !opt.game_dir) {
-        /* Asked for in the options (Game files): once. */
-        opt.setup = true;
-        pdo_settings_get()->choose_files = false;
-        pdo_settings_save();
-    }
+
 
     if (!opt.setup && cfg.game_dir[0]) {
         have_game = pdo_assets_check_dir(cfg.game_dir, &check, err, sizeof err);
@@ -229,7 +309,14 @@ int main(int argc, char **argv)
         return have_game ? 0 : 1;
     }
 
-    if (!have_game && !pdo_setup_run(&cfg, &check)) {
+    /* --boot (or --no-boot) goes straight on, as before: the first-run
+     * picker if there are no game files. Otherwise the launcher. */
+    if (opt.boot || opt.no_boot) {
+        if (!have_game && !pdo_setup_run(&cfg, &check)) {
+            SDL_Quit();
+            return 0;
+        }
+    } else if (!run_launcher(&cfg, &check, &have_game)) {
         SDL_Quit();
         return 0;
     }

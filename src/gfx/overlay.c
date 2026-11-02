@@ -20,7 +20,22 @@
 #include <string.h>
 
 enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP,
-       ITEM_CONTROLS, ITEM_FILES, ITEM_CLOSE, ITEM_COUNT };
+       ITEM_CONTROLS, ITEM_CLOSE,
+       /* the launcher's own */
+       ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT, ITEM_COUNT };
+
+/* The lines of the menu shown: in the game, or the launcher (before it). */
+static const int game_items[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS,
+                                  ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_CONTROLS, ITEM_CLOSE };
+static const int launcher_items[] = { ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_SCALE, ITEM_MSAA,
+                                      ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_INTERP,
+                                      ITEM_CONTROLS, ITEM_EXIT };
+static bool launcher;               /* pdo_launcher_begin .. end */
+static int launcher_choice;         /* PDO_LAUNCH_* picked, 0 none yet */
+static const char *launcher_files;  /* the game files, as shown */
+static bool launcher_files_ok;
+#define ITEMS (launcher ? launcher_items : game_items)
+#define NITEMS (launcher ? (int)SDL_arraysize(launcher_items) : (int)SDL_arraysize(game_items))
 
 /* The Controls page: a line per Xbox button, then these two. While a line
  * waits for its new key or controller button, capture is set. */
@@ -40,6 +55,30 @@ static int counted, fps = -1;
 bool pdo_overlay_open(void)
 {
     return open_;
+}
+
+void pdo_launcher_begin(const char *files, bool ok)
+{
+    launcher = open_ = dirty = true;
+    controls = capture = false;
+    launcher_files = files;
+    launcher_files_ok = ok;
+    launcher_choice = PDO_LAUNCH_NONE;
+    selected = ok ? 0 : 1;          /* no usable files: on Game files */
+}
+
+int pdo_launcher_poll(void)
+{
+    int c = launcher_choice;
+    launcher_choice = PDO_LAUNCH_NONE;
+    return c;
+}
+
+void pdo_launcher_end(void)
+{
+    launcher = open_ = false;
+    dirty = true;
+    pdo_settings_save();
 }
 
 static void set_open(bool on)
@@ -77,7 +116,12 @@ static void change(int dir)
 {
     pdo_settings *s = pdo_settings_get();
 
-    switch (selected) {
+    switch (ITEMS[selected]) {
+    case ITEM_START:  if (dir > 0 && launcher_files_ok) launcher_choice = PDO_LAUNCH_START; break;
+    case ITEM_PICK:   if (dir > 0) launcher_choice = PDO_LAUNCH_PICK; break;
+    case ITEM_EXIT:   if (dir > 0) launcher_choice = PDO_LAUNCH_EXIT; break;
+    case ITEM_FULLSCREEN: s->fullscreen = !s->fullscreen; break;
+    case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
     case ITEM_MSAA:   next_aa(s, dir); break;
     case ITEM_ASPECT: s->aspect = (s->aspect + PDO_ASPECT_COUNT + dir) % PDO_ASPECT_COUNT; break;
@@ -89,15 +133,22 @@ static void change(int dir)
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
     case ITEM_INTERP: s->frame_interp = !s->frame_interp; break;
     case ITEM_CONTROLS: if (dir > 0) { controls = true; selected = 0; } break;
-    case ITEM_FILES:  s->choose_files = !s->choose_files; break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     }
     dirty = true;
 }
 
+static int index_of(int item)
+{
+    for (int i = 0; i < NITEMS; i++)
+        if (ITEMS[i] == item)
+            return i;
+    return 0;
+}
+
 static void move(int dir)
 {
-    int n = controls ? CTL_COUNT : ITEM_COUNT;
+    int n = controls ? CTL_COUNT : NITEMS;
     selected = (selected + n + dir) % n;
     dirty = true;
 }
@@ -114,7 +165,7 @@ static void control_act(int a, int dir)
         st->mouse_speed = SDL_clamp(st->mouse_speed + 10 * dir, 10, 400);
     } else if (selected == CTL_BACK || (a < 0 && dir < 0 && selected >= PDO_IN_COUNT)) {
         controls = false;
-        selected = ITEM_CONTROLS;
+        selected = index_of(ITEM_CONTROLS);
     } else if (selected == CTL_RESET) {
         if (dir > 0)
             pdo_input_reset();
@@ -139,7 +190,7 @@ static void act(int a)
         case ACT_DOWN:  move(+1); break;
         case ACT_LEFT:  control_act(-1, -1); break;
         case ACT_RIGHT: case ACT_OK: control_act(0, +1); break;
-        case ACT_BACK:  controls = false; selected = ITEM_CONTROLS; dirty = true; break;
+        case ACT_BACK:  controls = false; selected = index_of(ITEM_CONTROLS); dirty = true; break;
         }
         return;
     }
@@ -149,7 +200,7 @@ static void act(int a)
     case ACT_LEFT:  change(-1); break;
     case ACT_RIGHT: change(+1); break;
     case ACT_OK:    change(+1); break;
-    case ACT_BACK:  set_open(false); break;
+    case ACT_BACK:  if (!launcher) set_open(false); break;
     }
 }
 
@@ -186,7 +237,8 @@ bool pdo_overlay_event(const SDL_Event *ev)
     if (ev->type == SDL_EVENT_KEY_DOWN) {
         SDL_Keycode k = ev->key.key;
         if (k == SDLK_F1 && !ev->key.repeat) {
-            set_open(!open_);
+            if (!launcher)
+                set_open(!open_);
             return true;
         }
         if (!open_)
@@ -205,7 +257,8 @@ bool pdo_overlay_event(const SDL_Event *ev)
         if (b == SDL_GAMEPAD_BUTTON_BACK)
             back_held = down;
         if (down && start_held && back_held) {
-            set_open(!open_);
+            if (!launcher)
+                set_open(!open_);
             return true;
         }
         if (!open_ || !down)
@@ -309,7 +362,11 @@ static void draw_menu(void)
     static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "16:9" };
     static const char *fits[PDO_FIT_COUNT] = { "Bars", "Stretch", "Zoom" };
     char lines[ITEM_COUNT][48];
-    const float x0 = 4, y0 = 1, w = 32, h = 2 + ITEM_COUNT * 2 + 1;    /* the 240 rows: help on the last */
+    /* The launcher's lines a row and a half apart, the game's two: both in
+     * the 240 rows, help on the last. */
+    const float step = launcher ? 1.5f : 2.0f;
+    const float w = launcher ? 36 : 32, h = 2 + NITEMS * step + 1;
+    const float x0 = launcher ? 2 : 4, y0 = launcher ? (30 - h) / 2 : 1;     /* the launcher's centred */
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
     snprintf(lines[ITEM_SCALE], sizeof lines[0], "%-15s%dx", "Resolution", s->render_scale);
@@ -321,7 +378,7 @@ static void draw_menu(void)
         snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15sOff", "Anti-aliasing");
     /* The game reads widescreen once, at start: say so until it has. */
     snprintf(lines[ITEM_ASPECT], sizeof lines[0], "%-15s%s%s", "Aspect ratio", aspects[s->aspect],
-             (s->aspect == PDO_ASPECT_16_9) != pdo_widescreen_active() ? " (restart)" : "");
+             !launcher && (s->aspect == PDO_ASPECT_16_9) != pdo_widescreen_active() ? " (restart)" : "");
     snprintf(lines[ITEM_FIT], sizeof lines[0], "%-15s%s", "Fit to window", fits[s->fit]);
     snprintf(lines[ITEM_SOFT], sizeof lines[0], "%-15s%s", "TV softening", s->soft_filter ? "On" : "Off");
     snprintf(lines[ITEM_VOLUME], sizeof lines[0], "%-15s%d%%", "Volume", s->master_volume);
@@ -330,31 +387,39 @@ static void draw_menu(void)
     snprintf(lines[ITEM_FVF], sizeof lines[0], "%-15s%s", "Fixed-func", s->gpu_fixed ? "GPU" : "CPU");
     snprintf(lines[ITEM_INTERP], sizeof lines[0], "%-15s%s", "Frame interp", s->frame_interp ? "On" : "Off");
     snprintf(lines[ITEM_CONTROLS], sizeof lines[0], "Controls...");
-    snprintf(lines[ITEM_FILES], sizeof lines[0], "%-15s%s", "Game files", s->choose_files ? "Pick at restart" : "Keep");
     snprintf(lines[ITEM_CLOSE], sizeof lines[0], "Close");
+    snprintf(lines[ITEM_START], sizeof lines[0], "%s", launcher_files_ok ? "Start game" : "Start game (no game files)");
+    snprintf(lines[ITEM_PICK], sizeof lines[0], "%-15s%.19s", "Game files", launcher_files ? launcher_files : "-");
+    snprintf(lines[ITEM_GPU], sizeof lines[0], "%-15s%s", "Graphics", "Vulkan");
+    snprintf(lines[ITEM_FULLSCREEN], sizeof lines[0], "%-15s%s", "Fullscreen", s->fullscreen ? "On" : "Off");
+    snprintf(lines[ITEM_EXIT], sizeof lines[0], "Exit");
 
     SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
     SDL_RenderFillRect(painter, &panel);
     SDL_SetRenderDrawColor(painter, 120, 170, 220, 255);
     SDL_RenderRect(painter, &panel);
     SDL_SetRenderDrawColor(painter, 230, 235, 245, 255);
-    text(x0, y0, "Orta Recomp options");
-    for (int i = 0; i < ITEM_COUNT; i++) {
-        float y = y0 + 2 + i * 2;
+    text(x0, y0, launcher ? "Panzer Dragoon Orta - Orta Recomp" : "Orta Recomp options");
+    for (int i = 0; i < NITEMS; i++) {
+        int item = ITEMS[i];
+        float y = y0 + 2 + i * step;
         if (i == selected) {
-            SDL_FRect bar = { (x0 - 0.5f) * CHAR, (y - 0.5f) * CHAR, (w + 1) * CHAR, 2 * CHAR };
+            SDL_FRect bar = { (x0 - 0.5f) * CHAR, (y - (step - 1) / 2) * CHAR, (w + 1) * CHAR, step * CHAR };
             SDL_SetRenderDrawColor(painter, 60, 100, 160, 255);
             SDL_RenderFillRect(painter, &bar);
             SDL_SetRenderDrawColor(painter, 255, 255, 255, 255);
             text(x0, y, ">");
         } else
             SDL_SetRenderDrawColor(painter, 200, 205, 215, 255);
-        text(x0 + 2, y, lines[i]);
-        if (i == selected && i != ITEM_CLOSE && i != ITEM_CONTROLS)
+        if (item == ITEM_START && !launcher_files_ok)
+            SDL_SetRenderDrawColor(painter, 130, 135, 145, 255);
+        text(x0 + 2, y, lines[item]);
+        if (i == selected && item != ITEM_CLOSE && item != ITEM_CONTROLS && item != ITEM_START &&
+            item != ITEM_PICK && item != ITEM_EXIT && item != ITEM_GPU)
             text(x0 + w - 4, y, "< >");
     }
     SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
-    text(x0, y0 + h - 1.5f, "Arrows/D-pad, B or F1 closes");
+    text(x0, y0 + h - 1.5f, launcher ? "Arrows/D-pad, A or Enter chooses" : "Arrows/D-pad, B or F1 closes");
 }
 
 SDL_Surface *pdo_overlay_image(bool *changed)

@@ -35,4 +35,12 @@ SDL_Surface *pdo_overlay_image(bool *changed);
  * reach the game. any_pressed: the game's pad state has anything held. */
 bool pdo_overlay_blocks_input(bool any_pressed);
 
+/* The launcher (main.c, before the game starts): the same menu, with Start
+ * game, the game files, graphics and fullscreen, and Exit; Close and F1 do
+ * not close it. files: the game files to show (the folder), ok: usable. */
+enum { PDO_LAUNCH_NONE, PDO_LAUNCH_START, PDO_LAUNCH_PICK, PDO_LAUNCH_EXIT };
+void pdo_launcher_begin(const char *files, bool ok);
+int pdo_launcher_poll(void);        /* what was chosen since the last poll (PDO_LAUNCH_*) */
+void pdo_launcher_end(void);
+
 #endif
