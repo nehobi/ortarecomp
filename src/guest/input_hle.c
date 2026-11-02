@@ -242,8 +242,11 @@ static void read_port(int port, pad_state *s)
         const bool *k = port == 0 ? SDL_GetKeyboardState(NULL) : NULL;
         /* With Alt held, Enter is the fullscreen toggle (renderer.c), not a button. */
         bool alt = (SDL_GetModState() & SDL_KMOD_ALT) != 0;
+        SDL_MouseButtonFlags mb = k ? pdo_mouse_buttons() : 0;
         for (int i = 0; i < PDO_IN_COUNT; i++) {
             int level = pdo_input_pad_level(g, bind[i].pad);
+            if (bind[i].mouse && (mb & SDL_BUTTON_MASK(bind[i].mouse)))
+                level = 255;
             if (k && bind[i].key != SDL_SCANCODE_UNKNOWN && k[bind[i].key] &&
                 !(alt && bind[i].key == SDL_SCANCODE_RETURN))
                 level = 255;
@@ -268,8 +271,6 @@ static void read_port(int port, pad_state *s)
         const bool *k = SDL_GetKeyboardState(NULL);
         int16_t lx, ly, rx, ry;
 
-        if (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_LMASK)
-            s->analog[AB_A] = 255;
         /* Keys win over a resting stick, not over a held one. */
         lx = axis_from_keys(k, SDL_SCANCODE_A, SDL_SCANCODE_D);
         ly = axis_from_keys(k, SDL_SCANCODE_S, SDL_SCANCODE_W);

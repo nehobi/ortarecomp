@@ -27,6 +27,7 @@ typedef struct pdo_settings {
     bool win_maximized;
     bool mouse_aim;         /* the mouse steers the left stick (input_hle.c) */
     int  mouse_speed;       /* 10-400 % */
+    bool choose_files;      /* open the game file picker at the next start */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

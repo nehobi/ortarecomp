@@ -12,7 +12,7 @@ static const struct {
     const char  *name, *ini;    /* shown; in the settings file */
     pdo_binding  def;
 } buttons[PDO_IN_COUNT] = {
-    [PDO_IN_A]      = { "A",       "a",      { SDL_SCANCODE_SPACE,  SDL_GAMEPAD_BUTTON_SOUTH } },
+    [PDO_IN_A]      = { "A",       "a",      { SDL_SCANCODE_SPACE,  SDL_GAMEPAD_BUTTON_SOUTH, SDL_BUTTON_LEFT } },
     [PDO_IN_B]      = { "B",       "b",      { SDL_SCANCODE_LSHIFT, SDL_GAMEPAD_BUTTON_EAST } },
     [PDO_IN_X]      = { "X",       "x",      { SDL_SCANCODE_F,      SDL_GAMEPAD_BUTTON_WEST } },
     [PDO_IN_Y]      = { "Y",       "y",      { SDL_SCANCODE_R,      SDL_GAMEPAD_BUTTON_NORTH } },
@@ -33,6 +33,59 @@ static const struct {
 static pdo_binding bindings[PDO_IN_COUNT];
 static SDL_SpinLock mouse_lock;
 static float mouse_dx, mouse_dy;
+static SDL_AtomicInt mouse_held;
+
+void pdo_mouse_set_captured(bool on)
+{
+    /* 2: just taken -- the buttons count once they have all been let go
+     * (the click that took the mouse is not a press in the game). */
+    if (!on)
+        SDL_SetAtomicInt(&mouse_held, 0);
+    else
+        SDL_CompareAndSwapAtomicInt(&mouse_held, 0, 2);
+}
+
+SDL_MouseButtonFlags pdo_mouse_buttons(void)
+{
+    SDL_MouseButtonFlags b;
+    int held = SDL_GetAtomicInt(&mouse_held);
+
+    if (!held)
+        return 0;
+    b = SDL_GetMouseState(NULL, NULL);
+    if (held == 2) {
+        if (b)
+            return 0;
+        SDL_CompareAndSwapAtomicInt(&mouse_held, 2, 1);
+    }
+    return b;
+}
+
+static const char *const mouse_names[] = { "-", "left", "middle", "right", "x1", "x2" };
+
+const char *pdo_input_pad_label(int pad)
+{
+    static const struct { int pad; const char *label; } labels[] = {
+        { SDL_GAMEPAD_BUTTON_SOUTH, "A (south)" }, { SDL_GAMEPAD_BUTTON_EAST, "B (east)" },
+        { SDL_GAMEPAD_BUTTON_WEST, "X (west)" }, { SDL_GAMEPAD_BUTTON_NORTH, "Y (north)" },
+        { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, "LB" }, { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, "RB" },
+        { SDL_GAMEPAD_BUTTON_LEFT_STICK, "LS click" }, { SDL_GAMEPAD_BUTTON_RIGHT_STICK, "RS click" },
+        { SDL_GAMEPAD_BUTTON_DPAD_UP, "D-up" }, { SDL_GAMEPAD_BUTTON_DPAD_DOWN, "D-down" },
+        { SDL_GAMEPAD_BUTTON_DPAD_LEFT, "D-left" }, { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, "D-right" },
+        { SDL_GAMEPAD_BUTTON_START, "Start" }, { SDL_GAMEPAD_BUTTON_BACK, "Back" },
+        { SDL_GAMEPAD_BUTTON_GUIDE, "Guide" },
+        { PDO_PAD_AXIS + SDL_GAMEPAD_AXIS_LEFT_TRIGGER, "LT" }, { PDO_PAD_AXIS + SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, "RT" },
+    };
+    for (size_t i = 0; i < SDL_arraysize(labels); i++)
+        if (labels[i].pad == pad)
+            return labels[i].label;
+    return pdo_input_pad_name(pad);
+}
+
+const char *pdo_input_mouse_name(int mouse)
+{
+    return mouse >= 1 && mouse <= 5 ? mouse_names[mouse] : "-";
+}
 
 void pdo_mouse_add(float dx, float dy)
 {
@@ -93,7 +146,19 @@ const char *pdo_input_pad_name(int pad)
 bool pdo_input_load_line(const char *name, const char *value)
 {
     bool key = strncmp(name, "key_", 4) == 0, pad = strncmp(name, "pad_", 4) == 0;
+    bool mouse = strncmp(name, "mouse_", 6) == 0;
 
+    if (mouse) {
+        pdo_input_bindings();
+        for (int i = 0; i < PDO_IN_COUNT; i++)
+            if (strcmp(name + 6, buttons[i].ini) == 0) {
+                bindings[i].mouse = 0;
+                for (int m = 1; m <= 5; m++)
+                    if (strcmp(value, mouse_names[m]) == 0)
+                        bindings[i].mouse = m;
+            }
+        return true;
+    }
     if (!key && !pad)
         return false;
     pdo_input_bindings();
@@ -121,8 +186,9 @@ size_t pdo_input_save(char *out, size_t cap)
     pdo_input_bindings();
     for (int i = 0; i < PDO_IN_COUNT && n < cap; i++) {
         const char *k = bindings[i].key != SDL_SCANCODE_UNKNOWN ? SDL_GetScancodeName(bindings[i].key) : "";
-        int w = snprintf(out + n, cap - n, "key_%s=%s\npad_%s=%s\n", buttons[i].ini, k[0] ? k : "-",
-                         buttons[i].ini, pdo_input_pad_name(bindings[i].pad));
+        int w = snprintf(out + n, cap - n, "key_%s=%s\npad_%s=%s\nmouse_%s=%s\n", buttons[i].ini, k[0] ? k : "-",
+                         buttons[i].ini, pdo_input_pad_name(bindings[i].pad), buttons[i].ini,
+                         pdo_input_mouse_name(bindings[i].mouse));
         if (w < 0)
             break;
         n += (size_t)w;

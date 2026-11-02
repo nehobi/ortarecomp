@@ -206,6 +206,12 @@ int main(int argc, char **argv)
 
     if (opt.game_dir)
         SDL_strlcpy(cfg.game_dir, opt.game_dir, sizeof cfg.game_dir);
+    if (pdo_settings_get()->choose_files && !opt.game_dir) {
+        /* Asked for in the options (Game files): once. */
+        opt.setup = true;
+        pdo_settings_get()->choose_files = false;
+        pdo_settings_save();
+    }
 
     if (!opt.setup && cfg.game_dir[0]) {
         have_game = pdo_assets_check_dir(cfg.game_dir, &check, err, sizeof err);

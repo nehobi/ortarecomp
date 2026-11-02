@@ -25,6 +25,7 @@ enum {
 typedef struct pdo_binding {
     SDL_Scancode key;       /* SDL_SCANCODE_UNKNOWN: none */
     int          pad;
+    int          mouse;     /* SDL_BUTTON_LEFT..X2, 0: none */
 } pdo_binding;
 
 pdo_binding *pdo_input_bindings(void);          /* PDO_IN_COUNT of them */
@@ -34,11 +35,17 @@ void pdo_input_reset(void);                     /* the defaults */
  * analog, buttons 0 or 255); 0 without a controller. */
 int pdo_input_pad_level(SDL_Gamepad *g, int pad);
 const char *pdo_input_pad_name(int pad);        /* "a", "lefttrigger", "-" */
+const char *pdo_input_mouse_name(int mouse);    /* "left", ... "-" */
+const char *pdo_input_pad_label(int pad);       /* short, for the menu: "A", "RB", "LT" */
 
 /* Mouse motion while the game has the mouse (renderer.c adds it, in window
  * pixels; input_hle.c takes it once a game frame). */
 void pdo_mouse_add(float dx, float dy);
 void pdo_mouse_take(float *dx, float *dy);
+/* Whether the game has the mouse (held in the window): mouse buttons play
+ * the game only then, so the click that takes the mouse back does not. */
+void pdo_mouse_set_captured(bool on);
+SDL_MouseButtonFlags pdo_mouse_buttons(void);    /* none while not captured */
 
 /* Settings file lines (config.c): key_<button>=<key name>,
  * pad_<button>=<controller input name>. */

@@ -20,7 +20,7 @@
 #include <string.h>
 
 enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP,
-       ITEM_CONTROLS, ITEM_CLOSE, ITEM_COUNT };
+       ITEM_CONTROLS, ITEM_FILES, ITEM_CLOSE, ITEM_COUNT };
 
 /* The Controls page: a line per Xbox button, then these two. While a line
  * waits for its new key or controller button, capture is set. */
@@ -89,6 +89,7 @@ static void change(int dir)
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
     case ITEM_INTERP: s->frame_interp = !s->frame_interp; break;
     case ITEM_CONTROLS: if (dir > 0) { controls = true; selected = 0; } break;
+    case ITEM_FILES:  s->choose_files = !s->choose_files; break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     }
     dirty = true;
@@ -122,6 +123,7 @@ static void control_act(int a, int dir)
     } else {
         pdo_input_bindings()[selected].key = SDL_SCANCODE_UNKNOWN;
         pdo_input_bindings()[selected].pad = -1;
+        pdo_input_bindings()[selected].mouse = 0;
     }
     dirty = true;
 }
@@ -162,13 +164,15 @@ static bool capture_event(const SDL_Event *ev)
             b->key = ev->key.scancode;
     } else if (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
         b->pad = ev->gbutton.button;
+    } else if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev->button.button >= 1 && ev->button.button <= 5) {
+        b->mouse = ev->button.button;     /* left, middle, right, side buttons (x1, x2) */
     } else if (ev->type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
                (ev->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || ev->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
                ev->gaxis.value > 16000) {
         b->pad = PDO_PAD_AXIS + ev->gaxis.axis;
     } else {
         return ev->type == SDL_EVENT_GAMEPAD_BUTTON_UP || ev->type == SDL_EVENT_KEY_UP ||
-               ev->type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
+               ev->type == SDL_EVENT_GAMEPAD_AXIS_MOTION || ev->type == SDL_EVENT_MOUSE_BUTTON_UP;
     }
     capture = false;
     dirty = true;
@@ -259,7 +263,7 @@ static void text(float col, float row, const char *s)
 static void draw_controls(void)
 {
     const pdo_binding *b = pdo_input_bindings();
-    const float x0 = 4, y0 = 1, w = 34, h = 2 + CTL_COUNT + 4;
+    const float x0 = 1, y0 = 1, w = 38, h = 2 + CTL_COUNT + 4;   /* the 40 columns */
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
     SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
@@ -267,20 +271,20 @@ static void draw_controls(void)
     SDL_SetRenderDrawColor(painter, 120, 170, 220, 255);
     SDL_RenderRect(painter, &panel);
     SDL_SetRenderDrawColor(painter, 230, 235, 245, 255);
-    text(x0, y0, "Controls        key        pad");
+    text(x0, y0, "Controls    key       pad       mouse");
     for (int i = 0; i < CTL_COUNT; i++) {
         float y = y0 + 2 + i;
         char line[64];
         if (i < PDO_IN_COUNT) {
             const char *k = b[i].key != SDL_SCANCODE_UNKNOWN ? SDL_GetScancodeName(b[i].key) : "-";
-            snprintf(line, sizeof line, "%-10s %-10.10s %.10s", pdo_input_button_name(i), k[0] ? k : "?",
-                     pdo_input_pad_name(b[i].pad));
+            snprintf(line, sizeof line, "%-9s %-9.9s %-9.9s %.6s", pdo_input_button_name(i), k[0] ? k : "?",
+                     pdo_input_pad_label(b[i].pad), pdo_input_mouse_name(b[i].mouse));
             if (i == selected && capture)
-                snprintf(line, sizeof line, "%-10s press a key or button", pdo_input_button_name(i));
+                snprintf(line, sizeof line, "%-9s press a key, button or click", pdo_input_button_name(i));
         } else if (i == CTL_MOUSE) {
-            snprintf(line, sizeof line, "%-10s %s", "Mouse aim", pdo_settings_get()->mouse_aim ? "On" : "Off");
+            snprintf(line, sizeof line, "%-9s %s", "Mouse aim", pdo_settings_get()->mouse_aim ? "On" : "Off");
         } else if (i == CTL_MSPEED) {
-            snprintf(line, sizeof line, "%-10s %d%%", "Mouse spd", pdo_settings_get()->mouse_speed);
+            snprintf(line, sizeof line, "%-9s %d%%", "Mouse spd", pdo_settings_get()->mouse_speed);
         } else {
             snprintf(line, sizeof line, "%s", i == CTL_RESET ? "Reset to defaults" : "Back");
         }
@@ -305,7 +309,7 @@ static void draw_menu(void)
     static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "16:9" };
     static const char *fits[PDO_FIT_COUNT] = { "Bars", "Stretch", "Zoom" };
     char lines[ITEM_COUNT][48];
-    const float x0 = 4, y0 = 1, w = 32, h = 2 + ITEM_COUNT * 2 + 3;    /* fits the 240 rows */
+    const float x0 = 4, y0 = 1, w = 32, h = 2 + ITEM_COUNT * 2 + 1;    /* the 240 rows: help on the last */
     SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
     snprintf(lines[ITEM_SCALE], sizeof lines[0], "%-15s%dx", "Resolution", s->render_scale);
@@ -326,6 +330,7 @@ static void draw_menu(void)
     snprintf(lines[ITEM_FVF], sizeof lines[0], "%-15s%s", "Fixed-func", s->gpu_fixed ? "GPU" : "CPU");
     snprintf(lines[ITEM_INTERP], sizeof lines[0], "%-15s%s", "Frame interp", s->frame_interp ? "On" : "Off");
     snprintf(lines[ITEM_CONTROLS], sizeof lines[0], "Controls...");
+    snprintf(lines[ITEM_FILES], sizeof lines[0], "%-15s%s", "Game files", s->choose_files ? "Pick at restart" : "Keep");
     snprintf(lines[ITEM_CLOSE], sizeof lines[0], "Close");
 
     SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
@@ -349,7 +354,7 @@ static void draw_menu(void)
             text(x0 + w - 4, y, "< >");
     }
     SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
-    text(x0, y0 + h - 2, "Arrows/D-pad, B or F1 closes");
+    text(x0, y0 + h - 1.5f, "Arrows/D-pad, B or F1 closes");
 }
 
 SDL_Surface *pdo_overlay_image(bool *changed)

@@ -2763,6 +2763,7 @@ bool pdo_gfx_pump_events(void)
                     (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
         if (want != SDL_GetWindowRelativeMouseMode(window))
             SDL_SetWindowRelativeMouseMode(window, want);
+        pdo_mouse_set_captured(want);
     }
     return keep_going;
 }
