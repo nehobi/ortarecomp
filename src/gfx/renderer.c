@@ -3138,7 +3138,9 @@ static void match_frames(frame_data *prev, frame_data *cur)
     /* Groups of alike 3D draws whose size changed from the frame before
      * (the log, below): how many, and the first few as before -> now x nv. */
     uint32_t resized = 0, shrank = 0;
-    float cam_step = -1.0f, cam_avg = -1.0f;    /* the camera's step, and the eight before (log) */
+    float cam_step = -1.0f, cam_avg = -1.0f;    /* the picture's move, and the eight before (log) */
+    static float moves[512];                     /* on-screen moves of paired draws (log) */
+    uint32_t n_moves = 0;
     /* Why 3D draws were not blended, and paired fixed-function draws whose
      * matrices did not change at all (a frame the game held still). */
     uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
@@ -3303,6 +3305,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         origin_ndc(u->wvp, &x1, &y1) && SDL_fabsf(x0) < 1.0f && SDL_fabsf(y0) < 1.0f &&
                         SDL_fabsf(x1) < 1.0f && SDL_fabsf(y1) < 1.0f) {
                         fvf_pairs++;
+                        if (n_moves < SDL_arraysize(moves))
+                            moves[n_moves++] = SDL_fabsf(x1 - x0) + SDL_fabsf(y1 - y0);
                         if (SDL_fabsf(x1 - x0) > 0.5f || SDL_fabsf(y1 - y0) > 0.5f) {
                             fvf_jumps++;
                             n_jumped++;
@@ -3404,66 +3408,37 @@ static void match_frames(frame_data *prev, frame_data *cur)
             }
         }
     }
-    /* The camera's step this frame, from a fixed-function draw placed in the
-     * world as it is (world matrix identity: its world-view is the view):
-     * the eye at -t R^T. A frame where it steps far less than the ones
-     * before (the freeze as the boost ends: the ground stood still while
-     * the dragon moved) is logged. */
+    /* How far the picture moved this frame: the 75th percentile of the
+     * on-screen moves of the paired fixed-function draws on screen (the
+     * world is most of them, past the dragon's parts and afterimages; Orta places them round the eye, so the camera is not read
+     * from a matrix). A frame moving far less than the eight before (the
+     * freeze as the boost ends: the ground stood still while the dragon
+     * moved) is logged. */
     {
-        static float eye0[3], steps[8];
-        cam_step = cam_avg = -1.0f;
-        static bool have_eye;
+        static float steps[8];
         static uint32_t nsteps, cam_logs, cam_frames;
-        const pdo_fvf_uniforms *u = NULL;
-        float far = -1.0f;
-        /* Of those, the one whose view moves the eye farthest from the
-         * origin: the sky is drawn round the eye (no translation) and the
-         * eye read from it never moved. */
-        for (uint32_t k = 0; k < cur->ncmds; k++) {
-            const command *c = &cur->cmds[k];
-            bool ident = true;
-            float t2;
-            if (c->kind != CMD_DRAW || c->fvf < 0 || (cur->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE))
-                continue;
-            for (int m = 0; m < 16 && ident; m++)
-                ident = SDL_fabsf(cur->fvf_us[c->fvf].world[m] - (m % 5 == 0 ? 1.0f : 0.0f)) < 1e-5f;
-            t2 = cur->fvf_us[c->fvf].wv[12] * cur->fvf_us[c->fvf].wv[12] +
-                 cur->fvf_us[c->fvf].wv[13] * cur->fvf_us[c->fvf].wv[13] +
-                 cur->fvf_us[c->fvf].wv[14] * cur->fvf_us[c->fvf].wv[14];
-            if (ident && t2 > far) {
-                far = t2;
-                u = &cur->fvf_us[c->fvf];
-            }
-        }
         if (++cam_frames >= 300)
             cam_frames = cam_logs = 0;
-        static bool told;
-        if (u && !told) {
-            told = true;
-            SDL_Log("interp: the camera is read from world-placed draws (frame %llu, %.0f from the origin)",
-                    (unsigned long long)cur->frame, SDL_sqrtf(far));
-        }
-        if (u) {
-            float eye[3], step = 0.0f, avg = 0.0f;
-            for (int jj = 0; jj < 3; jj++)
-                eye[jj] = -(u->wv[12] * u->wv[jj * 4 + 0] + u->wv[13] * u->wv[jj * 4 + 1] + u->wv[14] * u->wv[jj * 4 + 2]);
-            if (have_eye) {
-                for (int jj = 0; jj < 3; jj++)
-                    step += (eye[jj] - eye0[jj]) * (eye[jj] - eye0[jj]);
-                step = SDL_sqrtf(step);
-                for (uint32_t q = 0; q < SDL_min(nsteps, 8u); q++)
-                    avg += steps[q] / (float)SDL_min(nsteps, 8u);
-                if (nsteps >= 8 && avg > 0.05f && step < avg * 0.3f && cam_logs++ < 10)
-                    SDL_Log("interp: frame %llu: the camera stepped %.3f, against %.3f a frame before",
-                            (unsigned long long)cur->frame, step, avg);
-                steps[nsteps++ % 8] = step;
-                cam_step = step;
-                cam_avg = avg;
-            }
-            memcpy(eye0, eye, sizeof eye);
-            have_eye = true;
+        if (n_moves >= 8) {
+            float step, avg = 0.0f;
+            /* by a partial selection sort (n_moves <= 512) */
+            for (uint32_t q = 0; q <= n_moves * 3 / 4; q++)
+                for (uint32_t r = q + 1; r < n_moves; r++)
+                    if (moves[r] < moves[q]) {
+                        float t = moves[q];
+                        moves[q] = moves[r];
+                        moves[r] = t;
+                    }
+            step = moves[n_moves * 3 / 4];
+            for (uint32_t q = 0; q < SDL_min(nsteps, 8u); q++)
+                avg += steps[q] / (float)SDL_min(nsteps, 8u);
+            if (nsteps >= 8 && avg > 0.002f && step < avg * 0.3f && cam_logs++ < 10)
+                SDL_Log("interp: frame %llu: the picture moved %.4f, against %.4f a frame before (%u draws)",
+                        (unsigned long long)cur->frame, step, avg, n_moves);
+            steps[nsteps++ % 8] = step;
+            cam_step = step;
+            cam_avg = avg;
         } else {
-            have_eye = false;
             nsteps = 0;
         }
     }
@@ -3486,7 +3461,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
             odd_frames = odd_logs = 0;
         if ((resized >= 3 || unp3d * 4 > all3d || (still && !was_still)) && odd_logs++ < 10)
             SDL_Log("interp: frame %llu: %u of %u 3D draws not blended (%u no partner near, %u jumped, %u rebuilt, "
-                    "%u undone); %u of %u paired did not move; camera step %.3f (%.3f before); "
+                    "%u undone); %u of %u paired did not move; picture moved %.4f (%.4f before); "
                     "%u alike groups changed size:%s",
                     (unsigned long long)cur->frame, unp3d, all3d, n_forced, n_jumped, n_rebuilt, n_swapped,
                     n_still, n_fvf_paired, cam_step, cam_avg, resized, resized_txt);
