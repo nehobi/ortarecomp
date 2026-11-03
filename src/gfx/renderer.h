@@ -172,6 +172,7 @@ typedef struct pdo_gpu_vsh {
     int32_t  program;                  /* pdo_gfx_vsh_program */
     uint32_t count;                    /* instructions */
     const float (*constants)[4];       /* the 192 the program reads */
+    const uint8_t *consts_read;        /* a bit per one it really reads (NULL: all) */
     const uint8_t *stream_data[16];    /* host pointer at the draw's first vertex */
     uint32_t stream_bytes[16];         /* 0: stream unused */
     int32_t  input[16][4];             /* per v register: stream, stride, offset,

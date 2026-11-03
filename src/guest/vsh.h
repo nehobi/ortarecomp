@@ -69,6 +69,7 @@ typedef struct pdo_vsh_program {
     pdo_vsh_fop   fop[PDO_VSH_MAX_INSNS];
     pdo_vsh_input input[PDO_VSH_INPUTS];
     uint16_t      inputs_read;                   /* v registers the program reads */
+    uint8_t       consts_read[PDO_VSH_CONSTANTS / 8]; /* c registers it reads (all: one through a0) */
     bool          writes_constants;              /* then vertices must run in order */
     int32_t       gpu_program;                   /* renderer's copy (pdo_gfx_vsh_program), -1: none yet */
 } pdo_vsh_program;

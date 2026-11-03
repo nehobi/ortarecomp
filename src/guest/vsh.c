@@ -188,6 +188,13 @@ bool pdo_vsh_parse(pdo_vsh_program *p, const uint32_t *function, uint32_t functi
         for (int k = 0; k < 3; k++)
             if ((p->op[i].use & (1u << k)) && p->op[i].src[k].mux == 2)
                 p->inputs_read |= (uint16_t)(1u << p->op[i].vidx);
+        for (int k = 0; k < 3; k++)
+            if ((p->op[i].use & (1u << k)) && p->op[i].src[k].mux == MUX_C) {
+                if (p->op[i].rel)           /* c[a0.x + n]: any of them */
+                    memset(p->consts_read, 0xFF, sizeof p->consts_read);
+                else if (p->op[i].cidx < PDO_VSH_CONSTANTS)
+                    p->consts_read[p->op[i].cidx >> 3] |= (uint8_t)(1u << (p->op[i].cidx & 7));
+            }
         if (p->op[i].o_mask && !p->op[i].orb)
             p->writes_constants = true;
         if (bits(p->insn[i], 3, 0, 1)) {          /* final */

@@ -1828,6 +1828,7 @@ static void vsh_gpu_job(const pdo_vsh_program *p, uint32_t base, uint32_t stride
     vsh_constants(g->vp_scale, g->vp_offset, &zs);
     g->vp_offset[3] = zs;
     g->constants = (const float (*)[4])vconst;
+    g->consts_read = p->consts_read;
     g->program = p->gpu_program;
     g->count = p->count;
     for (int s = 0; s < 16; s++) {

@@ -143,6 +143,7 @@ typedef struct command {
     bool has_mvel;
     float mvel[32];
     uint32_t pair_prev;     /* the paired draw in the frame before (match_frames) */
+    uint8_t  consts_read[24]; /* vertex programs: a bit per c register read (pdo_gpu_vsh) */
     bool strayed;           /* its vertices strayed over a fifth of its size from its partner's */
 } command;
 
@@ -407,6 +408,10 @@ void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
     }
     c->vsh = true;
     c->id_nv = nv;
+    if (g->consts_read)
+        memcpy(c->consts_read, g->consts_read, sizeof c->consts_read);
+    else
+        memset(c->consts_read, 0xFF, sizeof c->consts_read);
 
     /* The streams, 4-aligned; 8 bytes of slack past the end for the
      * shader's word reads. */
@@ -3130,9 +3135,14 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
     if (!c->vsh && c->fvf < 0)
         return d;                           /* CPU-made: positions only */
     if (c->vsh) {
+        /* Only the registers the program reads: the file is shared, and the
+         * rest hold whatever the draws before left (episode 4's four alike
+         * battleships paired worse with their own last frame than with
+         * another, and their constants "jumped"). */
         const float *a = pf->vconsts[pc->vu.info[2]], *b = cf->vconsts[c->vu.info[2]];
         for (int i = 0; i < 192 * 4; i++)
-            if (SDL_fabsf(a[i]) < 1e6f && SDL_fabsf(b[i]) < 1e6f)  /* not stale, huge or NaN registers */
+            if ((c->consts_read[i >> 5] >> ((i >> 2) & 7) & 1) && SDL_fabsf(a[i]) < 1e6f &&
+                SDL_fabsf(b[i]) < 1e6f)     /* not stale, huge or NaN registers */
                 d += SDL_fabsf(a[i] - b[i]);
     } else {
         /* From where it was, or from where it was going (moved on by how it
@@ -3431,6 +3441,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                             const float *ca = prev->vconsts[pc->vu.info[2]], *cb = cur->vconsts[c->vu.info[2]];
                             for (int q = 0; q < 192; q++) {
                                 float d = 0.0f, m = 0.0f;
+                                if (!(c->consts_read[q >> 3] >> (q & 7) & 1))
+                                    continue;   /* not read: another draw's leftovers */
                                 for (int e = 0; e < 4; e++) {
                                     float x = ca[4 * q + e], y = cb[4 * q + e];
                                     if (!(SDL_fabsf(x) < 1e6f && SDL_fabsf(y) < 1e6f))
