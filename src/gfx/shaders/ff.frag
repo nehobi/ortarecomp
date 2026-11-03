@@ -351,10 +351,13 @@ vec4 ps_texture(int s, int mode)
     if ((mode == 6 || mode == 7) && s > 0) {
         // BUMPENVMAP(_LUM): the previous stage's texel (du, dv), through
         // this stage's bump matrix, offsets these coordinates:
-        // u += M00 du + M10 dv, v += M01 du + M11 dv.
+        // u += M00 du + M10 dv, v += M01 du + M11 dv. The offset is in the
+        // coordinates' own units, so on a linear texture (a copy of the
+        // frame: texel coordinates) it is scaled with them.
         vec4 prev = tex_reg(s - 1);
         vec4 m = bump_mat[s];
-        uv += vec2(m.x * prev.r + m.w * prev.g, m.y * prev.r + m.z * prev.g);
+        vec2 off = vec2(m.x * prev.r + m.w * prev.g, m.y * prev.r + m.z * prev.g);
+        uv = (tc.xy + off) * tc_scale[s].xy;
         vec4 c = sample_tex(s, uv);
         if (mode == 7)          // luminance from the previous texel's blue
             c.rgb *= clamp(prev.b * bump_lum[s].x + bump_lum[s].y, 0.0, 1.0);
