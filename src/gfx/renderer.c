@@ -145,6 +145,7 @@ typedef struct command {
     uint32_t pair_prev;     /* the paired draw in the frame before (match_frames) */
     uint8_t  consts_read[24]; /* vertex programs: a bit per c register read (pdo_gpu_vsh) */
     bool strayed;           /* its vertices strayed over a fifth of its size from its partner's */
+    bool no_partner;        /* match_frames: its group had none left for it (not a test's refusal) */
 } command;
 
 /* ── Threads ──────────────────────────────────────────────────────────────
@@ -3244,6 +3245,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
     /* Why 3D draws were not blended, and paired fixed-function draws whose
      * matrices did not change at all (a frame the game held still). */
     uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
+    uint32_t n_lod = 0;     /* vertex-program draws paired across models (below) */
     char resized_txt[96] = "";
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
@@ -3254,6 +3256,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         c->unpaired = true;
         c->has_mvel = false;
         c->strayed = false;
+        c->no_partner = false;
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
@@ -3371,6 +3374,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 const command *pc;
                 command *c = &cur->cmds[ck[j + k].cmd];
                 if (forced[k]) {
+                    c->no_partner = true;
                     n_forced += is_3d(cur, c);
                     continue;           /* no partner (order[k] unset) */
                 }
@@ -3451,6 +3455,30 @@ static void match_frames(frame_data *prev, frame_data *cur)
                                     r >= 0 ? pc->vu.inputs[r][1] : 0, sv, jumped_regs,
                                     sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4 ? " -> not blended"
                                                                                                   : "");
+                        /* Big programs (episode 4's battleships, 500+ vertices):
+                         * a line when one is left unblended or pairs narrowly,
+                         * at most ten in 300 frames. */
+                        if (c->id_nv >= 500) {
+                            static uint64_t win;
+                            static int logs;
+                            bool notb = sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4;
+                            float dch = draw_distance(prev, pc, cur, c), dmin = 3.4e38f;
+                            int nread = 0;
+                            for (uint32_t a = i; a < i2; a++)
+                                if (pk[a].cmd != pk[i + order[k]].cmd)
+                                    dmin = SDL_min(dmin, draw_distance(prev, &prev->cmds[pk[a].cmd], cur, c));
+                            for (int q = 0; q < 192; q++)
+                                nread += c->consts_read[q >> 3] >> (q & 7) & 1;
+                            if (cur->frame >= win + 300) {
+                                win = cur->frame;
+                                logs = 0;
+                            }
+                            if ((notb || dmin < dch * 1.3f) && logs++ < 10)
+                                SDL_Log("interp: big program draw: frame %llu cmd %u nv %u group %u->%u, own %.1f "
+                                        "other %.1f, stray %.2f, %d of %d read registers jumped%s",
+                                        (unsigned long long)cur->frame, ck[j + k].cmd, c->id_nv, i2 - i, j2 - j,
+                                        dch, dmin, sv, jumped_regs, nread, notb ? " -> not blended" : "");
+                        }
                         if (sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4) {
                             st_rebuilt++;
                             n_rebuilt++;
@@ -3562,6 +3590,73 @@ static void match_frames(frame_data *prev, frame_data *cur)
         i = i2;
         j = j2;
     }
+    }
+    /* A vertex-program draw that found no partner, with an unused one of the
+     * same program in the frame before, in the same render target, by the
+     * constants the program reads alone -- its vertices may differ. Episode
+     * 4's battleships switch between a detailed and simpler models as they
+     * move (the detailed one's parts, 3131, 721, 862... vertices, going 6->5,
+     * 2->3 while 1462- and 1184-vertex ones come and go): the switched ship
+     * had no partner, showed a frame ahead, and jittered as it switched back
+     * and forth. Paired, it blends its constants over this frame's vertices
+     * (interp[1] 0: the streams are not the same). Only a clear choice: the
+     * nearest at least twice as near as the next. */
+    {
+        static uint64_t *tp, *tc;
+        static uint32_t cap_tp, cap_tc;
+        uint64_t t = 0;
+        tp = grow(tp, &cap_tp, prev->ncmds + 1, sizeof *tp);
+        tc = grow(tc, &cap_tc, cur->ncmds + 1, sizeof *tc);
+        for (uint32_t k = 0; k < prev->ncmds; k++) {
+            if (prev->cmds[k].kind == CMD_TARGET)
+                t = target_key(&prev->cmds[k]);
+            tp[k] = t;
+        }
+        t = 0;
+        for (uint32_t k = 0; k < cur->ncmds; k++) {
+            if (cur->cmds[k].kind == CMD_TARGET)
+                t = target_key(&cur->cmds[k]);
+            tc[k] = t;
+        }
+        for (uint32_t k = 0; k < cur->ncmds; k++) {
+            command *c = &cur->cmds[k];
+            float best = 3.4e38f, next = 3.4e38f;
+            int32_t bi = -1;
+            if (c->kind != CMD_DRAW || !c->vsh || !c->unpaired || !c->id_src || (grouped[k] && !c->no_partner))
+                continue;           /* its pair refused by a test (stray, constants jumped): on purpose */
+            for (uint32_t q = 0; q < prev->ncmds; q++) {
+                const command *pc = &prev->cmds[q];
+                const float *a, *b;
+                float d = 0.0f;
+                if (pc->kind != CMD_DRAW || !pc->vsh || taken[q] || tp[q] != tc[k] ||
+                    pc->vu.info[0] != c->vu.info[0] || pc->vu.info[1] != c->vu.info[1] ||
+                    pc->draw.tex[0].data != c->draw.tex[0].data)
+                    continue;
+                a = prev->vconsts[pc->vu.info[2]];
+                b = cur->vconsts[c->vu.info[2]];
+                for (int e = 0; e < 192 * 4; e++)
+                    if ((c->consts_read[e >> 5] >> ((e >> 2) & 7) & 1) && SDL_fabsf(a[e]) < 1e6f &&
+                        SDL_fabsf(b[e]) < 1e6f)
+                        d += SDL_fabsf(a[e] - b[e]);
+                if (d < best) {
+                    next = best;
+                    best = d;
+                    bi = (int32_t)q;
+                } else if (d < next) {
+                    next = d;
+                }
+            }
+            if (bi < 0 || !(best * 2.0f < next))
+                continue;
+            for (int r = 0; r < 16; r++)
+                c->vu.prev_in[r] = prev->cmds[bi].vu.inputs[r][0];
+            c->vu.interp[0] = prev->cmds[bi].vu.info[2];
+            c->vu.interp[1] = 0;
+            c->unpaired = false;
+            c->pair_prev = (uint32_t)bi;
+            taken[bi] = 1;
+            n_lod++;
+        }
     }
     /* A check on every 3D pair, data aside: paired by the address of its
      * vertex data, a draw is taken on trust when it alone has that address
@@ -3675,9 +3770,9 @@ static void match_frames(frame_data *prev, frame_data *cur)
             odd_frames = odd_logs = 0;
         if ((resized >= 3 || unp3d * 4 > all3d || (still && !was_still)) && odd_logs++ < 10)
             SDL_Log("interp: frame %llu: %u of %u 3D draws not blended (%u no partner near, %u jumped, %u rebuilt, "
-                    "%u undone); %u of %u paired did not move; picture moved %.4f (%.4f before); "
+                    "%u undone, %u paired across models); %u of %u paired did not move; picture moved %.4f (%.4f before); "
                     "%u alike groups changed size:%s",
-                    (unsigned long long)cur->frame, unp3d, all3d, n_forced, n_jumped, n_rebuilt, n_swapped,
+                    (unsigned long long)cur->frame, unp3d, all3d, n_forced, n_jumped, n_rebuilt, n_swapped, n_lod,
                     n_still, n_fvf_paired, cam_step, cam_avg, resized, resized_txt);
         was_still = still;
         groups_shrank = shrank >= 10;
