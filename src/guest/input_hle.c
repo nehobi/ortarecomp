@@ -305,6 +305,31 @@ static void read_port(int port, pad_state *s)
 }
 
 /* Ports the game can see: none until enumeration has had time to finish. */
+/* A new press of A or Start on any port (keyboard and mouse on the first):
+ * the logo skip (src/guest/intro_skip.c). Called once a frame while the
+ * logos show; true only on the frame the press begins. */
+bool pdo_input_skip_press(void)
+{
+    static bool held;
+    bool now = false;
+
+    input_init();
+    for (int p = 0; p < PORTS; p++) {
+        pad_state s;
+        if (p > 0 && !pads[p])
+            continue;
+        read_port(p, &s);
+        if ((s.buttons & XB_START) || s.analog[AB_A] > 0x40)
+            now = true;
+    }
+    if (now && !held) {
+        held = true;
+        return true;
+    }
+    held = now;
+    return false;
+}
+
 static uint32_t visible_mask(void)
 {
     if (!init_ms)

@@ -102,6 +102,7 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         src/guest/wait_trace.c
         src/guest/widescreen.c
         src/guest/unlocks.c
+        src/guest/intro_skip.c
         src/audio/mixer.c
         src/audio/reverb.c
         src/gfx/renderer.c

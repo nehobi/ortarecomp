@@ -444,7 +444,8 @@ void d3d_trace_call(uint32_t va, const char *name, int args)
     len = snprintf(line, sizeof line, "d3d %llu: %s(", (unsigned long long)frame, name);
     for (int i = 0; i < args && len < (int)sizeof line - 16; i++)
         len += snprintf(line + len, sizeof line - (size_t)len, "%s0x%x", i ? ", " : "", MEM32(g_esp + 4 + 4 * i));
-    snprintf(line + len, sizeof line - (size_t)len, ") ecx=0x%x edx=0x%x [0x%08x]", g_ecx, g_edx, va);
+    snprintf(line + len, sizeof line - (size_t)len, ") ecx=0x%x edx=0x%x [0x%08x] from 0x%08x", g_ecx, g_edx, va,
+             MEM32(g_esp));
     SDL_Log("%s", line);
 }
 

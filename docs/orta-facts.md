@@ -220,3 +220,17 @@ the launcher's Pandora's Box setting is on.
 0x0034277C, set from launch data tagged "PDLD" (0x00011620), is a kiosk
 mode: everything open, but saving is skipped (0x00034050, 0x000340A0) and
 menus change; not used.
+
+## Boot logos
+
+Scene 10 (current scene at 0x0034271C, next at 0x00342718, a table of
+16-byte entries at 0x00341E30) is the title, logos included. Its object
+(pointer at 0x004741B0) keeps a state at +0x1A0: 0 Sega, 1 Smilebit, 2
+Sofdec, 3 the title; 0x000C0940 runs the state's handler (table at
+0x0036E56C) and moves to the state it returns (old state to +0x1A4, +0x10
+to 0, +4 counted). A card (0x000BF690, 0x000BF740, 0x000BF7F0) fades in
+and starts its sprite animation (step 0), shows until the animation's time
+(sprite +0x24, +0x50, +8) reaches 300.0 (0x00314D88; Sofdec 0x00315150),
+fades out (step 2) and frees it (step 3). A press does nothing on the
+console. Going straight to state 3 leaves the title without its logo, so
+src/guest/intro_skip.c ends each card's animation instead (skip_logos).
