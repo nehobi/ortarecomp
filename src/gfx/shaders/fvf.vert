@@ -36,6 +36,13 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     ivec4 interp;
     vec4  blend_t;
     vec4  prev_wvp[4], prev_wv[4], prev_world[4];
+    // x: a bit per stage whose texture matrix blends from prev_tex: the
+    // game's projected textures (camera-space coordinates through a matrix
+    // that follows the camera: the episode 3 desert floor) slid a frame
+    // ahead of the blended geometry and held -- a freeze of the ground as a
+    // boost ended.
+    ivec4 interp2;
+    vec4  prev_tex[16];
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -90,7 +97,10 @@ vec4 tex_transform(int s, int n, vec4 tc)
     if (count == 0) return tc;
     for (int c = 0; c < n && c < 4; c++) in4[c] = tc[c];
     if (n < 4) in4[n] = 1.0;
-    o = ((in4.x * tex[s * 4] + in4.y * tex[s * 4 + 1]) + in4.z * tex[s * 4 + 2]) + in4.w * tex[s * 4 + 3];
+    vec4 r[4];
+    bool bt = blend_t.x < 1.0 && interp.x >= 0 && ((interp2.x >> s) & 1) != 0;
+    for (int k = 0; k < 4; k++) r[k] = bt ? mix(prev_tex[s * 4 + k], tex[s * 4 + k], blend_t.x) : tex[s * 4 + k];
+    o = ((in4.x * r[0] + in4.y * r[1]) + in4.z * r[2]) + in4.w * r[3];
     if ((flags & 256) != 0 && count >= 2 && count <= 4 && o[count - 1] != 0.0)
         for (int c = 0; c + 1 < count; c++) o[c] /= o[count - 1];
     if (count != 4 || (flags & 256) != 0) o.w = 0.0;

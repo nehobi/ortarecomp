@@ -208,6 +208,8 @@ typedef struct pdo_fvf_uniforms {
     int32_t interp[4];
     float   blend_t[4];
     float   prev_wvp[16], prev_wv[16], prev_world[16];
+    int32_t interp2[4];          /* x: stages whose texture matrix blends from prev_tex */
+    float   prev_tex[4][16];
 } pdo_fvf_uniforms;
 
 enum { PDO_FVF_PRE = 1, PDO_FVF_DIFFUSE = 2, PDO_FVF_SPECULAR = 4, PDO_FVF_NORMAL = 8,

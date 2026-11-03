@@ -3225,6 +3225,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (c->fvf >= 0) {
             cur->fvf_us[c->fvf].interp[0] = -1;
             cur->fvf_us[c->fvf].interp[3] = 0;
+            cur->fvf_us[c->fvf].interp2[0] = 0;
         }
     }
     if (!prev)
@@ -3404,6 +3405,23 @@ static void match_frames(frame_data *prev, frame_data *cur)
                      * motion blur that pastes the scene): its texture
                      * coordinates blend too (shaders/fvf.vert). */
                     u->interp[3] = frame_pass(cur, c);
+                    /* Texture matrices (projected textures follow the
+                     * camera) blend too, stage by stage -- unless one
+                     * jumped by over half its size (a flipbook or random
+                     * offset: blended it would slide). */
+                    u->interp2[0] = 0;
+                    for (int st = 0; st < 4; st++) {
+                        float dmax = 0.0f, mag = 0.0f;
+                        if (!(u->stage_tt[st] & 0xFF) || (u->stage_tt[st] & 0xFF) != (pu->stage_tt[st] & 0xFF))
+                            continue;
+                        for (int m = 0; m < 16; m++) {
+                            dmax = SDL_max(dmax, SDL_fabsf(u->tex[st][m] - pu->tex[st][m]));
+                            mag = SDL_max(mag, SDL_max(SDL_fabsf(u->tex[st][m]), SDL_fabsf(pu->tex[st][m])));
+                        }
+                        if (dmax <= mag * 0.5f)
+                            u->interp2[0] |= 1 << st;
+                    }
+                    memcpy(u->prev_tex, pu->tex, sizeof u->prev_tex);
                     c->unpaired = false;
                     for (int m = 0; m < 16; m++) {
                         c->mvel[m] = u->wvp[m] - pu->wvp[m];
