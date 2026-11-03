@@ -19,7 +19,8 @@ layout(set = 0, binding = 3, std430) readonly buffer PrevStreams { uint pblob[];
 layout(set = 0, binding = 4, std430) readonly buffer PrevConstants { vec4 pcbuf[]; };
 
 layout(set = 1, binding = 0, std140) uniform Draw {
-    ivec4 info;          // program base (uvec4 units), instructions, constant base (vec4 units), -
+    ivec4 info;          // program base (uvec4 units), instructions, constant base (vec4 units),
+                         // reversed depth (renderer.c)
     ivec4 inputs[16];    // per v register: byte base in blob, stride, offset, D3DVSDT type (0: absent)
     vec4  vp_scale;      // the viewport transform the program ends with (c[58]), w unused
     vec4  vp_offset;     // c[59]; w: the depth scale
@@ -206,6 +207,10 @@ void main()
     float cw = p.w;
     gl_Position = vec4((p.x - vp_offset.x) / vp_scale.x * cw, (p.y - vp_offset.y) / vp_scale.y * cw,
                        (p.z - vp_offset.z) / vp_offset.w * cw, cw);
+    // Reversed depth (renderer.c, info.w): 1 - z from the program's own screen
+    // z, the subtraction exact.
+    if (info.w != 0)
+        gl_Position.z = ((vp_offset.w + vp_offset.z) - p.z) / vp_offset.w * cw;
     // Colours as the CPU packs them: NaN as 0, clamped, to 8 bits.
     vec4 d0 = mix(clamp(O[3], 0.0, 1.0), vec4(0.0), isnan(O[3]));
     vec4 d1 = mix(clamp(O[4], 0.0, 1.0), vec4(0.0), isnan(O[4]));

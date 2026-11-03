@@ -22,6 +22,8 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     vec4  wvp[4];        // rows of world * view * projection (row vectors)
     vec4  wv[4];
     vec4  world[4];
+    vec4  rz;            // reversed depth: wvp's w column minus its z column (d3d_hle.c,
+                         // in double), so 1 - z keeps its precision
     vec4  tex[16];       // the four stages' texture matrices, rows
     vec4  material[4];   // diffuse, ambient, specular, emissive
     vec4  ambient;       // D3DRS_AMBIENT
@@ -44,6 +46,7 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     // boost ended.
     ivec4 interp2;
     vec4  prev_tex[16];
+    vec4  prev_rz;
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -188,8 +191,13 @@ void main()
     if (pre) {
         float w = rhw != 0.0 ? 1.0 / rhw : 1.0;
         gl_Position = vec4((p.x / rt.x * 2.0 - 1.0) * w, (1.0 - p.y / rt.y * 2.0) * w, p.z * w, w);
+        if (blend_t.y != 0.0) gl_Position.z = (1.0 - p.z) * w;    // reversed depth
     } else {
         gl_Position = xform(p, mwvp[0], mwvp[1], mwvp[2], mwvp[3]);
+        if (blend_t.y != 0.0) {     // reversed depth: w - z from its own column
+            vec4 c = (blend && interp.y != 0) ? mix(prev_rz, rz, blend_t.x) : rz;
+            gl_Position.z = ((p.x * c.x + p.y * c.y) + p.z * c.z) + c.w;
+        }
     }
     if ((flags & F_LIT) != 0) {
         vec3 wp = xform(p, mworld[0], mworld[1], mworld[2], mworld[3]).xyz, wn = vec3(0.0);

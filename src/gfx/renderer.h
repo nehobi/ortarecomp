@@ -203,6 +203,7 @@ typedef struct pdo_fvf_uniforms {
     int32_t mat_src[4];          /* diffuse, ambient, specular, emissive material source */
     float   rt[4];               /* target width, height */
     float   wvp[16], wv[16], world[16];
+    float   rz[4];               /* reversed depth: w - z of wvp, as a column (rows' entries) */
     float   tex[4][16];
     float   material[4][4];      /* diffuse, ambient, specular, emissive */
     float   ambient[4];
@@ -214,7 +215,11 @@ typedef struct pdo_fvf_uniforms {
     float   prev_wvp[16], prev_wv[16], prev_world[16];
     int32_t interp2[4];          /* x: stages whose texture matrix blends from prev_tex */
     float   prev_tex[4][16];
+    float   prev_rz[4];
 } pdo_fvf_uniforms;
+
+/* Reversed depth (renderer.c): the depth buffer holds 1 - z. */
+bool pdo_gfx_depth_reversed(void);
 
 enum { PDO_FVF_PRE = 1, PDO_FVF_DIFFUSE = 2, PDO_FVF_SPECULAR = 4, PDO_FVF_NORMAL = 8,
        PDO_FVF_LIT = 16, PDO_FVF_FOGTABLE = 32 };

@@ -28,6 +28,7 @@ layout(location = 6) out float v_fog;
 void main()
 {
     gl_Position = (blend.y != 0.0 && blend.x < 1.0) ? mix(in_prev_pos, in_pos, blend.x) : in_pos;
+    if (blend.w != 0.0) gl_Position.z = gl_Position.w - gl_Position.z;   // reversed depth
     v_diffuse = blend.z != 0.0 ? vec4(1.0, 0.0, 1.0, 1.0) : in_diffuse.bgra;
     v_specular = in_specular.bgra;
     v_tc0 = in_tc0;

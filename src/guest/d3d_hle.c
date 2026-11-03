@@ -1234,7 +1234,8 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
                  * stored depth, by SHADOWFUNC (a D3DCMP_*: NEVER 0x200 up to
                  * ALWAYS 0x207), r/q in the format's depth units. */
                 d->ff.stage_misc[s][3] = 8 | (int32_t)((RS(RS_SHADOWFUNC) - 0x200) & 7)
-                    | (ti.format == 0x2C || ti.format == 0x2D || ti.format >= 0x30 ? 0 : 16);
+                    | (ti.format == 0x2C || ti.format == 0x2D || ti.format >= 0x30 ? 0 : 16)
+                    | (pdo_gfx_depth_reversed() ? 32 : 0);      /* stored as 1 - z (renderer.c) */
                 {
                     static uint32_t logged_func;
                     if (RS(RS_SHADOWFUNC) != logged_func) {
@@ -1611,6 +1612,16 @@ static bool fvf_gpu_job(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t f
     u->rt[1] = (float)rth;
     mat_mul(st.mat[TS_WORLD], st.mat[TS_VIEW], u->wv);
     mat_mul(u->wv, st.mat[TS_PROJECTION], u->wvp);
+    /* Reversed depth (renderer.c): w - z as its own column, in double from
+     * the projection's columns, so the shader's 1 - z does not come from
+     * subtracting two nearly equal floats. */
+    for (int i = 0; i < 4; i++) {
+        double acc = 0.0;
+        for (int k = 0; k < 4; k++)
+            acc += (double)u->wv[i * 4 + k] *
+                   ((double)st.mat[TS_PROJECTION][k * 4 + 3] - (double)st.mat[TS_PROJECTION][k * 4 + 2]);
+        u->rz[i] = (float)acc;
+    }
     memcpy(u->world, st.mat[TS_WORLD], sizeof u->world);
     if (!(flags & PDO_FVF_LIT))
         return true;

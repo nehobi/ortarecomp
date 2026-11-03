@@ -601,6 +601,22 @@ static void save_pipeline_key(const pdo_pipeline_state *ps)
     SDL_CloseIO(io);
 }
 
+/* Reversed depth (depth_reversed in ortarecomp.ini, read at start; Concept
+ * of Love): the depth buffer holds 1 - z, so the far end keeps float
+ * precision instead of crowding against 1. Float depth near z = 1 rounds
+ * about as coarsely as one 24-bit step, and layers the game puts a step
+ * apart lose their ties (JSRF: a menu icon's fill beat its picture, and
+ * distant rails z-fought). Everything that makes or reads depth follows:
+ * the shaders write the reversed value (computed without losing
+ * precision), compares, clears, bias and the viewport's depth range are
+ * mirrored, and shadow maps are read back un-reversed (ff.frag). */
+static bool depth_rev;
+
+bool pdo_gfx_depth_reversed(void)
+{
+    return depth_rev;
+}
+
 static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps);
 
 static void warm_pipelines(void)
@@ -749,12 +765,18 @@ static SDL_GPUGraphicsPipeline *get_pipeline(const pdo_pipeline_state *ps)
                                                    : SDL_GPU_FRONTFACE_CLOCKWISE;
     if (ps->depth_bias != 0.0f || ps->depth_slope != 0.0f) {
         pi.rasterizer_state.enable_depth_bias = true;
-        pi.rasterizer_state.depth_bias_constant_factor = ps->depth_bias;
-        pi.rasterizer_state.depth_bias_slope_factor = ps->depth_slope;
+        pi.rasterizer_state.depth_bias_constant_factor = depth_rev ? -ps->depth_bias : ps->depth_bias;
+        pi.rasterizer_state.depth_bias_slope_factor = depth_rev ? -ps->depth_slope : ps->depth_slope;
     }
     pi.depth_stencil_state.enable_depth_test = ps->z_enable != 0;
     pi.depth_stencil_state.enable_depth_write = ps->z_enable && ps->z_write;
-    pi.depth_stencil_state.compare_op = compare_op(ps->z_func);
+    {   /* Reversed depth: the comparison mirrored (LESS reads GREATER). */
+        uint16_t f = ps->z_func;
+        static const uint16_t mirror[8] = { 0x200, 0x204, 0x202, 0x206, 0x201, 0x205, 0x203, 0x207 };
+        if (depth_rev && f >= 0x200 && f <= 0x207)
+            f = mirror[f - 0x200];
+        pi.depth_stencil_state.compare_op = compare_op(f);
+    }
     if (ps->stencil_enable) {
         SDL_GPUStencilOpState so;
         so.fail_op = stencil_op(ps->stencil_fail);
@@ -1768,11 +1790,21 @@ static bool init_here(int width, int height)
 
     frame_w = width;
     frame_h = height;
-    depth_format = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
-                                                SDL_GPU_TEXTURETYPE_2D,
-                                                SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
-                   ? SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT
-                   : SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+    /* Reversed depth wants a float buffer (its precision gathers at 0, where
+     * the far end now is); otherwise the 24-bit one. */
+    depth_rev = pdo_settings_get()->depth_reversed;
+    {
+        bool d32 = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
+                                                SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
+        bool d24 = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_TEXTURETYPE_2D,
+                                                SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
+        depth_format = (depth_rev && d32) || !d24 ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT
+                                                  : SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
+        if (depth_rev && !d32)
+            depth_rev = false;      /* no float depth: reversing gains nothing */
+        SDL_Log("gfx: depth %s, %s", depth_format == SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT ? "32-bit float" : "24-bit",
+                depth_rev ? "reversed" : "as the game writes it");
+    }
     choose_quality();
     if (!make_target((Uint32)(width * rscale), (Uint32)(height * rscale), &frame_color, &frame_depth, &frame_ms))
         frame_color = NULL;
@@ -1987,7 +2019,7 @@ static SDL_GPURenderPass *begin_pass(SDL_GPUCommandBuffer *cmd, const command *c
         }
         if (clear->clear_flags & 1) {
             dt.load_op = SDL_GPU_LOADOP_CLEAR;
-            dt.clear_depth = clear->clear_z;
+            dt.clear_depth = depth_rev ? 1.0f - clear->clear_z : clear->clear_z;
         }
         if (clear->clear_flags & 2) {
             dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
@@ -2381,8 +2413,8 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         vp.y = c->draw.viewport[1] * (float)rscale;
         vp.w = c->draw.viewport[2] * (float)rscale;
         vp.h = c->draw.viewport[3] * (float)rscale;
-        vp.min_depth = c->draw.viewport[4];
-        vp.max_depth = c->draw.viewport[5];
+        vp.min_depth = depth_rev ? 1.0f - c->draw.viewport[5] : c->draw.viewport[4];
+        vp.max_depth = depth_rev ? 1.0f - c->draw.viewport[4] : c->draw.viewport[5];
         SDL_SetGPUViewport(pass, &vp);
         bind_geometry(pass, gpu, c);
         for (int s = 0; s < 4; s++) {
@@ -2413,16 +2445,18 @@ static void replay(SDL_GPUCommandBuffer *cmd)
             if (gpu == 1) {
                 c->vu.blend_t[0] = t;
                 c->vu.interp[2] = tint;
+                c->vu.info[3] = depth_rev;
                 SDL_PushGPUVertexUniformData(cmd, 0, &c->vu, sizeof c->vu);
             } else {
                 F->fvf_us[c->fvf].blend_t[0] = t;
+                F->fvf_us[c->fvf].blend_t[1] = depth_rev;
                 F->fvf_us[c->fvf].interp[2] = tint;
                 SDL_PushGPUVertexUniformData(cmd, 0, &F->fvf_us[c->fvf], sizeof F->fvf_us[0]);
             }
             SDL_DrawGPUIndexedPrimitives(pass, c->vsh_index_count, 1, c->vsh_first_index, 0, 0);
         } else {
             float b[4] = { P ? blend : 1.0f, P && c->prev_vbase >= 0 ? 1.0f : 0.0f,
-                           0.0f, 0.0f };   /* CPU-made: screen-space effects, not tinted */
+                           0.0f, depth_rev ? 1.0f : 0.0f };   /* CPU-made: not tinted; w: reversed depth */
             SDL_PushGPUVertexUniformData(cmd, 0, b, sizeof b);
             SDL_DrawGPUIndexedPrimitives(pass, c->index_count, 1, c->first_index, -(Sint32)c->vbase, 0);
         }
@@ -3612,6 +3646,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     memcpy(u->prev_wvp, pu->wvp, sizeof u->prev_wvp);
                     memcpy(u->prev_wv, pu->wv, sizeof u->prev_wv);
                     memcpy(u->prev_world, pu->world, sizeof u->prev_world);
+                    memcpy(u->prev_rz, pu->rz, sizeof u->prev_rz);
                 }
             }
         }

@@ -29,6 +29,7 @@ typedef struct pdo_settings {
     int  mouse_speed;       /* 10-400 % */
     bool unlock_box;        /* every Pandora's Box item open, the save untouched (src/guest/unlocks.c) */
     bool skip_logos;        /* a press during the boot logos goes to the title (src/guest/intro_skip.c) */
+    bool depth_reversed;    /* depth stored as 1 - z (renderer.c, read at start) */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

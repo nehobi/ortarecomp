@@ -104,13 +104,20 @@ ivec2 tex_size(int s)
     return textureSize(tex3, 0);
 }
 
-float fetch_depth(int s, ivec2 p)
+float fetch_depth_raw(int s, ivec2 p)
 {
     p = clamp(p, ivec2(0), tex_size(s) - 1);
     if (s == 0) return texelFetch(tex0, p, 0).r;
     if (s == 1) return texelFetch(tex1, p, 0).r;
     if (s == 2) return texelFetch(tex2, p, 0).r;
     return texelFetch(tex3, p, 0).r;
+}
+
+// Reversed depth (stage_misc w + 32, renderer.c): stored as 1 - z.
+float fetch_depth(int s, ivec2 p)
+{
+    float d = fetch_depth_raw(s, p);
+    return (stage_misc[s].w & 32) != 0 ? 1.0 - d : d;
 }
 
 float shadow_test(int f, float d, float ref)
