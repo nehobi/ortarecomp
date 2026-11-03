@@ -88,6 +88,7 @@ static uint64_t capture_seq = 1;
  * draws shrank -- the dragon's boost afterimages going -- and the two after. */
 static int capture_boost_left = -1;
 static bool groups_shrank;          /* match_frames: this frame */
+static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -3520,6 +3521,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
             step = moves[n_moves * 3 / 4];
             for (uint32_t q = 0; q < SDL_min(nsteps, 8u); q++)
                 avg += steps[q] / (float)SDL_min(nsteps, 8u);
+            if (nsteps >= 8 && avg > 0.002f && step < avg * 0.3f)
+                picture_stopped = true;
             if (nsteps >= 8 && avg > 0.002f && step < avg * 0.3f && cam_logs++ < 10)
                 SDL_Log("interp: frame %llu: the picture moved %.4f, against %.4f a frame before (%u draws)",
                         (unsigned long long)cur->frame, step, avg, n_moves);
@@ -4004,7 +4007,7 @@ void pdo_gfx_main_loop(void)
             }
             prev = cur;
             cur = f;
-            groups_shrank = false;
+            groups_shrank = picture_stopped = false;
             match_frames(interp ? prev : NULL, cur);
             if (capture_boost_left < 0)
                 capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
@@ -4013,10 +4016,10 @@ void pdo_gfx_main_loop(void)
                 if (follow > 0 && prev) {
                     follow--;
                     capture_interp(prev, cur);
-                } else if (groups_shrank && prev && capture_boost_left > 0) {
+                } else if ((groups_shrank || picture_stopped) && prev && capture_boost_left > 0) {
                     capture_boost_left--;
-                    SDL_Log("capture: groups shrank at frame %llu: capturing it and the two after",
-                            (unsigned long long)cur->frame);
+                    SDL_Log("capture: %s at frame %llu: capturing it and the two after",
+                            groups_shrank ? "groups shrank" : "the picture stopped", (unsigned long long)cur->frame);
                     capture_interp(prev, cur);
                     follow = 2;
                 }
