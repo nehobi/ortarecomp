@@ -2529,6 +2529,7 @@ static void capture_vsh(void)
  * _t100): matched draws should sit halfway in the middle one. */
 static void match_frames(frame_data *prev, frame_data *cur);
 static bool dbg_groups;
+static bool is_3d(const frame_data *f, const command *c);
 static bool draw_corners(const frame_data *f, const command *c, float out[8]);
 
 static void capture_interp_main(frame_data *prev, frame_data *cur)
@@ -2560,6 +2561,37 @@ static void capture_interp_main(frame_data *prev, frame_data *cur)
                     SDL_Log("moved: cmd %u kind 3 nv %u tex %08x clip %.2f,%.2f -> %.2f,%.2f", i, c->id_nv,
                             (unsigned)c->draw.tex[0].data, pa[0] / pa[3], pa[1] / pa[3], b4[0] / b4[3], b4[1] / b4[3]);
             }
+        }
+    if (getenv("PDO_DBG_GROUPS"))     /* paired 3D fixed-function draws whose texturing moved */
+        for (uint32_t i = 0; i < cur->ncmds; i++) {
+            const command *c = &cur->cmds[i];
+            const pdo_fvf_uniforms *u, *pu;
+            float dm = 0.0f, duv[2] = { 0.0f, 0.0f };
+            int tts = 0;
+            if (c->kind != CMD_DRAW || c->unpaired || c->fvf < 0 || !is_3d(cur, c))
+                continue;
+            u = &cur->fvf_us[c->fvf];
+            pu = &prev->fvf_us[prev->cmds[c->pair_prev].fvf];
+            for (int st = 0; st < 4; st++)
+                if (u->stage_tt[st] & 0xFF) {
+                    tts |= 1 << st;
+                    for (int m = 0; m < 16; m++)
+                        dm = SDL_max(dm, SDL_fabsf(u->tex[st][m] - pu->tex[st][m]));
+                }
+            if (u->layout0[3] > 0 && pu->layout0[3] > 0) {
+                float a[2], b[2];
+                uint32_t oa = (uint32_t)u->layout0[0] + (uint32_t)u->tc_off[0];
+                uint32_t ob = (uint32_t)pu->layout0[0] + (uint32_t)pu->tc_off[0];
+                if (oa + 8 <= cur->nblob && ob + 8 <= prev->nblob) {
+                    memcpy(a, cur->blob + oa, 8);
+                    memcpy(b, prev->blob + ob, 8);
+                    duv[0] = a[0] - b[0];
+                    duv[1] = a[1] - b[1];
+                }
+            }
+            if (dm > 1e-5f || SDL_fabsf(duv[0]) > 1e-5f || SDL_fabsf(duv[1]) > 1e-5f)
+                SDL_Log("uvmove: cmd %u nv %u tex %08x tt stages %x matrix moved %g; uv0 moved %g,%g", i, c->id_nv,
+                        (unsigned)c->draw.tex[0].data, tts, dm, duv[0], duv[1]);
         }
     if (getenv("PDO_DBG_GROUPS"))
         for (uint32_t i = 0; i < cur->ncmds; i++) {
