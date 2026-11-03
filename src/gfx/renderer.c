@@ -2976,7 +2976,7 @@ typedef struct draw_key {
 static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
 {
     uint64_t h = 1469598103934665603ull;
-    uint64_t v[8];
+    uint64_t v[7];
 
     v[0] = c->vsh ? 1 : c->fvf >= 0 ? 2 : 3;
     v[1] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[0]
@@ -2987,12 +2987,7 @@ static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
     v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
     v[6] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[1] : 0;
-    /* Blending: the boost's afterimages are the dragon drawn again, see-
-     * through. Alike to it, a new afterimage (where the dragon was) took
-     * the dragon's place as its partner, and the dragon showed unblended a
-     * frame ahead -- a ghost of it, off centre, as each afterimage came. */
-    v[7] = c->draw.ps.blend_enable;
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 7; i++)
         h = (h ^ v[i]) * 1099511628211ull;
     return h;
 }
