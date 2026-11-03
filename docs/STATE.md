@@ -20,7 +20,9 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 - Shadow maps (look right on Windows so far): the depth-only pass into a
   512x512 LIN_D16 surface, compared in ff.frag (stored GREATER r/q, 2x2
   filtered); in episode 1 they shade the player's dragon.
-- xboxrecomp v0.13.1 + patches 0001-0024: 0020-0021 give threads the stack
+- xboxrecomp v0.13.1 + patches 0001-0030 (0025-0029: threads, below;
+  0030: the title's clocks from the performance counter on Windows,
+  GetTickCount moved in 15.6 ms steps): 0020-0021 give threads the stack
   they ask for (an exhausted pool deadlocked the cutscene before the
   episode 1 boss); 0022 stops an ID that looks like an address from
   splitting a function (it dropped the boss music); 0023 is the guest CPU
@@ -116,15 +118,24 @@ the gap between their Swap vblanks. match_frames: 3D draws pair nearest
 first by place (matrices or constants, motion guess for fixed-function),
 data address only a tie-break -- the game reuses vertex buffers between
 fighters (packs warped: fixed de4713b, player: looked good once, watch);
-screen-space draws pair by address (menu words). Not blended: on-screen
-jumps, draws whose vertices stray over half their size (glide wing
-reticle; a fifth made episode 5's dragon wings flicker), all on a camera
-cut. Blending holds off 5 s when the screen is under 1.5x the game rate.
+screen-space draws pair by address (menu words); only within the same
+render target. Texture matrices blend too (projected textures: the
+episode 3 floor froze at boost ends, 4320e4a). Not blended: on-screen
+jumps, sprites moving over half their size, draws whose vertices (any
+float input of a program, CPU-made too) stray over half their size
+(glide wing reticle; a fifth made episode 5's dragon wings flicker),
+programs with 4+ constant registers jumping, all on a camera cut. Ported
+from Concept of Love; to check: menus, HUD, effects, packs look smooth.
+Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
 pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
 (+_SEQ=n, PDO_DBG_GROUPS), PDO_CAPTURE_TEXCHECK, PDO_TEX_ALWAYS/LEVEL0.
-Open: a whole-screen jolt as the boost ends (episodes 2, 3; no camera cut
-there); camera cuts and late game frames are now logged one by one.
+Open: a ghost of the dragon, off centre, around a boost (episodes 2, 3;
+only with interpolation; not tinted, so paired wrong or screen-space).
+The freeze there was the projected textures; a white flash came from
+pairing the boost's full-screen layers by place (reverted 79db575).
+PDO_CAPTURE_BOOST=n captures boost ends. Logs: use `--log run.log`, not
+PowerShell redirection (stalls the game).
 Glide wing: script `13000:y:8,13100:y:8`. Display: aspect 4:3 or 16:9 (the
 game's own anamorphic mode, src/guest/widescreen.c, read at start), fit
 bars/stretch/zoom, Alt+Enter fullscreen. PDO_BENCHMARK=1
