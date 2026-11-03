@@ -224,21 +224,6 @@ void main()
         if (set < layout0.w && set < 4) {
             uint a = v + uint(tc_off[set]);
             for (int c = 0; c < tc_n[set]; c++) t[c] = f32(a + 4u * uint(c));
-            // A screen-space pass over a copy of the frame (interp.w, set
-            // by match_frames) blends its coordinates too: the motion blur
-            // that pastes the scene moves its taps with speed, and kept at
-            // this frame's the blur ran a frame ahead of the picture -- a
-            // jolt over the whole screen with a ghost of the dragon as a
-            // boost ended. Others keep theirs: HUD digits change glyphs,
-            // a scrolling texture's coordinates wrap.
-            if (pre && blend && interp.w != 0) {
-                uint qa = uint(interp.x) + uint(gl_VertexIndex) * uint(layout0.y) + uint(tc_off[set]);
-                vec4 tp = vec4(0.0);
-                from_prev = true;
-                for (int c = 0; c < tc_n[set]; c++) tp[c] = f32(qa + 4u * uint(c));
-                from_prev = false;
-                t = mix(tp, t, blend_t.x);
-            }
             if (!pre) t = tex_transform(s, tc_n[set], t);
         }
         tc[s] = t;
