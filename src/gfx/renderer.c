@@ -3429,13 +3429,14 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * the bolts over the screen). Things animated
                          * through constants (skinned characters, the
                          * camera) change a little a frame. */
-                        int jumped_regs = 0;
+                        int jumped_regs = 0, read_regs = 0;
                         {
                             const float *ca = prev->vconsts[pc->vu.info[2]], *cb = cur->vconsts[c->vu.info[2]];
                             for (int q = 0; q < 192; q++) {
                                 float d = 0.0f, m = 0.0f;
                                 if (!(c->consts_read[q >> 3] >> (q & 7) & 1))
                                     continue;   /* not read: another draw's leftovers */
+                                read_regs++;
                                 for (int e = 0; e < 4; e++) {
                                     float x = ca[4 * q + e], y = cb[4 * q + e];
                                     if (!(SDL_fabsf(x) < 1e6f && SDL_fabsf(y) < 1e6f))
@@ -3447,13 +3448,19 @@ static void match_frames(frame_data *prev, frame_data *cur)
                                     jumped_regs++;
                             }
                         }
+                        /* Rebuilt: four or more, and half of those it reads
+                         * (JSRF's lightning: nearly all). Orta's creatures
+                         * flap through their bone registers, and five or six
+                         * of them swinging past half their size left a
+                         * flying creature unblended at the game's rate. */
+                        bool consts_rebuilt = jumped_regs >= 4 && jumped_regs * 2 >= read_regs;
                         c->strayed = sv > 0.2f;
                         if (dbg_groups)
                             SDL_Log("vsh pair: cmd %u nv %u worst input %d (stride %d, prev %d) stray %.2f, "
-                                    "%d constant registers jumped%s",
+                                    "%d of %d read constant registers jumped%s",
                                     ck[j + k].cmd, c->id_nv, r, r >= 0 ? c->vu.inputs[r][1] : 0,
-                                    r >= 0 ? pc->vu.inputs[r][1] : 0, sv, jumped_regs,
-                                    sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4 ? " -> not blended"
+                                    r >= 0 ? pc->vu.inputs[r][1] : 0, sv, jumped_regs, read_regs,
+                                    sv > 0.5f || (c->strayed && pc->strayed) || consts_rebuilt ? " -> not blended"
                                                                                                   : "");
                         /* Big programs (episode 4's battleships, 500+ vertices):
                          * a line when one is left unblended or pairs narrowly,
@@ -3461,7 +3468,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         if (c->id_nv >= 500) {
                             static uint64_t win;
                             static int logs;
-                            bool notb = sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4;
+                            bool notb = sv > 0.5f || (c->strayed && pc->strayed) || consts_rebuilt;
                             float dch = draw_distance(prev, pc, cur, c), dmin = 3.4e38f;
                             int nread = 0;
                             for (uint32_t a = i; a < i2; a++)
@@ -3479,7 +3486,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                                         (unsigned long long)cur->frame, ck[j + k].cmd, c->id_nv, i2 - i, j2 - j,
                                         dch, dmin, sv, jumped_regs, nread, notb ? " -> not blended" : "");
                         }
-                        if (sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4) {
+                        if (sv > 0.5f || (c->strayed && pc->strayed) || consts_rebuilt) {
                             st_rebuilt++;
                             n_rebuilt++;
                             continue;
