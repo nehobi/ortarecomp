@@ -4254,11 +4254,13 @@ void pdo_gfx_main_loop(void)
             prev = cur;
             cur = f;
             groups_shrank = picture_stopped = close_call = false;
-            match_frames(interp ? prev : NULL, cur);
             if (capture_close_left < 0)
                 capture_close_left = getenv("PDO_CAPTURE_CLOSE") ? atoi(getenv("PDO_CAPTURE_CLOSE")) : 0;
             if (capture_boost_left < 0)
                 capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
+            /* The capture triggers pair frames even while blending is held off
+             * (a slow machine): unblended, the pairs are not used. */
+            match_frames(interp || capture_close_left > 0 || capture_boost_left > 0 ? prev : NULL, cur);
             {
                 static int follow;          /* frames after a boost capture still to capture */
                 if (follow > 0 && prev) {
@@ -4270,9 +4272,8 @@ void pdo_gfx_main_loop(void)
                             (unsigned long long)cur->frame);
                     capture_interp(prev, cur);
                     follow = 2;
-                } else if ((groups_shrank || (picture_stopped && pdo_input_x_frame &&
-                                              cur->frame < pdo_input_x_frame + 300)) &&
-                           prev && capture_boost_left > 0) {
+                } else if ((groups_shrank || picture_stopped) && pdo_input_x_frame &&
+                           cur->frame < pdo_input_x_frame + 300 && prev && capture_boost_left > 0) {
                     capture_boost_left--;
                     SDL_Log("capture: %s at frame %llu: capturing it and the two after",
                             groups_shrank ? "groups shrank" : "the picture stopped", (unsigned long long)cur->frame);
