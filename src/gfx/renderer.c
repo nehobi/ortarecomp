@@ -2980,6 +2980,19 @@ static bool is_3d(const frame_data *f, const command *c)
     return c->vsh || (c->fvf >= 0 && !(f->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE));
 }
 
+/* A screen-space fixed-function pass over a copy of the frame: the motion
+ * blur that pastes the scene. Its vertices are new each frame (another
+ * address), so like a 3D draw it pairs by place; its texture coordinates
+ * then blend too (shaders/fvf.vert, interp.w). */
+static bool frame_pass(const frame_data *f, const command *c)
+{
+    pdo_xtex_info ti;
+    if (c->vsh || c->fvf < 0 || !(f->fvf_us[c->fvf].layout0[2] & PDO_FVF_PRE) || !c->draw.tex[0].data)
+        return false;
+    pdo_xtex_describe(c->draw.tex[0].format_word, c->draw.tex[0].size_word, &ti);
+    return find_target(c->draw.tex[0].data, ti.width, ti.height) != NULL;
+}
+
 /* any_src: only the 3D draws skip[] does not mark, keyed without their
  * data. Screen-space ones stay out: menu words drawn alike (EASY, NORMAL,
  * HARD) each looked like the lone partner of another and jittered. */
@@ -2987,14 +3000,15 @@ static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, boo
 {
     uint32_t n = 0;
     for (uint32_t i = 0; i < f->ncmds; i++)
-        if (blendable(&f->cmds[i]) && !(any_src && (skip[i] || !is_3d(f, &f->cmds[i])))) {
+        if (blendable(&f->cmds[i]) &&
+            !(any_src && (skip[i] || !(is_3d(f, &f->cmds[i]) || frame_pass(f, &f->cmds[i]))))) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
             /* 3D draws always without their data's address: the game hands
              * vertex buffers out from a pool, so the same buffer is not
              * the same object (fighters in a pack warped between each
              * other's places); they pair by where they are. Screen-space
              * ones (menu words drawn alike) keep it. */
-            (*keys)[n].h = key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i]));
+            (*keys)[n].h = key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i]) || frame_pass(f, &f->cmds[i]));
             (*keys)[n].cmd = i;
             n++;
         }
@@ -3357,12 +3371,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     /* A screen-space pass over a copy of the frame (the
                      * motion blur that pastes the scene): its texture
                      * coordinates blend too (shaders/fvf.vert). */
-                    {
-                        pdo_xtex_info ti;
-                        pdo_xtex_describe(c->draw.tex[0].format_word, c->draw.tex[0].size_word, &ti);
-                        u->interp[3] = (u->layout0[2] & PDO_FVF_PRE) && c->draw.tex[0].data &&
-                                       find_target(c->draw.tex[0].data, ti.width, ti.height) != NULL;
-                    }
+                    u->interp[3] = frame_pass(cur, c);
                     c->unpaired = false;
                     for (int m = 0; m < 16; m++) {
                         c->mvel[m] = u->wvp[m] - pu->wvp[m];
