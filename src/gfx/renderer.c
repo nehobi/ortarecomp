@@ -3335,6 +3335,17 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * far (the end of a chain of alike segments that
                          * each moved one along). Not blended. */
                         forced[cand[k].b] = cand[k].d > best[cand[k].b] * 2.0f + 1e-3f;
+                        /* A toss-up in a large pack: the runner-up within 15%
+                         * of this partner (not the same draw made twice in
+                         * one place). Episode 4's fighters move farther in a
+                         * frame than they are apart (45 alike parts, 70
+                         * against 72), and blended with whichever came first
+                         * their parts traded places. Shown at the game's
+                         * rate instead; clear pairings (the runner-up 5x or
+                         * more farther in the packs measured) are as before. */
+                        if (na >= 8 && n >= 8 && cand[k].d > 1e-2f && second[cand[k].b] < cand[k].d * 1.15f &&
+                            second[cand[k].b] > cand[k].d * 1.02f)
+                            forced[cand[k].b] = true;
                         /* A close call (the log): the runner-up within 25%,
                          * and not the same (a draw made twice in one place). */
                         if (cand[k].d > 1e-2f && second[cand[k].b] < cand[k].d * 1.25f &&
