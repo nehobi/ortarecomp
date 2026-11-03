@@ -3363,9 +3363,20 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     pdo_fvf_uniforms *u = &cur->fvf_us[c->fvf];
                     const pdo_fvf_uniforms *pu = &prev->fvf_us[pc->fvf];
                     float x0, y0, x1, y1, a4[8], b4[8];
-                    if ((u->layout0[2] & PDO_FVF_PRE) && draw_corners(prev, pc, a4) && draw_corners(cur, c, b4) &&
-                        (SDL_fabsf(a4[0] - b4[0]) > u->rt[0] * 0.25f || SDL_fabsf(a4[1] - b4[1]) > u->rt[1] * 0.25f))
-                        continue;       /* a sprite that jumped: not blended */
+                    if ((u->layout0[2] & PDO_FVF_PRE) && draw_corners(prev, pc, a4) && draw_corners(cur, c, b4)) {
+                        /* A sprite that jumped: not blended. A quarter of the
+                         * screen, or over half its own size (Concept of
+                         * Love: JSRF's character select swaps its icons a
+                         * slot at a time, and the in-between frames slid and
+                         * ghosted them); things that really slide move a few
+                         * pixels a frame. Size: across its first and last
+                         * vertices. */
+                        float dx = SDL_fabsf(a4[0] - b4[0]), dy = SDL_fabsf(a4[1] - b4[1]);
+                        float size = SDL_max(SDL_fabsf(b4[4] - b4[0]), SDL_fabsf(b4[5] - b4[1]));
+                        float moved = SDL_max(dx, dy);
+                        if (dx > u->rt[0] * 0.25f || dy > u->rt[1] * 0.25f || (moved > 2.0f && moved > size * 0.5f))
+                            continue;
+                    }
                     /* Jumped: only judged with the origin on screen in both
                      * frames -- near the eye, behind it or off screen it
                      * swings far while the object hardly moves, and judged
