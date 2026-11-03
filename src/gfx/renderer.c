@@ -3415,8 +3415,14 @@ static void match_frames(frame_data *prev, frame_data *cur)
                                     jumped_regs++;
                             }
                         }
-                        (void)r;
                         c->strayed = sv > 0.2f;
+                        if (dbg_groups)
+                            SDL_Log("vsh pair: cmd %u nv %u worst input %d (stride %d, prev %d) stray %.2f, "
+                                    "%d constant registers jumped%s",
+                                    ck[j + k].cmd, c->id_nv, r, r >= 0 ? c->vu.inputs[r][1] : 0,
+                                    r >= 0 ? pc->vu.inputs[r][1] : 0, sv, jumped_regs,
+                                    sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4 ? " -> not blended"
+                                                                                                  : "");
                         if (sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4) {
                             st_rebuilt++;
                             n_rebuilt++;
