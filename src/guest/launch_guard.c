@@ -10,9 +10,10 @@
  * default.xbe is recompiled, so there is nothing to launch, and the game
  * cannot run on after that.
  *
- * So the Box leaves for the title instead (scene 10, as it is entered at
- * boot): the same path as EXIT, nothing taken down. A stretch goal is to
- * recompile pd1.xbe too and launch it.
+ * So the Box leaves for the main menu instead: scene 9, where its EXIT goes
+ * (0x000B8080 then starts it in mode 0x20003). Scene 10, the title as at
+ * boot, came up black: nothing faded it in. A stretch goal is to recompile
+ * pd1.xbe too and launch it.
  */
 
 #include <SDL3/SDL.h>
@@ -22,7 +23,7 @@
 #define BOX_OBJECT      0x00474058u
 #define BOX_NEXT_SCENE  0x7D4u
 #define SCENE_PD1       0xFFFFFFFEu     /* -2: launch d:\pd1.xbe */
-#define SCENE_TITLE     10u
+#define SCENE_MENU      9u              /* where EXIT goes: the main menu */
 
 /* Pandora's Box: leaving it (ret) */
 void sub_000B8080_enter(void)
@@ -30,7 +31,7 @@ void sub_000B8080_enter(void)
     uint32_t box = MEM32(BOX_OBJECT);
 
     if (box && MEM32(box + BOX_NEXT_SCENE) == SCENE_PD1) {
-        SDL_Log("launch: PANZER DRAGOON (d:\\pd1.xbe) is not recompiled yet; back to the title");
-        MEM32(box + BOX_NEXT_SCENE) = SCENE_TITLE;
+        SDL_Log("launch: PANZER DRAGOON (d:\\pd1.xbe) is not recompiled yet; back to the main menu");
+        MEM32(box + BOX_NEXT_SCENE) = SCENE_MENU;
     }
 }

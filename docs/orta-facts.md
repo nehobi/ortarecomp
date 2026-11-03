@@ -234,3 +234,16 @@ and starts its sprite animation (step 0), shows until the animation's time
 fades out (step 2) and frees it (step 3). A press does nothing on the
 console. Going straight to state 3 leaves the title without its logo, so
 src/guest/intro_skip.c ends each card's animation instead (skip_logos).
+
+## The original Panzer Dragoon (pd1.xbe)
+
+Pandora's Box's APPENDIX > PANZER DRAGOON is another program on the disc,
+d:\pd1.xbe. Confirming it ("Begin playing PANZER DRAGOON?", No by default)
+leaves the Box (0x000B8080) with next scene -2 (Box object at 0x00474058,
++0x7D4): it takes everything down, saves and tail-jumps to 0x000120D0, which
+shuts down sound and graphics and calls XLaunchNewImageA (0x0022CE3C) with
+"d:\pd1.xbe". EXIT leaves for scene 9 (the main menu, started in mode
+0x20003); scene 10 is the title as at boot. src/guest/launch_guard.c sends
+-2 to scene 9 until pd1.xbe is recompiled too. Box navigation from FLIGHT
+RECORDS: right goes EXIT, APPENDIX, ENCYCLOPEDIA, BOX GAME; left SUB
+SCENARIOS.
