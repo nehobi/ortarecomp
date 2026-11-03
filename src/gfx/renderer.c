@@ -90,6 +90,12 @@ static int capture_boost_left = -1;
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
 extern uint64_t pdo_input_x_frame;  /* input_hle.c: the last frame X (boost) was held */
+/* PDO_CAPTURE_CLOSE=n: up to n times, capture (with PDO_CAPTURE_INTERP's
+ * blends) a frame where a draw in a pack of three or more alike 3D draws had
+ * a runner-up partner within 25% of the one it paired with -- where two
+ * fighters can trade places (episode 4's packs) -- and the two after. */
+static int capture_close_left = -1;
+static bool close_call;             /* match_frames: this frame */
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -3326,8 +3332,12 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         /* A close call (the log): the runner-up within 25%,
                          * and not the same (a draw made twice in one place). */
                         if (cand[k].d > 1e-2f && second[cand[k].b] < cand[k].d * 1.25f &&
-                            second[cand[k].b] > cand[k].d * 1.02f)
+                            second[cand[k].b] > cand[k].d * 1.02f) {
                             st_close++;
+                            /* in a pack (three or more alike): PDO_CAPTURE_CLOSE */
+                            if (na >= 3 && n >= 3 && is_3d(cur, &cur->cmds[ck[j + cand[k].b].cmd]))
+                                close_call = true;
+                        }
                         if (dbg_groups) {
                             const command *c0 = &cur->cmds[ck[j + cand[k].b].cmd];
                             float sec = 3.4e38f;
@@ -4102,8 +4112,10 @@ void pdo_gfx_main_loop(void)
             }
             prev = cur;
             cur = f;
-            groups_shrank = picture_stopped = false;
+            groups_shrank = picture_stopped = close_call = false;
             match_frames(interp ? prev : NULL, cur);
+            if (capture_close_left < 0)
+                capture_close_left = getenv("PDO_CAPTURE_CLOSE") ? atoi(getenv("PDO_CAPTURE_CLOSE")) : 0;
             if (capture_boost_left < 0)
                 capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
             {
@@ -4111,6 +4123,12 @@ void pdo_gfx_main_loop(void)
                 if (follow > 0 && prev) {
                     follow--;
                     capture_interp(prev, cur);
+                } else if (close_call && prev && capture_close_left > 0) {
+                    capture_close_left--;
+                    SDL_Log("capture: a close call in a pack at frame %llu: capturing it and the two after",
+                            (unsigned long long)cur->frame);
+                    capture_interp(prev, cur);
+                    follow = 2;
                 } else if ((groups_shrank || (picture_stopped && pdo_input_x_frame &&
                                               cur->frame < pdo_input_x_frame + 300)) &&
                            prev && capture_boost_left > 0) {
