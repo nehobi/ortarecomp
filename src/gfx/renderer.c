@@ -3143,10 +3143,17 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
         /* Where the draw is: its first and last vertex through the program
          * (d3d_hle.c). Constants told episode 4's alike battleships apart
          * no better than chance (all 192 read, through a0). */
+        /* oPos ends in screen pixels (the program's own viewport transform,
+         * which shaders/vsh.vert undoes); z and w are depth, and summed in
+         * they swamped the position (a ship's own move measured 396 against
+         * 453 for another ship, and packs swapped). x, y only. */
         float e = pc->id_src == c->id_src ? 0.0f : 1e-3f;
-        for (int i = 0; i < 8; i++)
-            if (pc->anchor[i] == pc->anchor[i] && c->anchor[i] == c->anchor[i])     /* not NaN */
-                e += SDL_fabsf(pc->anchor[i] - c->anchor[i]);
+        for (int k = 0; k < 2; k++) {
+            const float *a = pc->anchor + 4 * k, *b = c->anchor + 4 * k;
+            float dx = a[0] - b[0], dy = a[1] - b[1];
+            if (dx == dx && dy == dy)       /* not NaN */
+                e += SDL_fabsf(dx) + SDL_fabsf(dy);
+        }
         return e;
     }
     if (c->vsh) {
