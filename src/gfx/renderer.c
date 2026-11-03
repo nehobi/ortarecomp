@@ -3391,9 +3391,33 @@ static void match_frames(frame_data *prev, frame_data *cur)
                             if (v > sv)
                                 sv = v, r = q;
                         }
+                        /* The constants rebuilt: registers whose four values
+                         * changed by over half their size in one frame
+                         * (Concept of Love: JSRF's lightning keeps its
+                         * vertices and draws each zigzag through new random
+                         * constants; blended, the mixed transforms flung
+                         * the bolts over the screen). Things animated
+                         * through constants (skinned characters, the
+                         * camera) change a little a frame. */
+                        int jumped_regs = 0;
+                        {
+                            const float *ca = prev->vconsts[pc->vu.info[2]], *cb = cur->vconsts[c->vu.info[2]];
+                            for (int q = 0; q < 192; q++) {
+                                float d = 0.0f, m = 0.0f;
+                                for (int e = 0; e < 4; e++) {
+                                    float x = ca[4 * q + e], y = cb[4 * q + e];
+                                    if (!(SDL_fabsf(x) < 1e6f && SDL_fabsf(y) < 1e6f))
+                                        break;          /* stale, huge or NaN */
+                                    d += SDL_fabsf(x - y);
+                                    m += SDL_fabsf(x) + SDL_fabsf(y);
+                                }
+                                if (d > 0.5f * m && d > 1e-3f)
+                                    jumped_regs++;
+                            }
+                        }
                         (void)r;
                         c->strayed = sv > 0.2f;
-                        if (sv > 0.5f || (c->strayed && pc->strayed)) {
+                        if (sv > 0.5f || (c->strayed && pc->strayed) || jumped_regs >= 4) {
                             st_rebuilt++;
                             n_rebuilt++;
                             continue;
