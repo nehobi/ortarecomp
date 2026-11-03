@@ -2596,6 +2596,24 @@ static void capture_interp_main(frame_data *prev, frame_data *cur)
         if (cmd)
             SDL_SubmitGPUCommandBuffer(cmd);
     }
+    {   /* and the frame before as it is: t 0 should match it */
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+        char path[64];
+        Uint32 w, h;
+        if (cmd) {
+            F = prev;
+            P = NULL;
+            blend = 1.0f;
+            replay(cmd);
+            cur_target = NULL;
+            cur_size(&w, &h);
+            snprintf(path, sizeof path, "capture_%05llu_prev.bmp", (unsigned long long)cur->frame);
+            save_texture(&cmd, cur_color(), (int)w, (int)h, path);
+            if (cmd)
+                SDL_SubmitGPUCommandBuffer(cmd);
+            F = cur;
+        }
+    }
     P = NULL;
     blend = 1.0f;
 }
@@ -3920,16 +3938,18 @@ void pdo_gfx_main_loop(void)
             match_frames(interp ? prev : NULL, cur);
             if (capture_boost_left < 0)
                 capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
-            if (groups_shrank && prev && capture_boost_left > 0 &&
-                (capture_frame == UINT64_MAX || cur->frame >= capture_frame + capture_seq)) {
-                capture_boost_left--;
-                SDL_Log("capture: groups shrank at frame %llu: capturing it and the two after",
-                        (unsigned long long)cur->frame);
-                capture_interp(prev, cur);
-                SDL_LockMutex(q_lock);
-                capture_frame = cur->frame + 1;
-                capture_seq = 2;
-                SDL_UnlockMutex(q_lock);
+            {
+                static int follow;          /* frames after a boost capture still to capture */
+                if (follow > 0 && prev) {
+                    follow--;
+                    capture_interp(prev, cur);
+                } else if (groups_shrank && prev && capture_boost_left > 0) {
+                    capture_boost_left--;
+                    SDL_Log("capture: groups shrank at frame %llu: capturing it and the two after",
+                            (unsigned long long)cur->frame);
+                    capture_interp(prev, cur);
+                    follow = 2;
+                }
             }
             if (prev && f->frame >= capture_frame && f->frame < capture_frame + capture_seq)
                 capture_interp(prev, cur);
