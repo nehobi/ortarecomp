@@ -308,6 +308,8 @@ static void read_port(int port, pad_state *s)
 /* A new press of A or Start on any port (keyboard and mouse on the first):
  * the logo skip (src/guest/intro_skip.c). Called once a frame while the
  * logos show; true only on the frame the press begins. */
+uint64_t pdo_input_x_frame;         /* the last frame X was held, on any port */
+
 bool pdo_input_skip_press(void)
 {
     static bool held;
@@ -453,6 +455,8 @@ void sub_0030C79D(void)
     if (port < 0)
         RETURN(8, ERROR_DEVICE_NOT_CONNECTED);
     read_port(port, &s);
+    if (s.analog[AB_X] > 0x40)      /* the boost button: PDO_CAPTURE_BOOST (renderer.c) */
+        pdo_input_x_frame = pdo_gfx_frame_count();
     /* The packet number tells the game whether anything changed. */
     if (memcmp(&s, &last[port], sizeof s) != 0) {
         last[port] = s;

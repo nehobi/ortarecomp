@@ -89,6 +89,7 @@ static uint64_t capture_seq = 1;
 static int capture_boost_left = -1;
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
+extern uint64_t pdo_input_x_frame;  /* input_hle.c: the last frame X (boost) was held */
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -4016,7 +4017,9 @@ void pdo_gfx_main_loop(void)
                 if (follow > 0 && prev) {
                     follow--;
                     capture_interp(prev, cur);
-                } else if ((groups_shrank || picture_stopped) && prev && capture_boost_left > 0) {
+                } else if ((groups_shrank || (picture_stopped && pdo_input_x_frame &&
+                                              cur->frame < pdo_input_x_frame + 300)) &&
+                           prev && capture_boost_left > 0) {
                     capture_boost_left--;
                     SDL_Log("capture: %s at frame %llu: capturing it and the two after",
                             groups_shrank ? "groups shrank" : "the picture stopped", (unsigned long long)cur->frame);
