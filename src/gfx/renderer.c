@@ -3153,20 +3153,22 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
  * a vertex moved 7.6 in a draw 9.8 across -- and blended vertex by vertex
  * its arcs scattered over the screen. Positions: the first three floats
  * of each vertex, stride apart; ncur, nprev: bytes there to read. */
-static float stray(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
-                     uint32_t nprev)
+static float stray_n(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
+                     uint32_t nprev, int nc)
 {
     float lo[3] = { 3e38f, 3e38f, 3e38f }, hi[3] = { -3e38f, -3e38f, -3e38f }, dmax = 0.0f, size = 0.0f;
     float mean[3] = { 0.0f, 0.0f, 0.0f };
+    uint32_t bytes = 4u * (uint32_t)nc;
 
-    if (!nv || !stride || (uint64_t)(nv - 1) * stride + 12 > ncur || (uint64_t)(nv - 1) * stride + 12 > nprev)
+    if (!nv || !stride || nc < 1 || nc > 3 || (uint64_t)(nv - 1) * stride + bytes > ncur ||
+        (uint64_t)(nv - 1) * stride + bytes > nprev)
         return 0.0f;
     for (int pass = 0; pass < 2; pass++)
         for (uint32_t v = 0; v < nv; v++) {
-            float p1[3], p0[3], d = 0.0f;
-            memcpy(p1, cur + (size_t)v * stride, 12);
-            memcpy(p0, prev + (size_t)v * stride, 12);
-            for (int k = 0; k < 3; k++) {
+            float p1[3] = { 0.0f, 0.0f, 0.0f }, p0[3] = { 0.0f, 0.0f, 0.0f }, d = 0.0f;
+            memcpy(p1, cur + (size_t)v * stride, bytes);
+            memcpy(p0, prev + (size_t)v * stride, bytes);
+            for (int k = 0; k < nc; k++) {
                 if (pass == 0) {
                     lo[k] = SDL_min(lo[k], p1[k]);
                     hi[k] = SDL_max(hi[k], p1[k]);
@@ -3178,9 +3180,15 @@ static float stray(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uin
             if (d > dmax)
                 dmax = d;
         }
-    for (int k = 0; k < 3; k++)
+    for (int k = 0; k < nc; k++)
         size += hi[k] - lo[k];
     return dmax > 1e-3f && size > 0.0f ? dmax / size : 0.0f;  /* NaN: 0, coherent as before */
+}
+
+static float stray(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
+                     uint32_t nprev)
+{
+    return stray_n(cur, prev, stride, nv, ncur, nprev, 3);
 }
 
 typedef struct pair_cand {
@@ -3342,12 +3350,55 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 }
                 pc = &prev->cmds[pk[i + order[k]].cmd];
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
+                    /* Rebuilt in another order (below, fixed-function), on
+                     * CPU-made vertices too (Concept of Love: JSRF's
+                     * lightning, a new zigzag each frame, blended point by
+                     * point was all over the screen). */
+                    uint32_t nb = (uint32_t)sizeof(pdo_vertex);
+                    float sv = c->vbase + c->id_nv <= cur->nverts && pc->vbase + c->id_nv <= prev->nverts
+                        ? stray((const uint8_t *)&cur->verts[c->vbase], (const uint8_t *)&prev->verts[pc->vbase], nb,
+                                c->id_nv, (cur->nverts - c->vbase) * nb, (prev->nverts - pc->vbase) * nb)
+                        : 0.0f;
+                    c->strayed = sv > 0.2f;
+                    if (sv > 0.5f || (c->strayed && pc->strayed)) {
+                        st_rebuilt++;
+                        n_rebuilt++;
+                        continue;
+                    }
                     c->prev_vbase = (int32_t)pc->vbase;
                     c->unpaired = false;
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
                 } else if (c->vsh && pc->vsh) {
                     bool same_in = true;
+                    {   /* Rebuilt in another order: as below, on every input of
+                         * floats of a vertex program (Concept of Love: JSRF's
+                         * lightning keeps its positions and makes each zigzag
+                         * from another input); r: the worst one. */
+                        int r = -1;
+                        float sv = 0.0f;
+                        for (int q = 0; q < 16; q++) {
+                            int nc = c->vu.inputs[q][3] >> 4;
+                            if ((c->vu.inputs[q][3] & 15) != 2 || nc < 1 || pc->vu.inputs[q][1] != c->vu.inputs[q][1] ||
+                                pc->vu.inputs[q][3] != c->vu.inputs[q][3])
+                                continue;
+                            uint32_t a = (uint32_t)c->vu.inputs[q][0] + (uint32_t)c->vu.inputs[q][2];
+                            uint32_t b = (uint32_t)pc->vu.inputs[q][0] + (uint32_t)pc->vu.inputs[q][2];
+                            if (a >= cur->nblob || b >= prev->nblob)
+                                continue;
+                            float v = stray_n(cur->blob + a, prev->blob + b, (uint32_t)c->vu.inputs[q][1], c->id_nv,
+                                              cur->nblob - a, prev->nblob - b, nc > 3 ? 3 : nc);
+                            if (v > sv)
+                                sv = v, r = q;
+                        }
+                        (void)r;
+                        c->strayed = sv > 0.2f;
+                        if (sv > 0.5f || (c->strayed && pc->strayed)) {
+                            st_rebuilt++;
+                            n_rebuilt++;
+                            continue;
+                        }
+                    }
                     for (int r = 0; r < 16; r++) {
                         if (c->vu.inputs[r][1] != pc->vu.inputs[r][1] || c->vu.inputs[r][2] != pc->vu.inputs[r][2] ||
                             c->vu.inputs[r][3] != pc->vu.inputs[r][3])
