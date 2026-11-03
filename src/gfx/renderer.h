@@ -203,6 +203,7 @@ typedef struct pdo_fvf_uniforms {
     float   tex[4][16];
     float   material[4][4];      /* diffuse, ambient, specular, emissive */
     float   ambient[4];
+    float   normal[4];           /* the latched normal, for an FVF without one */
     float   light[8][7][4];      /* see shaders/fvf.vert */
     /* frame interpolation, filled by the renderer (match_frames) */
     int32_t interp[4];

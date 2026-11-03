@@ -25,6 +25,7 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     vec4  tex[16];       // the four stages' texture matrices, rows
     vec4  material[4];   // diffuse, ambient, specular, emissive
     vec4  ambient;       // D3DRS_AMBIENT
+    vec4  latched;       // the normal the hardware holds, for an FVF without one
     vec4  light[56];     // 8 lights x 7: (type, range, falloff, -), diffuse,
                          // ambient, position, direction (unit for directional:
                          // to the light), attenuation (a0, a1, a2, |direction|),
@@ -159,7 +160,7 @@ void main()
     vec4 mwvp[4], mwv[4], mworld[4];
     from_prev = false;
     vec3 p = vec3(f32(v), f32(v + 4u), f32(v + 8u));
-    vec3 nrm = hn ? vec3(f32(v + uint(offs.x)), f32(v + uint(offs.x) + 4u), f32(v + uint(offs.x) + 8u)) : vec3(0.0);
+    vec3 nrm = hn ? vec3(f32(v + uint(offs.x)), f32(v + uint(offs.x) + 4u), f32(v + uint(offs.x) + 8u)) : latched.xyz;
     float rhw = pre ? f32(v + 12u) : 1.0;
     bool blend = blend_t.x < 1.0 && interp.x >= 0;
 
@@ -192,7 +193,7 @@ void main()
     }
     if ((flags & F_LIT) != 0) {
         vec3 wp = xform(p, mworld[0], mworld[1], mworld[2], mworld[3]).xyz, wn = vec3(0.0);
-        if (hn) {
+        {   // without a normal in the stream: the latched one (d3d_hle.c)
             wn = xform3(nrm, mworld[0], mworld[1], mworld[2]);
             float len = sqrt((wn.x * wn.x + wn.y * wn.y) + wn.z * wn.z);
             if (len > 0.0) wn /= len;

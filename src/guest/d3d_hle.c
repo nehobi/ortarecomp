@@ -1437,6 +1437,14 @@ static void stage_coords(bool pre, uint32_t set_of[4], uint32_t gen[4])
     }
 }
 
+/* The normal the hardware holds. Each vertex attribute's register keeps
+ * the value of the last vertex a draw streamed (the last index, for an
+ * indexed draw; xemu does the same), and a draw whose format has no normal
+ * is lit with that one (Concept of Love: a JSRF map panel, lit FVF 0x102
+ * drawn after FVF 0x112 pins, was black with a zero normal). Set by
+ * latch_normal after every draw and by SetVertexData*(D3DVSDE_NORMAL). */
+static float latched_normal[3];
+
 /* Fetch vertices [first, first + count) of an FVF stream into our layout. */
 static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
                       pdo_vertex *out, bool *pretransformed)
@@ -1501,8 +1509,10 @@ static bool fetch_fvf(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t fir
             float wp[3], wn[3] = { 0, 0, 0 };
             for (int c = 0; c < 3; c++)
                 wp[c] = x * w[c] + y * w[4 + c] + z * w[8 + c] + w[12 + c];
-            if (has_normal) {
-                float nx = f32(v + normal_off), ny = f32(v + normal_off + 4), nz = f32(v + normal_off + 8), len;
+            {   /* without a normal in the stream: the latched one */
+                float nx = latched_normal[0], ny = latched_normal[1], nz = latched_normal[2], len;
+                if (has_normal)
+                    nx = f32(v + normal_off), ny = f32(v + normal_off + 4), nz = f32(v + normal_off + 8);
                 for (int c = 0; c < 3; c++)
                     wn[c] = nx * w[c] + ny * w[4 + c] + nz * w[8 + c];
                 len = sqrtf(wn[0] * wn[0] + wn[1] * wn[1] + wn[2] * wn[2]);
@@ -1607,6 +1617,7 @@ static bool fvf_gpu_job(uint32_t fvf, uint32_t base, uint32_t stride, uint32_t f
 
     memset(u->material, 0, sizeof *u - offsetof(pdo_fvf_uniforms, material));
     memcpy(u->material, st.material, sizeof u->material);
+    memcpy(u->normal, latched_normal, sizeof latched_normal);
     for (int k = 0; k < 4; k++)
         u->mat_src[k] = (int32_t)RS(src_rs[k]);
     unpack_d3dcolor(RS(RS_AMBIENT), u->ambient);
@@ -2152,11 +2163,44 @@ static void submit_draw(uint32_t type, uint32_t base, uint32_t stride, uint32_t 
     draws_drawn++;
 }
 
+/* After a draw: the normal of its last vertex, if it streamed one, is what
+ * the hardware now holds (see latched_normal). */
+static void latch_normal(uint32_t base, uint32_t stride, uint32_t first, const uint32_t *order, uint32_t n)
+{
+    uint32_t vi = first + order[n - 1];
+
+    if (st.vshader & 1) {
+        const pdo_vsh_program *p = find_program(st.vshader);
+        const pdo_vsh_input *in = p ? &p->input[2] : NULL;
+        uint32_t s, sb, ss;
+        float v[4];
+        if (!in || !in->present)
+            return;
+        s = in->stream & 15;
+        sb = s ? (st.vbs[s] ? MEM32(st.vbs[s] + 4) | 0x80000000u : 0) : base;
+        ss = s ? st.strides[s] : stride;
+        if (!sb)
+            return;
+        pdo_vsh_fetch(in->type, (const uint8_t *)XBOX_PTR(sb + vi * ss + in->offset), v);
+        memcpy(latched_normal, v, sizeof latched_normal);
+    } else {
+        fvf_layout l;
+        if (!layout_fvf(st.vshader, &l) || !l.has_normal)
+            return;
+        if (!stride)
+            stride = l.size;
+        for (int c = 0; c < 3; c++)
+            latched_normal[c] = f32(base + vi * stride + l.normal_off + 4 * c);
+    }
+}
+
 static void submit(uint32_t type, uint32_t base, uint32_t stride, uint32_t first, uint32_t count,
                    const uint32_t *order, uint32_t n)
 {
     Uint64 t = SDL_GetTicksNS();
     submit_draw(type, base, stride, first, count, order, n);
+    if (n)
+        latch_normal(base, stride, first, order, n);
     perf_ns[PERF_DRAWS] += SDL_GetTicksNS() - t;
 }
 
@@ -2352,7 +2396,7 @@ void sub_002AD9E0(void)
  * latched attributes, as on the hardware. Positions are interpreted by the
  * current FVF: screen space (XYZRHW) or transformed by the matrices. */
 
-enum { VDE_POSITION = 0, VDE_DIFFUSE = 3, VDE_SPECULAR = 4, VDE_TEXCOORD0 = 9 };
+enum { VDE_POSITION = 0, VDE_NORMAL = 2, VDE_DIFFUSE = 3, VDE_SPECULAR = 4, VDE_TEXCOORD0 = 9 };
 
 static struct {
     bool       active;
@@ -2404,6 +2448,8 @@ static void imm_set(uint32_t reg, float a, float b, float c, float d)
 
     if (reg == VDE_POSITION || reg == 0xFFFFFFFFu)
         imm_emit(a, b, c, d);
+    else if (reg == VDE_NORMAL)
+        memcpy(latched_normal, v, sizeof latched_normal);
     else if (reg == VDE_DIFFUSE)
         memcpy(imm.diffuse, v, sizeof v);
     else if (reg == VDE_SPECULAR)
