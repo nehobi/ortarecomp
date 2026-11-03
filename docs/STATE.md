@@ -124,7 +124,11 @@ episode 3 floor froze at boost ends, 4320e4a). Not blended: on-screen
 jumps, sprites moving over half their size, draws whose vertices (any
 float input of a program, CPU-made too) stray over half their size
 (glide wing reticle; a fifth made episode 5's dragon wings flicker),
-programs with 4+ constant registers jumping, all on a camera cut. Ported
+programs with half or more of the constant registers they read jumping
+(4+), all on a camera cut. Vertex programs pair by their first and last
+vertex's screen position (run on the CPU at record time) and, with no
+partner, across models of the same program (episode 4's battleships switch
+detail levels): episode 4 ships and packs confirmed smooth. Ported
 from Concept of Love; to check: menus, HUD, effects, packs look smooth.
 Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
