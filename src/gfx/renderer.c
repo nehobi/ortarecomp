@@ -1626,12 +1626,12 @@ static void present_pass(SDL_GPUCommandBuffer *cmd)
 
 /* A hang where the game thread never comes back to pump window events
  * ignores F11, so a watchdog takes the thread dump itself once no frame has
- * been presented for 8 s (once per stall). */
+ * come for 3 s, and again at 15 s (players close a frozen game quickly; a
+ * long load also gets a report, which does no harm). */
 static int SDLCALL watchdog(void *unused)
 {
     uint64_t seen = 0;
     int still = 0;
-    bool dumped = false;
 
     (void)unused;
     for (;;) {
@@ -1640,13 +1640,11 @@ static int SDLCALL watchdog(void *unused)
         if (now != seen || paused) {
             seen = now;
             still = 0;
-            dumped = false;
-        } else if (++still >= 8 && !dumped && seen > 0) {
+        } else if ((++still == 3 || still == 15) && seen > 0) {
             SDL_Log("watchdog: no frame for %d s (frame %llu), dumping threads", still,
                     (unsigned long long)seen);
             pdo_dump_threads();
             pdo_dump_guest_waits();
-            dumped = true;
         }
     }
     return 0;
