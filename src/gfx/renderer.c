@@ -2812,7 +2812,11 @@ bool pdo_gfx_pump_events(void)
             continue;
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
-            capture_frame = frames + 1;
+            /* The next whole frame: frames + 1 is often being recorded
+             * already, and draws recorded before the key missed what a
+             * capture records (the CPU's vertices beside GPU vertex-program
+             * draws: PDO_CAPTURE_CPUVSH drew a frame twice the same way). */
+            capture_frame = frames + 2;
             SDL_Log("capture: frame %llu", (unsigned long long)capture_frame);
         }
     }
