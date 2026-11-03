@@ -3176,8 +3176,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
         }
-        if (c->fvf >= 0)
+        if (c->fvf >= 0) {
             cur->fvf_us[c->fvf].interp[0] = -1;
+            cur->fvf_us[c->fvf].interp[3] = 0;
+        }
     }
     if (!prev)
         return;
@@ -3352,6 +3354,15 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     }
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
+                    /* A screen-space pass over a copy of the frame (the
+                     * motion blur that pastes the scene): its texture
+                     * coordinates blend too (shaders/fvf.vert). */
+                    {
+                        pdo_xtex_info ti;
+                        pdo_xtex_describe(c->draw.tex[0].format_word, c->draw.tex[0].size_word, &ti);
+                        u->interp[3] = (u->layout0[2] & PDO_FVF_PRE) && c->draw.tex[0].data &&
+                                       find_target(c->draw.tex[0].data, ti.width, ti.height) != NULL;
+                    }
                     c->unpaired = false;
                     for (int m = 0; m < 16; m++) {
                         c->mvel[m] = u->wvp[m] - pu->wvp[m];
