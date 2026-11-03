@@ -89,5 +89,8 @@ OrtaRecomp --setup          choose the game files again
 OrtaRecomp --import-iso F   import a disc image without the dialogs
 OrtaRecomp --game-dir DIR   use an extracted game folder for this run
 OrtaRecomp --check          check the game files, print the result, exit
-OrtaRecomp --boot           start the title (in development; not playable)
+OrtaRecomp --boot           start the game at once, without the launcher
+OrtaRecomp --log FILE       write the log straight into FILE (on Windows,
+                            use this instead of piping through PowerShell,
+                            which can stall the game)
 ```

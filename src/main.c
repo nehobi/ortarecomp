@@ -26,6 +26,15 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#ifdef _WIN32
+#include <io.h>
+#include <sys/stat.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #define APP_NAME "Orta Recomp"
 
@@ -33,6 +42,7 @@ typedef struct options {
     bool        setup, check, boot, no_boot;
     const char *game_dir;
     const char *import_iso;
+    const char *log;
 } options;
 
 static bool parse_args(int argc, char **argv, options *o)
@@ -53,11 +63,49 @@ static bool parse_args(int argc, char **argv, options *o)
             o->game_dir = argv[++i];
         else if (strcmp(argv[i], "--import-iso") == 0 && i + 1 < argc)
             o->import_iso = argv[++i];
+        else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc)
+            o->log = argv[++i];
         else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return false;
         }
     }
+    return true;
+}
+
+/* --log FILE: standard output and error go straight into FILE. Piping them
+ * through PowerShell (2>&1 | Out-File) turns every line into an error
+ * record, slowly; when it falls behind, the game's next write blocks, and
+ * a guest thread blocked there can hold the lock the others need: the
+ * game froze for seconds at a time, or for good, with the sound going on
+ * (Concept of Love). */
+static bool open_log(const char *path)
+{
+#ifdef _WIN32
+    int fd = _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+#endif
+
+    if (fd < 0) {
+        fprintf(stderr, "cannot write the log %s\n", path);
+        return false;
+    }
+    fflush(stdout);
+    fflush(stderr);
+#ifdef _WIN32
+    _dup2(fd, 1);
+    _dup2(fd, 2);
+    _close(fd);
+    /* SDL_Log writes to the Win32 handle, not the C stream. */
+    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(1));
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
+#else
+    dup2(fd, 1);
+    dup2(fd, 2);
+    close(fd);
+#endif
+    setvbuf(stdout, NULL, _IONBF, 0);
     return true;
 }
 
@@ -264,6 +312,8 @@ int main(int argc, char **argv)
     bool have_game = false;
 
     if (!parse_args(argc, argv, &opt))
+        return 2;
+    if (opt.log && !open_log(opt.log))
         return 2;
     SDL_SetAppMetadata(APP_NAME, "0.1.0", "io.github.ortarecomp");
 
