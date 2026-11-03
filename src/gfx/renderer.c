@@ -3831,6 +3831,80 @@ static void match_frames(frame_data *prev, frame_data *cur)
         }
         if (++odd_frames >= 300)
             odd_frames = odd_logs = 0;
+        if ((resized >= 3 || unp3d * 4 > all3d || (still && !was_still)) && odd_logs < 10) {
+            /* Unblended draws that had nothing alike in the frame before (no
+             * reason counted): which part of the key kept them apart, from a
+             * draw of the frame before alike in kind, program or layout and
+             * counts -- the render target, the first texture or the
+             * program's other word. Boost end (episode 1): 43 of 127 such. */
+            uint32_t nokey = 0, d_target = 0, d_tex = 0, d_info = 0, d_none = 0, alone = 0;
+            uint64_t tc = 0, ptgt[8] = { 0 }, ctgt[8] = { 0 };
+            uint32_t nptgt = 0, nctgt = 0, ptn[8] = { 0 }, ctn[8] = { 0 };
+            for (uint32_t k = 0; k < prev->ncmds; k++)
+                if (prev->cmds[k].kind == CMD_TARGET) {
+                    uint64_t t = target_key(&prev->cmds[k]);
+                    uint32_t q = 0;
+                    while (q < nptgt && ptgt[q] != t) q++;
+                    if (q == nptgt && nptgt < 8) ptgt[nptgt++] = t;
+                    if (q < 8) ptn[q]++;
+                }
+            for (uint32_t k = 0; k < cur->ncmds; k++) {
+                const command *c = &cur->cmds[k];
+                if (c->kind == CMD_TARGET) {
+                    uint32_t q = 0;
+                    tc = target_key(c);
+                    while (q < nctgt && ctgt[q] != tc) q++;
+                    if (q == nctgt && nctgt < 8) ctgt[nctgt++] = tc;
+                    if (q < 8) ctn[q]++;
+                }
+                if (c->kind != CMD_DRAW || !blendable(c) || !is_3d(cur, c) || !c->unpaired || grouped[k])
+                    continue;
+                nokey++;
+                {
+                    uint64_t tp = 0;
+                    bool found = false, t_same = false, x_same = false, i_same = false;
+                    for (uint32_t q = 0; q < prev->ncmds; q++) {
+                        const command *pc = &prev->cmds[q];
+                        if (pc->kind == CMD_TARGET)
+                            tp = target_key(pc);
+                        if (pc->kind != CMD_DRAW || !blendable(pc) || !is_3d(prev, pc) || pc->vsh != c->vsh ||
+                            pc->id_nv != c->id_nv || pc->vsh_index_count != c->vsh_index_count)
+                            continue;
+                        if (c->vsh ? pc->vu.info[0] != c->vu.info[0]
+                                   : prev->fvf_us[pc->fvf].layout0[1] != cur->fvf_us[c->fvf].layout0[1] ||
+                                     prev->fvf_us[pc->fvf].layout0[2] != cur->fvf_us[c->fvf].layout0[2])
+                            continue;
+                        found = true;
+                        t_same |= tp == tc;
+                        x_same |= pc->draw.tex[0].data == c->draw.tex[0].data;
+                        i_same |= !c->vsh || pc->vu.info[1] == c->vu.info[1];
+                    }
+                    if (!found) alone++;
+                    else if (!t_same) d_target++;
+                    else if (!x_same) d_tex++;
+                    else if (!i_same) d_info++;
+                    else d_none++;
+                }
+            }
+            if (nokey) {
+                char tt[160] = "";
+                for (uint32_t q = 0; q < nptgt; q++) {
+                    size_t len = strlen(tt);
+                    snprintf(tt + len, sizeof tt - len, " %llx:%u", (unsigned long long)ptgt[q], ptn[q]);
+                }
+                {
+                    size_t len = strlen(tt);
+                    snprintf(tt + len, sizeof tt - len, " ->");
+                }
+                for (uint32_t q = 0; q < nctgt; q++) {
+                    size_t len = strlen(tt);
+                    snprintf(tt + len, sizeof tt - len, " %llx:%u", (unsigned long long)ctgt[q], ctn[q]);
+                }
+                SDL_Log("interp: frame %llu: %u unblended had nothing alike before: %u new, %u another target, "
+                        "%u another texture, %u another program word, %u other; targets%s",
+                        (unsigned long long)cur->frame, nokey, alone, d_target, d_tex, d_info, d_none, tt);
+            }
+        }
         if ((resized >= 3 || unp3d * 4 > all3d || (still && !was_still)) && odd_logs++ < 10)
             SDL_Log("interp: frame %llu: %u of %u 3D draws not blended (%u no partner near, %u jumped, %u rebuilt, "
                     "%u undone, %u paired across models); %u of %u paired did not move; picture moved %.4f (%.4f before); "
