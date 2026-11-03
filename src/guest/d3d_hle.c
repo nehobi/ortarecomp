@@ -1853,6 +1853,26 @@ static void vsh_gpu_job(const pdo_vsh_program *p, uint32_t base, uint32_t stride
         g->input[r][2] = in->offset;
         g->input[r][3] = in->type;
     }
+    /* Where the draw is: its first and last vertex through the program on
+     * the CPU (a GPU program writes no constants, so the file is safe).
+     * Frame interpolation pairs alike draws by these: episode 4's alike
+     * battleships read all 192 registers through a0, and by constants a
+     * ship looked no nearer its own last frame than another ship. */
+    if (count) {
+        vsh_job j;
+        float in[PDO_VSH_INPUTS][4], out[VSH_OUTPUTS][4];
+        memset(&j, 0, sizeof j);
+        j.p = p;
+        j.first = first;
+        memcpy(j.sbase, sbase, sizeof sbase);
+        memcpy(j.sstride, sstride, sizeof sstride);
+        for (int k = 0; k < 2; k++) {
+            vsh_inputs(&j, k ? count - 1 : 0, in);
+            pdo_vsh_run(p, (const float (*)[4])in, vconst, out);
+            memcpy(g->anchor[k], out[VSH_OPOS], sizeof g->anchor[k]);
+        }
+        g->anchored = true;
+    }
 }
 
 /* Vertex programs go to the GPU when the setting asks for it, and the

@@ -144,6 +144,8 @@ typedef struct command {
     float mvel[32];
     uint32_t pair_prev;     /* the paired draw in the frame before (match_frames) */
     uint8_t  consts_read[24]; /* vertex programs: a bit per c register read (pdo_gpu_vsh) */
+    float    anchor[8];       /* vertex programs: oPos of the first and last vertex (pdo_gpu_vsh) */
+    bool     anchored;
     bool strayed;           /* its vertices strayed over a fifth of its size from its partner's */
     bool no_partner;        /* match_frames: its group had none left for it (not a test's refusal) */
 } command;
@@ -409,6 +411,8 @@ void pdo_gfx_draw_vsh(const pdo_draw *d, const pdo_gpu_vsh *g, uint32_t nv,
     }
     c->vsh = true;
     c->id_nv = nv;
+    c->anchored = g->anchored;
+    memcpy(c->anchor, g->anchor, sizeof c->anchor);
     if (g->consts_read)
         memcpy(c->consts_read, g->consts_read, sizeof c->consts_read);
     else
@@ -3135,6 +3139,16 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
 
     if (!c->vsh && c->fvf < 0)
         return d;                           /* CPU-made: positions only */
+    if (c->vsh && c->anchored && pc->anchored) {
+        /* Where the draw is: its first and last vertex through the program
+         * (d3d_hle.c). Constants told episode 4's alike battleships apart
+         * no better than chance (all 192 read, through a0). */
+        float e = pc->id_src == c->id_src ? 0.0f : 1e-3f;
+        for (int i = 0; i < 8; i++)
+            if (pc->anchor[i] == pc->anchor[i] && c->anchor[i] == c->anchor[i])     /* not NaN */
+                e += SDL_fabsf(pc->anchor[i] - c->anchor[i]);
+        return e;
+    }
     if (c->vsh) {
         /* Only the registers the program reads: the file is shared, and the
          * rest hold whatever the draws before left (episode 4's four alike
