@@ -3019,10 +3019,25 @@ static bool is_3d(const frame_data *f, const command *c)
 /* any_src: only the 3D draws skip[] does not mark, keyed without their
  * data. Screen-space ones stay out: menu words drawn alike (EASY, NORMAL,
  * HARD) each looked like the lone partner of another and jittered. */
+/* The render target a draw goes to, for its key: its memory and its size
+ * word (the back buffer and Orta's 512x512 target both read data 0). */
+static uint64_t target_key(const command *c)
+{
+    return ((uint64_t)c->surf.size_word << 32) | c->surf.data;
+}
+
 static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, bool any_src, const uint8_t *skip)
 {
     uint32_t n = 0;
-    for (uint32_t i = 0; i < f->ncmds; i++)
+    uint64_t target = 0;
+    for (uint32_t i = 0; i < f->ncmds; i++) {
+        /* Draws pair only within the same render target (Concept of
+         * Love: JSRF's boost draws the scene into two copies on alternate
+         * frames, and paired across them the copies went out of step).
+         * Orta draws its scene into a 512x384 target and some of it into a
+         * 512x512 one too. */
+        if (f->cmds[i].kind == CMD_TARGET)
+            target = target_key(&f->cmds[i]);
         if (blendable(&f->cmds[i]) && !(any_src && (skip[i] || !is_3d(f, &f->cmds[i])))) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
             /* 3D draws always without their data's address: the game hands
@@ -3030,10 +3045,11 @@ static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, boo
              * the same object (fighters in a pack warped between each
              * other's places); they pair by where they are. Screen-space
              * ones (menu words drawn alike) keep it. */
-            (*keys)[n].h = key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i]));
+            (*keys)[n].h = (key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i])) ^ target) * 1099511628211ull;
             (*keys)[n].cmd = i;
             n++;
         }
+    }
     qsort(*keys, n, sizeof **keys, cmp_key);
     return n;
 }
@@ -3439,6 +3455,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         static draw_key *lk;
         static uint32_t cap_lk;
         uint32_t nl;
+        uint64_t target = 0;
         memset(taken, 0, prev->ncmds);      /* keys_of's skip: none */
         nl = keys_of(prev, &lk, &cap_lk, true, taken);
         for (uint32_t k = 0; k < cur->ncmds; k++) {
@@ -3446,9 +3463,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
             uint64_t h;
             uint32_t lo = 0, hi = nl, e;
             float dc, dmin = 3.4e38f;
+            if (c->kind == CMD_TARGET)
+                target = target_key(c);
             if (c->kind != CMD_DRAW || c->unpaired || !is_3d(cur, c))
                 continue;
-            h = key_of(cur, c, true);
+            h = (key_of(cur, c, true) ^ target) * 1099511628211ull;   /* as keys_of */
             while (lo < hi) {               /* the first key >= h */
                 uint32_t m = (lo + hi) / 2;
                 if (lk[m].h < h) lo = m + 1; else hi = m;
