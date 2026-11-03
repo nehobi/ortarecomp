@@ -93,9 +93,11 @@ extern uint64_t pdo_input_x_frame;  /* input_hle.c: the last frame X (boost) was
 /* PDO_CAPTURE_CLOSE=n: up to n times, capture (with PDO_CAPTURE_INTERP's
  * blends) a frame where a draw in a pack of three or more alike 3D draws had
  * a runner-up partner within 25% of the one it paired with -- where two
- * fighters can trade places (episode 4's packs) -- and the two after. */
+ * fighters can trade places (episode 4's packs) -- and the two after.
+ * Only once F10 arms it: cutscenes have close calls too. */
 static int capture_close_left = -1;
 static bool close_call;             /* match_frames: this frame */
+static bool close_armed;            /* F10: close calls captured from now on (cutscenes have them too) */
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -2817,6 +2819,10 @@ bool pdo_gfx_pump_events(void)
             pdo_settings_save();
             continue;
         }
+        if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F10 && !ev.key.repeat && getenv("PDO_CAPTURE_CLOSE")) {
+            close_armed = !close_armed;
+            SDL_Log("capture: close calls %s", close_armed ? "armed (F10)" : "disarmed (F10)");
+        }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
             /* The next whole frame: frames + 1 is often being recorded
              * already, and draws recorded before the key missed what a
@@ -4123,7 +4129,7 @@ void pdo_gfx_main_loop(void)
                 if (follow > 0 && prev) {
                     follow--;
                     capture_interp(prev, cur);
-                } else if (close_call && prev && capture_close_left > 0) {
+                } else if (close_call && close_armed && prev && capture_close_left > 0) {
                     capture_close_left--;
                     SDL_Log("capture: a close call in a pack at frame %llu: capturing it and the two after",
                             (unsigned long long)cur->frame);
