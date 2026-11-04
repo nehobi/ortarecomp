@@ -3352,21 +3352,15 @@ static uint32_t st_close;   /* alike draws paired with a runner-up near as good 
 static uint32_t st_swapped; /* pairs undone: another draw was far nearer (log) */
 static uint32_t st_rebuilt; /* pairs not blended: vertices rebuilt in another order (log) */
 
-/* Whether a draw samples a render target of its frame (one drawn to, or
- * copied to or from): a copy of the picture pasted back through a quad. */
+/* Whether a draw samples a render target (texture_for found the memory is
+ * one): a copy of the picture pasted back through a quad -- the back
+ * buffer too, whose target reads data 0 in the frame's own commands. */
 static bool reads_target(const frame_data *f, const command *c)
 {
-    for (uint32_t k = 0; k < f->ncmds; k++) {
-        const command *t = &f->cmds[k];
-        if (t->kind != CMD_TARGET && t->kind != CMD_COPY)
-            continue;
-        for (int st = 0; st < 4; st++) {
-            uint32_t d = c->draw.tex[st].data;
-            if (d && ((t->surf.data && phys(d) == phys(t->surf.data)) ||
-                      (t->kind == CMD_COPY && t->surf2.data && phys(d) == phys(t->surf2.data))))
-                return true;
-        }
-    }
+    uint32_t k = (uint32_t)(c - f->cmds);
+    for (int st = 0; st < 4; st++)
+        if (f->tex[k * 4 + st].target_data)
+            return true;
     return false;
 }
 
@@ -4060,7 +4054,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
         groups_shrank = shrank >= 10;
         /* The boost's and the brake's end: many draws on other programs. */
         programs_switched = n_progswitch >= 8;
-        if (programs_switched && odd_logs++ < 10) {
+        static uint32_t switch_logs;    /* its own budget: the lines above use theirs up in fights */
+        if (odd_frames == 0)
+            switch_logs = 0;
+        if (programs_switched && switch_logs++ < 10) {
             /* and every draw that samples the picture, 3D ones too: kind, vertices, screen corners */
             char txt[512] = "";
             uint32_t n3 = 0;
