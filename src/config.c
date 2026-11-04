@@ -13,7 +13,8 @@
 static char data_dir[PDO_PATH_MAX];
 
 static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false, false,
-                                  0, 0, 0, 0, false, true, 100, false, true, true };
+                                  0, 0, 0, 0, false, true, 100, false, true, true,
+                                  false, 0, 100, 100, 100 };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -120,6 +121,16 @@ bool pdo_config_load(pdo_config *cfg)
             settings.skip_logos = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "depth_reversed") == 0)
             settings.depth_reversed = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "picture_crt") == 0)
+            settings.picture_crt = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "picture_brightness") == 0)
+            settings.pic_brightness = clamp_int(SDL_atoi(eq + 1), -50, 50);
+        else if (strcmp(line, "picture_contrast") == 0)
+            settings.pic_contrast = clamp_int(SDL_atoi(eq + 1), 50, 150);
+        else if (strcmp(line, "picture_gamma") == 0)
+            settings.pic_gamma = clamp_int(SDL_atoi(eq + 1), 50, 200);
+        else if (strcmp(line, "picture_saturation") == 0)
+            settings.pic_saturation = clamp_int(SDL_atoi(eq + 1), 0, 200);
         else
             pdo_input_load_line(line, eq + 1);
     }
@@ -154,7 +165,12 @@ bool pdo_config_save(const pdo_config *cfg)
                  "mouse_speed=%d\n"
                  "unlock_box=%d\n"
                  "skip_logos=%d\n"
-                 "depth_reversed=%d\n",
+                 "depth_reversed=%d\n"
+                 "picture_crt=%d\n"
+                 "picture_brightness=%d\n"
+                 "picture_contrast=%d\n"
+                 "picture_gamma=%d\n"
+                 "picture_saturation=%d\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
                  settings.aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3",
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
@@ -162,7 +178,9 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
                  settings.gpu_fixed, settings.frame_interp, settings.fullscreen, settings.fxaa,
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
-                 settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed);
+                 settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,
+                 settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,
+                 settings.pic_saturation);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
     n += (int)pdo_input_save(text + n, sizeof text - (size_t)n);

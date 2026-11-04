@@ -30,6 +30,12 @@ typedef struct pdo_settings {
     bool unlock_box;        /* every Pandora's Box item open, the save untouched (src/guest/unlocks.c) */
     bool skip_logos;        /* a press during the boot logos goes to the title (src/guest/intro_skip.c) */
     bool depth_reversed;    /* depth stored as 1 - z (renderer.c, read at start) */
+    /* Picture (present.frag), on the finished frame: */
+    bool picture_crt;       /* a CRT's darker midtones: x^(2.5/2.2) */
+    int  pic_brightness;    /* -50..50, % added */
+    int  pic_contrast;      /* 50..150 % */
+    int  pic_gamma;         /* 50..200: 100 as is, more brightens the midtones */
+    int  pic_saturation;    /* 0..200 % */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

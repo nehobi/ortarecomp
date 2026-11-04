@@ -1572,7 +1572,7 @@ static bool init_present(void)
     linear = SDL_CreateGPUSampler(dev, &si);
 
     pvs = make_shader(present_vert_spv, sizeof present_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
-    pfs = make_shader(present_frag_spv, sizeof present_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 0);
+    pfs = make_shader(present_frag_spv, sizeof present_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     SDL_zero(ct);
     ct.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     SDL_zero(pi);
@@ -1674,6 +1674,13 @@ static void present_pass(SDL_GPUCommandBuffer *cmd)
     tsb[1].texture = gamma_lut;
     tsb[1].sampler = nearest;
     SDL_BindGPUFragmentSamplers(pass, 0, tsb, 2);
+    {   /* the player's picture settings (present.frag) */
+        const pdo_settings *s = pdo_settings_get();
+        float pic[8] = { s->picture_crt ? 1.0f : 0.0f, (float)s->pic_brightness / 100.0f,
+                         (float)s->pic_contrast / 100.0f, 100.0f / (float)SDL_max(s->pic_gamma, 1),
+                         (float)s->pic_saturation / 100.0f, 0.0f, 0.0f, 0.0f };
+        SDL_PushGPUFragmentUniformData(cmd, 0, pic, sizeof pic);
+    }
     SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
 }

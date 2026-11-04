@@ -19,23 +19,64 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP,
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
+       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_BOX, ITEM_LOGOS,
        ITEM_CONTROLS, ITEM_CLOSE,
        /* the launcher's own */
-       ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_BOX, ITEM_EXIT, ITEM_COUNT };
+       ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
+       /* Picture (present.frag) */
+       ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT, ITEM_PIC_RESET,
+       /* links to the pages, and back */
+       ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_BACK,
+       ITEM_COUNT };
 
-/* The lines of the menu shown: in the game, or the launcher (before it). */
-static const int game_items[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS,
-                                  ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_CONTROLS, ITEM_CLOSE };
-static const int launcher_items[] = { ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_SCALE, ITEM_MSAA,
-                                      ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME, ITEM_FPS, ITEM_INTERP,
-                                      ITEM_CONTROLS, ITEM_BOX, ITEM_EXIT };
+/* The menu is pages: a short main list (the game's, or the launcher's
+ * before the game starts) of links, and a page per subject. */
+enum { PAGE_MAIN, PAGE_DISPLAY, PAGE_PICTURE, PAGE_SOUND, PAGE_GAMEPLAY, PAGE_ADVANCED, PAGE_COUNT };
+static const char *page_names[PAGE_COUNT] = { "OPTIONS", "DISPLAY", "PICTURE", "SOUND", "GAMEPLAY", "ADVANCED" };
+
+static const int game_main[] = { ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY,
+                                 ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE };
+static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
+                                     ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_EXIT };
+static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
+static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
+                                        ITEM_FPS, ITEM_BACK };
+static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
+                                     ITEM_PIC_RESET, ITEM_BACK };
+static const int sound_items[] = { ITEM_VOLUME, ITEM_BACK };
+static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_BACK };
+static const int advanced_game[] = { ITEM_INTERP, ITEM_VSH, ITEM_FVF, ITEM_BACK };
+static const int advanced_launcher[] = { ITEM_INTERP, ITEM_VSH, ITEM_FVF, ITEM_GPU, ITEM_BACK };
+
 static bool launcher;               /* pdo_launcher_begin .. end */
 static int launcher_choice;         /* PDO_LAUNCH_* picked, 0 none yet */
 static const char *launcher_files;  /* the game files, as shown */
 static bool launcher_files_ok;
-#define ITEMS (launcher ? launcher_items : game_items)
-#define NITEMS (launcher ? (int)SDL_arraysize(launcher_items) : (int)SDL_arraysize(game_items))
+static int page;                    /* PAGE_* shown */
+
+static const int *page_items(int *n)
+{
+#define PAGE_OF(a) (*n = (int)SDL_arraysize(a), a)
+    switch (page) {
+    case PAGE_DISPLAY:  return launcher ? PAGE_OF(display_launcher) : PAGE_OF(display_game);
+    case PAGE_PICTURE:  return PAGE_OF(picture_items);
+    case PAGE_SOUND:    return PAGE_OF(sound_items);
+    case PAGE_GAMEPLAY: return PAGE_OF(gameplay_items);
+    case PAGE_ADVANCED: return launcher ? PAGE_OF(advanced_launcher) : PAGE_OF(advanced_game);
+    default:            return launcher ? PAGE_OF(launcher_main) : PAGE_OF(game_main);
+    }
+#undef PAGE_OF
+}
+
+static int nitems(void)
+{
+    int n;
+    page_items(&n);
+    return n;
+}
+#define ITEMS (page_items(&(int){ 0 }))
+#define NITEMS nitems()
 
 /* The Controls page: a line per Xbox button, then these two. While a line
  * waits for its new key or controller button, capture is set. */
@@ -64,6 +105,7 @@ void pdo_launcher_begin(const char *files, bool ok)
     launcher_files = files;
     launcher_files_ok = ok;
     launcher_choice = PDO_LAUNCH_NONE;
+    page = PAGE_MAIN;
     selected = ok ? 0 : 1;          /* no usable files: on Game files */
 }
 
@@ -89,6 +131,7 @@ static void set_open(bool on)
     dirty = true;
     if (on) {
         selected = 0;
+        page = PAGE_MAIN;
         controls = capture = false;
     }
     else {
@@ -111,6 +154,26 @@ static void next_aa(pdo_settings *s, int dir)
     s->fxaa = steps[i].fxaa;
 }
 
+static int index_of(int item);
+
+/* To a page, on its first line; back to the main list, on that page's link. */
+static void go_page(int p)
+{
+    page = p;
+    selected = 0;
+    dirty = true;
+}
+
+static void page_back(void)
+{
+    static const int link[PAGE_COUNT] = { 0, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY,
+                                          ITEM_GO_ADVANCED };
+    int from = page;
+    page = PAGE_MAIN;
+    selected = index_of(link[from]);
+    dirty = true;
+}
+
 /* Change the selected line by one step: dir -1 or +1. */
 static void change(int dir)
 {
@@ -121,7 +184,6 @@ static void change(int dir)
     case ITEM_PICK:   if (dir > 0) launcher_choice = PDO_LAUNCH_PICK; break;
     case ITEM_EXIT:   if (dir > 0) launcher_choice = PDO_LAUNCH_EXIT; break;
     case ITEM_FULLSCREEN: s->fullscreen = !s->fullscreen; break;
-    case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
     case ITEM_MSAA:   next_aa(s, dir); break;
@@ -129,12 +191,32 @@ static void change(int dir)
     case ITEM_FIT:    s->fit = (s->fit + PDO_FIT_COUNT + dir) % PDO_FIT_COUNT; break;
     case ITEM_SOFT:   s->soft_filter = !s->soft_filter; break;
     case ITEM_VOLUME: s->master_volume = SDL_clamp(s->master_volume + 5 * dir, 0, 100); break;
+    case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
+    case ITEM_LOGOS:  s->skip_logos = !s->skip_logos; break;
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
     case ITEM_INTERP: s->frame_interp = !s->frame_interp; break;
     case ITEM_CONTROLS: if (dir > 0) { controls = true; selected = 0; } break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
+    case ITEM_PIC_LOOK:     s->picture_crt = !s->picture_crt; break;
+    case ITEM_PIC_BRIGHT:   s->pic_brightness = SDL_clamp(s->pic_brightness + 5 * dir, -50, 50); break;
+    case ITEM_PIC_CONTRAST: s->pic_contrast = SDL_clamp(s->pic_contrast + 5 * dir, 50, 150); break;
+    case ITEM_PIC_GAMMA:    s->pic_gamma = SDL_clamp(s->pic_gamma + 5 * dir, 50, 200); break;
+    case ITEM_PIC_SAT:      s->pic_saturation = SDL_clamp(s->pic_saturation + 5 * dir, 0, 200); break;
+    case ITEM_PIC_RESET:
+        if (dir > 0) {
+            s->picture_crt = false;
+            s->pic_brightness = 0;
+            s->pic_contrast = s->pic_gamma = s->pic_saturation = 100;
+        }
+        break;
+    case ITEM_GO_DISPLAY:  if (dir > 0) go_page(PAGE_DISPLAY); break;
+    case ITEM_GO_PICTURE:  if (dir > 0) go_page(PAGE_PICTURE); break;
+    case ITEM_GO_SOUND:    if (dir > 0) go_page(PAGE_SOUND); break;
+    case ITEM_GO_GAMEPLAY: if (dir > 0) go_page(PAGE_GAMEPLAY); break;
+    case ITEM_GO_ADVANCED: if (dir > 0) go_page(PAGE_ADVANCED); break;
+    case ITEM_BACK:        if (dir > 0) page_back(); break;
     }
     dirty = true;
 }
@@ -166,6 +248,7 @@ static void control_act(int a, int dir)
         st->mouse_speed = SDL_clamp(st->mouse_speed + 10 * dir, 10, 400);
     } else if (selected == CTL_BACK || (a < 0 && dir < 0 && selected >= PDO_IN_COUNT)) {
         controls = false;
+        page = PAGE_MAIN;
         selected = index_of(ITEM_CONTROLS);
     } else if (selected == CTL_RESET) {
         if (dir > 0)
@@ -191,7 +274,7 @@ static void act(int a)
         case ACT_DOWN:  move(+1); break;
         case ACT_LEFT:  control_act(-1, -1); break;
         case ACT_RIGHT: case ACT_OK: control_act(0, +1); break;
-        case ACT_BACK:  controls = false; selected = index_of(ITEM_CONTROLS); dirty = true; break;
+        case ACT_BACK:  controls = false; page = PAGE_MAIN; selected = index_of(ITEM_CONTROLS); dirty = true; break;
         }
         return;
     }
@@ -201,7 +284,12 @@ static void act(int a)
     case ACT_LEFT:  change(-1); break;
     case ACT_RIGHT: change(+1); break;
     case ACT_OK:    change(+1); break;
-    case ACT_BACK:  if (!launcher) set_open(false); break;
+    case ACT_BACK:
+        if (page != PAGE_MAIN)
+            page_back();
+        else if (!launcher)
+            set_open(false);
+        break;
     }
 }
 
@@ -307,27 +395,95 @@ bool pdo_overlay_blocks_input(bool any_pressed)
 /* ── Drawing ─────────────────────────────────────────────────────────── */
 
 #define SCALE 2.0f      /* 8x8 font at 16x16 on the 640x480 image */
-#define CHAR  8.0f      /* in unscaled units */
+#define CHAR  8.0f      /* in unscaled units: the layer is 40 x 30 of them */
+
+/* The look: a dark panel, an amber for the title bar and what is chosen,
+ * a sky blue for the rule and the bars of sliders. */
+#define COL_PANEL    14, 18, 30, 238
+#define COL_EDGE     70, 82, 110, 255
+#define COL_TITLE    232, 150, 40, 255
+#define COL_TITLE_TX 22, 20, 28, 255
+#define COL_ACCENT   70, 160, 230, 255
+#define COL_SEL      36, 56, 90, 255
+#define COL_TEXT     206, 212, 224, 255
+#define COL_TEXT_HI  255, 255, 255, 255
+#define COL_DIM      138, 148, 166, 255
+#define COL_OFF      96, 104, 120, 255
+#define COL_TRACK    52, 60, 80, 255
+
+static float cols = 40;     /* the layer's width in characters: more in 16:9 (drawn narrower) */
+
+static void color(Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    SDL_SetRenderDrawColor(painter, r, g, b, a);
+}
+#define COLOR(c) color(c)
 
 static void text(float col, float row, const char *s)
 {
     SDL_RenderDebugText(painter, col * CHAR, row * CHAR, s);
 }
 
+static void fill(float col, float row, float w, float h)
+{
+    SDL_FRect r = { col * CHAR, row * CHAR, w * CHAR, h * CHAR };
+    SDL_RenderFillRect(painter, &r);
+}
+
+/* The page's frame: the game dimmed behind, the panel, its title bar with
+ * the name on the left and the page on the right, and a blue rule. */
+static void frame(float x0, float y0, float w, float h, const char *page_name)
+{
+    SDL_FRect r;
+
+    SDL_SetRenderDrawBlendMode(painter, SDL_BLENDMODE_NONE);
+    color(0, 0, 0, 110);
+    fill(0, 0, cols, 30);
+    COLOR(COL_PANEL);
+    fill(x0, y0, w, h);
+    COLOR(COL_EDGE);
+    r = (SDL_FRect){ x0 * CHAR - 1, y0 * CHAR - 1, w * CHAR + 2, h * CHAR + 2 };
+    SDL_RenderRect(painter, &r);
+    COLOR(COL_TITLE);
+    fill(x0, y0, w, 2.5f);
+    COLOR(COL_ACCENT);
+    fill(x0, y0 + 2.5f, w, 0.25f);
+    COLOR(COL_TITLE_TX);
+    text(x0 + 1.5f, y0 + 0.75f, "ORTA RECOMP");
+    text(x0 + w - 1.5f - (float)strlen(page_name), y0 + 0.75f, page_name);
+}
+
+/* Up to two lines of wrapped help, cols wide. */
+static void help(float col, float row, int cols, const char *s)
+{
+    char line[64];
+    for (int l = 0; l < 2 && *s; l++) {
+        int n = (int)strlen(s), cut = n;
+        if (n > cols) {
+            cut = cols;
+            while (cut > 0 && s[cut] != ' ')
+                cut--;
+            if (cut == 0)
+                cut = cols;
+        }
+        snprintf(line, sizeof line, "%.*s", cut, s);
+        text(col, row + l * 1.25f, line);
+        s += cut;
+        while (*s == ' ')
+            s++;
+    }
+}
+
 static void draw_controls(void)
 {
     const pdo_binding *b = pdo_input_bindings();
-    const float x0 = 1, y0 = 1, w = 38, h = 2 + CTL_COUNT + 4;   /* the 40 columns */
-    SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
+    const float w = 38, x0 = (cols - w) / 2, y0 = 0.75f, h = 28.5f;
 
-    SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
-    SDL_RenderFillRect(painter, &panel);
-    SDL_SetRenderDrawColor(painter, 120, 170, 220, 255);
-    SDL_RenderRect(painter, &panel);
-    SDL_SetRenderDrawColor(painter, 230, 235, 245, 255);
-    text(x0, y0, "Controls    key       pad       mouse");
+    frame(x0, y0, w, h, "CONTROLS");
+    COLOR(COL_DIM);
+    text(x0 + 3, y0 + 3.5f, "button    key       pad       mouse");
     for (int i = 0; i < CTL_COUNT; i++) {
-        float y = y0 + 2 + i;
+        float y = y0 + 5 + i * 1.0f + (i >= PDO_IN_COUNT ? 0.75f : 0);
         char line[64];
         if (i < PDO_IN_COUNT) {
             const char *k = b[i].key != SDL_SCANCODE_UNKNOWN ? SDL_GetScancodeName(b[i].key) : "-";
@@ -343,85 +499,214 @@ static void draw_controls(void)
             snprintf(line, sizeof line, "%s", i == CTL_RESET ? "Reset to defaults" : "Back");
         }
         if (i == selected) {
-            SDL_FRect bar = { (x0 - 0.5f) * CHAR, (y - 0.0f) * CHAR - 1, (w + 1) * CHAR, CHAR + 2 };
-            SDL_SetRenderDrawColor(painter, 60, 100, 160, 255);
-            SDL_RenderFillRect(painter, &bar);
-            SDL_SetRenderDrawColor(painter, 255, 255, 255, 255);
-            text(x0, y, ">");
+            COLOR(COL_SEL);
+            fill(x0 + 0.5f, y - 0.0625f, w - 1, 1.125f);
+            COLOR(COL_TITLE);
+            fill(x0 + 0.5f, y - 0.0625f, 0.25f, 1.125f);
+            COLOR(COL_TEXT_HI);
         } else
-            SDL_SetRenderDrawColor(painter, 200, 205, 215, 255);
+            COLOR(COL_TEXT);
         text(x0 + 2, y, line);
     }
-    SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
-    text(x0, y0 + h - 2, "A/Enter: rebind  Left: clear");
-    text(x0, y0 + h - 1, "B/Esc: back   Mouse: Esc frees it");
+    COLOR(COL_DIM);
+    text(x0 + 1.5f, y0 + h - 2.25f, "A/Enter rebind  Left clear");
+    text(x0 + 1.5f, y0 + h - 1.25f, "B/Esc back      Esc frees the mouse");
 }
 
-static void draw_menu(void)
+/* A line's value as shown, and for a slider its fill (0..1), else -1. */
+static float value_of(int item, char *v, size_t n)
 {
     const pdo_settings *s = pdo_settings_get();
     static const char *aspects[PDO_ASPECT_COUNT] = { "4:3", "16:9" };
     static const char *fits[PDO_FIT_COUNT] = { "Bars", "Stretch", "Zoom" };
-    char lines[ITEM_COUNT][48];
-    /* The launcher's lines a row and a half apart, the game's two: both in
-     * the 240 rows, help on the last. */
-    const float step = launcher ? 1.5f : 2.0f;
-    const float w = launcher ? 36 : 32, h = 2 + NITEMS * step + (launcher ? 1.5f : 1);
-    const float x0 = launcher ? 2 : 4, y0 = launcher ? (30 - h) / 2 : 1;     /* the launcher's centred */
-    SDL_FRect panel = { (x0 - 1) * CHAR, (y0 - 1) * CHAR, (w + 2) * CHAR, (h + 1) * CHAR };
 
-    snprintf(lines[ITEM_SCALE], sizeof lines[0], "%-15s%dx", "Resolution", s->render_scale);
-    if (s->msaa > 1)
-        snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15s%dx MSAA", "Anti-aliasing", s->msaa);
-    else if (s->fxaa)
-        snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15sFXAA", "Anti-aliasing");
-    else
-        snprintf(lines[ITEM_MSAA], sizeof lines[0], "%-15sOff", "Anti-aliasing");
-    /* The game reads widescreen once, at start: say so until it has. */
-    snprintf(lines[ITEM_ASPECT], sizeof lines[0], "%-15s%s%s", "Aspect ratio", aspects[s->aspect],
-             !launcher && (s->aspect == PDO_ASPECT_16_9) != pdo_widescreen_active() ? " (restart)" : "");
-    snprintf(lines[ITEM_FIT], sizeof lines[0], "%-15s%s", "Fit to window", fits[s->fit]);
-    snprintf(lines[ITEM_SOFT], sizeof lines[0], "%-15s%s", "TV softening", s->soft_filter ? "On" : "Off");
-    snprintf(lines[ITEM_VOLUME], sizeof lines[0], "%-15s%d%%", "Volume", s->master_volume);
-    snprintf(lines[ITEM_FPS], sizeof lines[0], "%-15s%s", "Show FPS", s->show_fps ? "On" : "Off");
-    snprintf(lines[ITEM_VSH], sizeof lines[0], "%-15s%s", "Vertex progs", s->gpu_vertex ? "GPU" : "CPU");
-    snprintf(lines[ITEM_FVF], sizeof lines[0], "%-15s%s", "Fixed-func", s->gpu_fixed ? "GPU" : "CPU");
-    snprintf(lines[ITEM_INTERP], sizeof lines[0], "%-15s%s", "Frame interp", s->frame_interp ? "On" : "Off");
-    snprintf(lines[ITEM_CONTROLS], sizeof lines[0], "Controls...");
-    snprintf(lines[ITEM_CLOSE], sizeof lines[0], "Close");
-    snprintf(lines[ITEM_START], sizeof lines[0], "%s", launcher_files_ok ? "Start game" : "Start game (no game files)");
-    snprintf(lines[ITEM_PICK], sizeof lines[0], "%-15s%.19s", "Game files", launcher_files ? launcher_files : "-");
-    snprintf(lines[ITEM_GPU], sizeof lines[0], "%-15s%s", "Graphics", "Vulkan");
-    snprintf(lines[ITEM_FULLSCREEN], sizeof lines[0], "%-15s%s", "Fullscreen", s->fullscreen ? "On" : "Off");
-    snprintf(lines[ITEM_BOX], sizeof lines[0], "%-15s%s", "Pandora's Box", s->unlock_box ? "All open" : "Normal");
-    snprintf(lines[ITEM_EXIT], sizeof lines[0], "Exit");
-
-    SDL_SetRenderDrawColor(painter, 10, 14, 24, 220);
-    SDL_RenderFillRect(painter, &panel);
-    SDL_SetRenderDrawColor(painter, 120, 170, 220, 255);
-    SDL_RenderRect(painter, &panel);
-    SDL_SetRenderDrawColor(painter, 230, 235, 245, 255);
-    text(x0, y0, launcher ? "Panzer Dragoon Orta - Orta Recomp" : "Orta Recomp options");
-    for (int i = 0; i < NITEMS; i++) {
-        int item = ITEMS[i];
-        float y = y0 + 2 + i * step;
-        if (i == selected) {
-            SDL_FRect bar = { (x0 - 0.5f) * CHAR, (y - (step - 1) / 2) * CHAR, (w + 1) * CHAR, step * CHAR };
-            SDL_SetRenderDrawColor(painter, 60, 100, 160, 255);
-            SDL_RenderFillRect(painter, &bar);
-            SDL_SetRenderDrawColor(painter, 255, 255, 255, 255);
-            text(x0, y, ">");
-        } else
-            SDL_SetRenderDrawColor(painter, 200, 205, 215, 255);
-        if (item == ITEM_START && !launcher_files_ok)
-            SDL_SetRenderDrawColor(painter, 130, 135, 145, 255);
-        text(x0 + 2, y, lines[item]);
-        if (i == selected && item != ITEM_CLOSE && item != ITEM_CONTROLS && item != ITEM_START &&
-            item != ITEM_PICK && item != ITEM_EXIT && item != ITEM_GPU)
-            text(x0 + w - 4, y, "< >");
+    v[0] = 0;
+    switch (item) {
+    case ITEM_SCALE:  snprintf(v, n, "%dx", s->render_scale); break;
+    case ITEM_MSAA:
+        if (s->msaa > 1) snprintf(v, n, "%dx MSAA", s->msaa);
+        else snprintf(v, n, "%s", s->fxaa ? "FXAA" : "Off");
+        break;
+    case ITEM_ASPECT: snprintf(v, n, "%s", aspects[s->aspect]); break;
+    case ITEM_FIT:    snprintf(v, n, "%s", fits[s->fit]); break;
+    case ITEM_SOFT:   snprintf(v, n, "%s", s->soft_filter ? "On" : "Off"); break;
+    case ITEM_FPS:    snprintf(v, n, "%s", s->show_fps ? "On" : "Off"); break;
+    case ITEM_FULLSCREEN: snprintf(v, n, "%s", s->fullscreen ? "On" : "Off"); break;
+    case ITEM_VOLUME:  snprintf(v, n, "%d%%", s->master_volume); return s->master_volume / 100.0f;
+    case ITEM_PIC_LOOK:     snprintf(v, n, "%s", s->picture_crt ? "CRT" : "Original"); break;
+    case ITEM_PIC_BRIGHT:   snprintf(v, n, "%+d", s->pic_brightness); return (s->pic_brightness + 50) / 100.0f;
+    case ITEM_PIC_CONTRAST: snprintf(v, n, "%d%%", s->pic_contrast); return (s->pic_contrast - 50) / 100.0f;
+    case ITEM_PIC_GAMMA:    snprintf(v, n, "%d.%02d", s->pic_gamma / 100, s->pic_gamma % 100);
+                            return (s->pic_gamma - 50) / 150.0f;
+    case ITEM_PIC_SAT:      snprintf(v, n, "%d%%", s->pic_saturation); return s->pic_saturation / 200.0f;
+    case ITEM_BOX:    snprintf(v, n, "%s", s->unlock_box ? "All open" : "Normal"); break;
+    case ITEM_LOGOS:  snprintf(v, n, "%s", s->skip_logos ? "On" : "Off"); break;
+    case ITEM_VSH:    snprintf(v, n, "%s", s->gpu_vertex ? "GPU" : "CPU"); break;
+    case ITEM_FVF:    snprintf(v, n, "%s", s->gpu_fixed ? "GPU" : "CPU"); break;
+    case ITEM_INTERP: snprintf(v, n, "%s", s->frame_interp ? "On" : "Off"); break;
+    case ITEM_GPU:    snprintf(v, n, "Vulkan"); break;
+    case ITEM_PICK: {   /* the end of the path: the file or folder's name */
+        const char *f = launcher_files ? launcher_files : "-";
+        size_t len = strlen(f);
+        snprintf(v, n, "%s%s", len > 16 ? ".." : "", len > 16 ? f + len - 14 : f);
+        break;
     }
-    SDL_SetRenderDrawColor(painter, 150, 160, 175, 255);
-    text(x0, y0 + h - 1.5f, launcher ? "Arrows/D-pad, A or Enter chooses" : "Arrows/D-pad, B or F1 closes");
+    case ITEM_GO_DISPLAY: case ITEM_GO_PICTURE: case ITEM_GO_SOUND: case ITEM_GO_GAMEPLAY:
+    case ITEM_GO_ADVANCED: case ITEM_CONTROLS:
+        snprintf(v, n, ">"); break;
+    }
+    return -1.0f;
+}
+
+static const char *label_of(int item)
+{
+    switch (item) {
+    case ITEM_SCALE:  return "Resolution";
+    case ITEM_MSAA:   return "Anti-aliasing";
+    case ITEM_ASPECT: return "Aspect ratio";
+    case ITEM_FIT:    return "Fit to window";
+    case ITEM_SOFT:   return "TV softening";
+    case ITEM_FPS:    return "Show FPS";
+    case ITEM_FULLSCREEN: return "Fullscreen";
+    case ITEM_VOLUME:  return "Master";
+    case ITEM_PIC_LOOK:     return "Look";
+    case ITEM_PIC_BRIGHT:   return "Brightness";
+    case ITEM_PIC_CONTRAST: return "Contrast";
+    case ITEM_PIC_GAMMA:    return "Gamma";
+    case ITEM_PIC_SAT:      return "Saturation";
+    case ITEM_PIC_RESET:    return "Reset picture";
+    case ITEM_BOX:    return "Pandora's Box";
+    case ITEM_LOGOS:  return "Skip logos";
+    case ITEM_VSH:    return "Vertex programs";
+    case ITEM_FVF:    return "Fixed function";
+    case ITEM_INTERP: return "Frame interp.";
+    case ITEM_GPU:    return "Graphics";
+    case ITEM_START:  return launcher_files_ok ? "Start game" : "Start game (no files)";
+    case ITEM_PICK:   return "Game files";
+    case ITEM_EXIT:   return "Exit";
+    case ITEM_CLOSE:  return "Close";
+    case ITEM_BACK:   return "Back";
+    case ITEM_CONTROLS:    return "Controls";
+    case ITEM_GO_DISPLAY:  return "Display";
+    case ITEM_GO_PICTURE:  return "Picture";
+    case ITEM_GO_SOUND:    return "Sound";
+    case ITEM_GO_GAMEPLAY: return "Gameplay";
+    case ITEM_GO_ADVANCED: return "Advanced";
+    }
+    return "";
+}
+
+/* One line of help for the chosen setting: at most 31 characters, the
+ * panel's width. */
+static const char *help_of(int item)
+{
+    switch (item) {
+    case ITEM_SCALE:  return "Multiples of 640x480.";
+    case ITEM_MSAA:   return "Smoother edges. MSAA is best.";
+    case ITEM_ASPECT: return "16:9 shows more to the sides.";
+    case ITEM_FIT:    return "Bars, stretched or zoomed.";
+    case ITEM_SOFT:   return "A slight TV-like blur.";
+    case ITEM_FPS:    return "Frames per second, top left.";
+    case ITEM_FULLSCREEN: return "Fullscreen or a window.";
+    case ITEM_VOLUME:  return "Everything the game plays.";
+    case ITEM_PIC_LOOK:     return "CRT: richer, like an old TV.";
+    case ITEM_PIC_BRIGHT:   return "Lighter or darker overall.";
+    case ITEM_PIC_CONTRAST: return "Darks darker, lights lighter.";
+    case ITEM_PIC_GAMMA:    return "Above 1 lifts the midtones.";
+    case ITEM_PIC_SAT:      return "How strong the colours are.";
+    case ITEM_PIC_RESET:    return "Back to the game's own picture.";
+    case ITEM_BOX:    return "All open: every extra unlocked.";
+    case ITEM_LOGOS:  return "A press skips the boot logos.";
+    case ITEM_VSH:    return "GPU is faster.";
+    case ITEM_FVF:    return "GPU is faster.";
+    case ITEM_INTERP: return "Smooth motion above 60 fps.";
+    case ITEM_GPU:    return "The graphics API.";
+    case ITEM_START:  return launcher_files_ok ? "Play." : "Choose your game files first.";
+    case ITEM_PICK:   return "A disc image or a folder.";
+    case ITEM_EXIT:   return "Quit.";
+    case ITEM_CLOSE:  return "Back to the game.";
+    case ITEM_BACK:   return "Back to the main list.";
+    case ITEM_CONTROLS:    return "Keys, pad and mouse.";
+    case ITEM_GO_DISPLAY:  return "Resolution, aspect, window.";
+    case ITEM_GO_PICTURE:  return "CRT look, brightness, colour.";
+    case ITEM_GO_SOUND:    return "Volume.";
+    case ITEM_GO_GAMEPLAY: return "Pandora's Box, boot logos.";
+    case ITEM_GO_ADVANCED: return "Frame interpolation and more.";
+    }
+    return "";
+}
+
+static bool is_link(int item)
+{
+    return item == ITEM_START || item == ITEM_EXIT || item == ITEM_CLOSE || item == ITEM_BACK ||
+           item == ITEM_PIC_RESET || item == ITEM_PICK || item == ITEM_GPU || item == ITEM_CONTROLS ||
+           (item >= ITEM_GO_DISPLAY && item <= ITEM_GO_ADVANCED);
+}
+
+static void draw_menu(void)
+{
+    int n;
+    const int *items = page_items(&n);
+    const float w = 34, x0 = (cols - w) / 2, step = 2.0f;
+    const float h = 4.0f + n * step + 6.0f, y0 = SDL_max((30 - h) / 2, 0.5f);
+    char v[40];
+
+    frame(x0, y0, w, h, page_names[page]);
+    for (int i = 0; i < n; i++) {
+        int item = items[i];
+        float y = y0 + 4.0f + i * step;
+        float fillv = value_of(item, v, sizeof v);
+        bool sel = i == selected, off = item == ITEM_START && !launcher_files_ok;
+
+        if (item == ITEM_BACK || item == ITEM_CLOSE || item == ITEM_EXIT) {
+            COLOR(COL_TRACK);
+            fill(x0 + 1, y - 0.6f, w - 2, 0.125f);       /* a rule before the way out */
+        }
+        if (sel) {
+            COLOR(COL_SEL);
+            fill(x0 + 0.5f, y - 0.4f, w - 1, 1.8f);
+            COLOR(COL_TITLE);
+            fill(x0 + 0.5f, y - 0.4f, 0.3f, 1.8f);
+        }
+        if (off)
+            COLOR(COL_OFF);
+        else if (sel)
+            COLOR(COL_TEXT_HI);
+        else
+            COLOR(COL_TEXT);
+        text(x0 + 2, y, label_of(item));
+        if (fillv >= 0.0f) {        /* a slider, its value after it */
+            float bx = x0 + w - 16, bw = 9;
+            COLOR(COL_TRACK);
+            fill(bx, y + 0.25f, bw, 0.5f);
+            if (sel)
+                COLOR(COL_TITLE);
+            else
+                COLOR(COL_ACCENT);
+            fill(bx, y + 0.25f, bw * SDL_clamp(fillv, 0.0f, 1.0f), 0.5f);
+            color(sel ? 255 : 206, sel ? 255 : 212, sel ? 255 : 224, 255);
+            text(x0 + w - 1.5f - (float)strlen(v), y, v);
+        } else if (v[0]) {
+            float vx = x0 + w - 1.5f - (float)strlen(v);
+            if (sel && !is_link(item)) {     /* < value > on what Left/Right change */
+                vx -= 2;
+                COLOR(COL_TITLE);
+                text(vx - 2, y, "<");
+                text(x0 + w - 2.5f, y, ">");
+                COLOR(COL_TEXT_HI);
+            } else if (is_link(item))
+                color(sel ? 232 : 138, sel ? 150 : 148, sel ? 40 : 166, 255);
+            text(vx, y, v);
+        }
+    }
+    /* help for the chosen line, then the keys */
+    COLOR(COL_TRACK);
+    fill(x0 + 1, y0 + h - 5.5f, w - 2, 0.125f);
+    COLOR(COL_DIM);
+    help(x0 + 1.5f, y0 + h - 4.75f, (int)w - 3, help_of(items[selected < n ? selected : 0]));
+    COLOR(COL_OFF);
+    text(x0 + 1.5f, y0 + h - 1.5f, page != PAGE_MAIN ? "A select   </> change   B back"
+                                   : launcher ? "A select   </> change" : "A select   </> change   B close");
 }
 
 SDL_Surface *pdo_overlay_image(bool *changed)
@@ -446,6 +731,7 @@ SDL_Surface *pdo_overlay_image(bool *changed)
         if (wide != (int)pdo_widescreen_active()) {
             wide = pdo_widescreen_active();
             SDL_SetRenderScale(painter, SCALE * (wide ? 0.75f : 1.0f), SCALE);
+            cols = PDO_OVERLAY_W / (SCALE * (wide ? 0.75f : 1.0f) * CHAR);
             dirty = true;
         }
     }
@@ -453,6 +739,10 @@ SDL_Surface *pdo_overlay_image(bool *changed)
         return image;
     SDL_SetRenderDrawColor(painter, 0, 0, 0, 0);
     SDL_RenderClear(painter);
+    if (open_ && controls)
+        draw_controls();
+    else if (open_)
+        draw_menu();
     if (pdo_settings_get()->show_fps) {
         char buf[32];
         SDL_FRect bg = { 0, 0, 10 * CHAR, 2 * CHAR };
@@ -462,10 +752,6 @@ SDL_Surface *pdo_overlay_image(bool *changed)
         SDL_SetRenderDrawColor(painter, 255, 255, 0, 255);
         text(0.5f, 0.5f, buf);
     }
-    if (open_ && controls)
-        draw_controls();
-    else if (open_)
-        draw_menu();
     SDL_FlushRenderer(painter);
     dirty = false;
     *changed = true;
