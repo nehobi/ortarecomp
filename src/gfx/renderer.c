@@ -3037,14 +3037,21 @@ static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
     uint64_t v[7];
 
     v[0] = c->vsh ? 1 : c->fvf >= 0 ? 2 : 3;
-    v[1] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[0]
+    /* Vertex programs: not the program. As a boost or a brake ends the game
+     * draws the dragon and the enemies on screen with other programs (same
+     * vertices, textures and places: 0x9E -> 0x20E for an enemy's body);
+     * keyed by program, all of them showed unblended for that frame -- the
+     * whole screen stepped and the dragon ghosted. Alike draws pair nearest
+     * first, the same program winning a tie (draw_distance), and a pair whose
+     * read constants jumped (another layout) is not blended (match_frames). */
+    v[1] = c->vsh ? 0
          : c->fvf >= 0 ? ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1]
          : c->draw.ps.topology;
     v[2] = any_src ? 0 : c->id_src;
     v[3] = c->id_nv;
     v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
-    v[6] = c->vsh ? (uint64_t)(uint32_t)c->vu.info[1] : 0;
+    v[6] = 0;
     for (int i = 0; i < 7; i++)
         h = (h ^ v[i]) * 1099511628211ull;
     return h;
@@ -3173,6 +3180,10 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
 
     if (!c->vsh && c->fvf < 0)
         return d;                           /* CPU-made: positions only */
+    /* Another vertex program (key_of): only a tie-break, as the data. */
+    float vsh_other = c->vsh && pc->vsh && (pc->vu.info[0] != c->vu.info[0] || pc->vu.info[1] != c->vu.info[1])
+        ? 1e-3f : 0.0f;
+    d += vsh_other;
     if (c->vsh && c->anchored && pc->anchored) {
         /* Where the draw is: its first and last vertex through the program
          * (d3d_hle.c). Constants told episode 4's alike battleships apart
@@ -3181,7 +3192,7 @@ static float draw_distance(const frame_data *pf, const command *pc, const frame_
          * which shaders/vsh.vert undoes); z and w are depth, and summed in
          * they swamped the position (a ship's own move measured 396 against
          * 453 for another ship, and packs swapped). x, y only. */
-        float e = pc->id_src == c->id_src ? 0.0f : 1e-3f;
+        float e = (pc->id_src == c->id_src ? 0.0f : 1e-3f) + vsh_other;
         for (int k = 0; k < 2; k++) {
             const float *a = pc->anchor + 4 * k, *b = c->anchor + 4 * k;
             float dx = a[0] - b[0], dy = a[1] - b[1];
