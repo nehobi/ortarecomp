@@ -3114,27 +3114,26 @@ static uint64_t uv_sig(const frame_data *f, const command *c)
 }
 
 /* any_src: whatever vertex data it drew from (match_frames' second pass). */
-static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
+static uint64_t key_of(const frame_data *f, const command *c, bool any_src, bool any_prog)
 {
     uint64_t h = 1469598103934665603ull;
     uint64_t v[8];
 
     v[0] = c->vsh ? 1 : c->fvf >= 0 ? 2 : 3;
-    /* Vertex programs: not the program. As a boost or a brake ends the game
-     * draws the dragon and the enemies on screen with other programs (same
-     * vertices, textures and places: 0x9E -> 0x20E for an enemy's body);
-     * keyed by program, all of them showed unblended for that frame -- the
-     * whole screen stepped and the dragon ghosted. Alike draws pair nearest
-     * first, the same program winning a tie (draw_distance), and a pair whose
-     * read constants jumped (another layout) is not blended (match_frames). */
-    v[1] = c->vsh ? 0
+    /* Vertex programs: their program, but for any_prog (match_frames' third
+     * pass). Episode 4's battleships draw each part twice in one place, a
+     * pass per program: keyed without it, the passes of alike ships paired
+     * with each other's and the ships swapped. As a boost or a brake ends the
+     * game puts every model on other programs (0x9E -> 0x20E for an enemy's
+     * body): those find no partner by program and pair in the third pass. */
+    v[1] = c->vsh ? (any_prog ? 0 : (uint64_t)(uint32_t)c->vu.info[0])
          : c->fvf >= 0 ? ((uint64_t)(uint32_t)f->fvf_us[c->fvf].layout0[2] << 32) | (uint32_t)f->fvf_us[c->fvf].layout0[1]
          : c->draw.ps.topology;
     v[2] = any_src ? 0 : c->id_src;
     v[3] = c->id_nv;
     v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
-    v[6] = 0;
+    v[6] = c->vsh && !any_prog ? (uint64_t)(uint32_t)c->vu.info[1] : 0;
     v[7] = uv_sig(f, c);    /* screen space: the atlas cell */
     for (int i = 0; i < 8; i++)
         h = (h ^ v[i]) * 1099511628211ull;
@@ -3173,7 +3172,8 @@ static uint64_t target_key(const command *c)
     return ((uint64_t)c->surf.size_word << 32) | c->surf.data;
 }
 
-static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, bool any_src, const uint8_t *skip)
+static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, bool any_src, bool any_prog,
+                        const uint8_t *skip)
 {
     uint32_t n = 0;
     uint64_t target = 0;
@@ -3185,14 +3185,16 @@ static uint32_t keys_of(const frame_data *f, draw_key **keys, uint32_t *cap, boo
          * 512x512 one too. */
         if (f->cmds[i].kind == CMD_TARGET)
             target = target_key(&f->cmds[i]);
-        if (blendable(&f->cmds[i]) && !(any_src && (skip[i] || !is_3d(f, &f->cmds[i])))) {
+        if (blendable(&f->cmds[i]) && !(any_src && (skip[i] || !is_3d(f, &f->cmds[i]))) &&
+            !(any_prog && !f->cmds[i].vsh)) {
             *keys = grow(*keys, cap, n + 1, sizeof **keys);
             /* 3D draws always without their data's address: the game hands
              * vertex buffers out from a pool, so the same buffer is not
              * the same object (fighters in a pack warped between each
              * other's places); they pair by where they are. Screen-space
              * ones (menu words drawn alike) keep it. */
-            (*keys)[n].h = (key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i])) ^ target) * 1099511628211ull;
+            (*keys)[n].h = (key_of(f, &f->cmds[i], any_src || is_3d(f, &f->cmds[i]), any_prog) ^ target) *
+                           1099511628211ull;
             (*keys)[n].cmd = i;
             n++;
         }
@@ -3458,10 +3460,12 @@ static void match_frames(frame_data *prev, frame_data *cur)
      * its data -- only when it is the one such in both frames. The game
      * builds some vertices (the dragon's) into a buffer that alternates
      * between two places: those parts never paired and showed a frame
-     * ahead of the rest of the dragon. */
-    for (int pass = 0; pass < 2; pass++) {
-    np = keys_of(prev, &pk, &cap_pk, pass, taken);
-    nc = keys_of(cur, &ck, &cap_ck, pass, grouped);
+     * ahead of the rest of the dragon. A third: vertex-program draws that
+     * had nothing alike on their own program, with those left on another
+     * (a boost's or a brake's end), nearest first. */
+    for (int pass = 0; pass < 3; pass++) {
+    np = keys_of(prev, &pk, &cap_pk, pass >= 1, pass == 2, taken);
+    nc = keys_of(cur, &ck, &cap_ck, pass >= 1, pass == 2, grouped);
     i = j = 0;
     while (i < np && j < nc) {
         uint32_t i2 = i, j2 = j;
@@ -3908,7 +3912,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         uint32_t nl;
         uint64_t target = 0;
         memset(taken, 0, prev->ncmds);      /* keys_of's skip: none */
-        nl = keys_of(prev, &lk, &cap_lk, true, taken);
+        nl = keys_of(prev, &lk, &cap_lk, true, false, taken);
         for (uint32_t k = 0; k < cur->ncmds; k++) {
             command *c = &cur->cmds[k];
             uint64_t h;
@@ -3918,7 +3922,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 target = target_key(c);
             if (c->kind != CMD_DRAW || c->unpaired || !is_3d(cur, c))
                 continue;
-            h = (key_of(cur, c, true) ^ target) * 1099511628211ull;   /* as keys_of */
+            h = (key_of(cur, c, true, false) ^ target) * 1099511628211ull;   /* as keys_of */
             while (lo < hi) {               /* the first key >= h */
                 uint32_t m = (lo + hi) / 2;
                 if (lk[m].h < h) lo = m + 1; else hi = m;
