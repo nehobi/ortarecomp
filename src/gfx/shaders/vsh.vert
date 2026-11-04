@@ -36,6 +36,11 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     // same program). Each program then runs on its own frame's constants and
     // streams, and the outputs are blended.
     ivec4 prev_prog;
+    // The paired draw's viewport transform (c[58], c[59]): its positions
+    // are in its own pixels (the game renders a boost's and a brake's end
+    // at another size).
+    vec4  prev_vp_scale;
+    vec4  prev_vp_offset;
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -219,31 +224,39 @@ void run(int base, int count)
     }
 }
 
+// Undo the viewport transform the program ended with (scale sc, offset of),
+// as fetch_vsh does. Reversed depth (renderer.c, info.w): 1 - z from the
+// program's own screen z, the subtraction exact.
+vec4 to_clip(vec4 p, vec4 sc, vec4 of)
+{
+    float cw = p.w;
+    vec4 c = vec4((p.x - of.x) / sc.x * cw, (p.y - of.y) / sc.y * cw, (p.z - of.z) / of.w * cw, cw);
+    if (info.w != 0)
+        c.z = ((of.w + of.z) - p.z) / of.w * cw;
+    return c;
+}
+
 void main()
 {
-    if (prev_prog.y > 0 && interp.x >= 0 && blend_t.x < 1.0) {
+    bool blending = interp.x >= 0 && blend_t.x < 1.0;
+    if (prev_prog.y > 0 && blending) {
+        // Each frame's run as drawn, each through its own viewport.
         mode = 1;
         run(prev_prog.x, prev_prog.y);
-        vec4 pos = R[12];
+        vec4 pc = to_clip(R[12], prev_vp_scale, prev_vp_offset);
         vec4 po[16];
         for (int i = 0; i < 16; i++) po[i] = O[i];
         mode = 2;
         run(info.x, info.y);
-        R[12] = mix(pos, R[12], blend_t.x);
+        gl_Position = mix(pc, to_clip(R[12], vp_scale, vp_offset), blend_t.x);
         for (int i = 0; i < 16; i++) O[i] = mix(po[i], O[i], blend_t.x);
     } else {
         run(info.x, info.y);
+        // Blended constants end in a blended viewport transform.
+        gl_Position = blending ? to_clip(R[12], mix(prev_vp_scale, vp_scale, blend_t.x),
+                                         mix(prev_vp_offset, vp_offset, blend_t.x))
+                               : to_clip(R[12], vp_scale, vp_offset);
     }
-
-    // Undo the viewport transform the program ended with, as fetch_vsh does.
-    vec4 p = R[12];
-    float cw = p.w;
-    gl_Position = vec4((p.x - vp_offset.x) / vp_scale.x * cw, (p.y - vp_offset.y) / vp_scale.y * cw,
-                       (p.z - vp_offset.z) / vp_offset.w * cw, cw);
-    // Reversed depth (renderer.c, info.w): 1 - z from the program's own screen
-    // z, the subtraction exact.
-    if (info.w != 0)
-        gl_Position.z = ((vp_offset.w + vp_offset.z) - p.z) / vp_offset.w * cw;
     // Colours as the CPU packs them: NaN as 0, clamped, to 8 bits.
     vec4 d0 = mix(clamp(O[3], 0.0, 1.0), vec4(0.0), isnan(O[3]));
     vec4 d1 = mix(clamp(O[4], 0.0, 1.0), vec4(0.0), isnan(O[4]));

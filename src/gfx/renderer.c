@@ -144,6 +144,11 @@ typedef struct command {
          * program on the earlier frame's constants, this one on this
          * frame's -- and what they output is blended (shaders/vsh.vert). */
         int32_t prev_prog[4];
+        /* the paired draw's viewport transform (its scale, offset): the
+         * game renders a boost's and a brake's end at another size (426x320
+         * after 512x360 at 0,12), and the earlier frame's positions are in
+         * its own pixels */
+        float   prev_scale[4], prev_offset[4];
     } vu;
     /* What the draw drew from, to find it again in the next frame: the
      * host address of its (first) vertex data and its vertex count. */
@@ -3434,6 +3439,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
             memset(c->vu.prev_prog, 0, sizeof c->vu.prev_prog);
+            memcpy(c->vu.prev_scale, c->vu.scale, sizeof c->vu.prev_scale);
+            memcpy(c->vu.prev_offset, c->vu.offset, sizeof c->vu.prev_offset);
         }
         if (c->fvf >= 0) {
             cur->fvf_us[c->fvf].interp[0] = -1;
@@ -3696,6 +3703,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     }
                     c->vu.interp[0] = pc->vu.info[2];
                     c->vu.interp[1] = same_in;
+                    memcpy(c->vu.prev_scale, pc->vu.scale, sizeof c->vu.prev_scale);
+                    memcpy(c->vu.prev_offset, pc->vu.offset, sizeof c->vu.prev_offset);
                     c->unpaired = false;
                     if (pc->vu.info[0] != c->vu.info[0] || regs_jumped) {
                         n_progswitch += pc->vu.info[0] != c->vu.info[0];
@@ -3877,6 +3886,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 c->vu.prev_in[r] = prev->cmds[bi].vu.inputs[r][0];
             c->vu.interp[0] = prev->cmds[bi].vu.info[2];
             c->vu.interp[1] = 0;
+            memcpy(c->vu.prev_scale, prev->cmds[bi].vu.scale, sizeof c->vu.prev_scale);
+            memcpy(c->vu.prev_offset, prev->cmds[bi].vu.offset, sizeof c->vu.prev_offset);
             c->unpaired = false;
             c->pair_prev = (uint32_t)bi;
             taken[bi] = 1;
