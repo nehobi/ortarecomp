@@ -88,9 +88,14 @@ static uint64_t capture_seq = 1;
  * PDO_CAPTURE_INTERP's blends) the frame where most groups of alike 3D
  * draws shrank -- the dragon's boost afterimages going -- or where many
  * draws went on to other vertex programs (a boost's or a brake's end), and
- * the two after. Only once F10 armed it: cutscenes switch programs, and
+ * the five after, in a row. Only once F10 armed it: cutscenes switch programs, and
  * fights shrink groups and stop the picture, too. */
 static int capture_boost_left = -1;
+/* Its frames after the first: up to this frame none is dropped, so the
+ * captures are of frames in a row (a capture stalls; the frames between
+ * went by uncaptured, and a one-frame hitch fell between them). */
+static SDL_AtomicInt boost_seq_end;
+#define BOOST_FOLLOW 5
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
 static bool programs_switched;      /* match_frames: many draws on other programs (boost or brake end) */
@@ -4095,7 +4100,8 @@ static void hand_over(void)
      * GPU slower than the game) is dropped for this newer one. */
     while (paused)
         SDL_WaitCondition(q_cond, q_lock);
-    while (ready && ready->frame >= capture_frame && ready->frame < capture_frame + capture_seq)
+    while (ready && ((ready->frame >= capture_frame && ready->frame < capture_frame + capture_seq) ||
+                     ready->frame < (uint64_t)(uint32_t)SDL_GetAtomicInt(&boost_seq_end)))
         SDL_WaitConditionTimeout(q_cond, q_lock, 2);   /* a capture is never dropped */
     next = ready ? ready : free_frame();
     if (ready) {
@@ -4492,11 +4498,12 @@ void pdo_gfx_main_loop(void)
                             cur->frame < pdo_input_x_frame + 300) || programs_switched) && close_armed && prev &&
                            capture_boost_left > 0) {
                     capture_boost_left--;
-                    SDL_Log("capture: %s at frame %llu: capturing it and the two after",
+                    SDL_Log("capture: %s at frame %llu: capturing it and the five after",
                             programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
                             (unsigned long long)cur->frame);
                     capture_interp(prev, cur);
-                    follow = 2;
+                    follow = BOOST_FOLLOW;
+                    SDL_SetAtomicInt(&boost_seq_end, (int)(cur->frame + BOOST_FOLLOW + 1));
                 }
             }
             if (prev && f->frame >= capture_frame && f->frame < capture_frame + capture_seq)
