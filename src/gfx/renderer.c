@@ -3352,6 +3352,24 @@ static uint32_t st_close;   /* alike draws paired with a runner-up near as good 
 static uint32_t st_swapped; /* pairs undone: another draw was far nearer (log) */
 static uint32_t st_rebuilt; /* pairs not blended: vertices rebuilt in another order (log) */
 
+/* Whether a draw samples a render target of its frame (one drawn to, or
+ * copied to or from): a copy of the picture pasted back through a quad. */
+static bool reads_target(const frame_data *f, const command *c)
+{
+    for (uint32_t k = 0; k < f->ncmds; k++) {
+        const command *t = &f->cmds[k];
+        if (t->kind != CMD_TARGET && t->kind != CMD_COPY)
+            continue;
+        for (int st = 0; st < 4; st++) {
+            uint32_t d = c->draw.tex[st].data;
+            if (d && ((t->surf.data && phys(d) == phys(t->surf.data)) ||
+                      (t->kind == CMD_COPY && t->surf2.data && phys(d) == phys(t->surf2.data))))
+                return true;
+        }
+    }
+    return false;
+}
+
 static void match_frames(frame_data *prev, frame_data *cur)
 {
     static draw_key *pk, *ck;
@@ -3368,7 +3386,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
      * matrices did not change at all (a frame the game held still). */
     uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
     uint32_t n_lod = 0;     /* vertex-program draws paired across models (below) */
-    uint32_t n_progswitch = 0;  /* paired with the same draw on another program (boost, brake end) */
+    uint32_t n_progswitch = 0;
+    uint32_t n_screen = 0;  /* copies of the picture pasted on screen, not blended */  /* paired with the same draw on another program (boost, brake end) */
     char resized_txt[96] = "";
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
@@ -3503,6 +3522,18 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     continue;           /* no partner (order[k] unset) */
                 }
                 pc = &prev->cmds[pk[i + order[k]].cmd];
+                /* A copy of the picture pasted back on screen (the boost's
+                 * and the brake's swirl lays one over the scene through a
+                 * quad whose corners move each frame): not blended. Blended,
+                 * the quad slid between its two places while what it shows
+                 * is this moment's picture, and for that frame a shifted
+                 * copy of the whole scene, the dragon in it, ghosted over
+                 * the screen. Shown as the newer frame, it sits where the
+                 * game puts it. */
+                if (!is_3d(cur, c) && reads_target(cur, c)) {
+                    n_screen++;
+                    continue;
+                }
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
                     /* Rebuilt in another order (below, fixed-function), on
                      * CPU-made vertices too (Concept of Love: JSRF's
@@ -4030,8 +4061,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
         /* The boost's and the brake's end: many draws on other programs. */
         programs_switched = n_progswitch >= 8;
         if (programs_switched && odd_logs++ < 10)
-            SDL_Log("interp: frame %llu: %u draws paired with the same one on another program", (unsigned long long)cur->frame,
-                    n_progswitch);
+            SDL_Log("interp: frame %llu: %u draws paired with the same one on another program; %u copies of the "
+                    "picture on screen not blended", (unsigned long long)cur->frame, n_progswitch, n_screen);
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
@@ -4508,9 +4539,10 @@ void pdo_gfx_main_loop(void)
                     SDL_Log("capture: %s at frame %llu: capturing it and the five after",
                             programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
                             (unsigned long long)cur->frame);
+                    /* the game waits from now: a capture stalls */
+                    SDL_SetAtomicInt(&boost_seq_end, (int)(cur->frame + BOOST_FOLLOW + 1));
                     capture_interp(prev, cur);
                     follow = BOOST_FOLLOW;
-                    SDL_SetAtomicInt(&boost_seq_end, (int)(cur->frame + BOOST_FOLLOW + 1));
                 }
             }
             if (prev && f->frame >= capture_frame && f->frame < capture_frame + capture_seq)
