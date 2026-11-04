@@ -247,3 +247,15 @@ shuts down sound and graphics and calls XLaunchNewImageA (0x0022CE3C) with
 -2 to scene 9 until pd1.xbe is recompiled too. Box navigation from FLIGHT
 RECORDS: right goes EXIT, APPENDIX, ENCYCLOPEDIA, BOX GAME; left SUB
 SCENARIOS.
+
+## Boost and brake ends
+
+At the end of a boost or a brake the game renders the scene at another
+size: the draws into the scene target (0x00788000, 512x384) go from a
+512x360 viewport at 0,12 to 426x320 at 0,0, and the full-screen paste
+scales it up. On the same frame the models on screen go to other vertex
+programs (ids keep growing: new programs each time). A dragon form change
+also switches programs, but not the size. The dragon is skinned through
+its program's constants, read through a0 (all 192 registers). The seven
+3D draws that read a render target in play are the dragon's parts reading
+the shadow map (0x00708000).

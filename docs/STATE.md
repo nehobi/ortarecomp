@@ -134,11 +134,16 @@ Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
 pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
 (+_SEQ=n, PDO_DBG_GROUPS), PDO_CAPTURE_TEXCHECK, PDO_TEX_ALWAYS/LEVEL0.
-Open: a ghost of the dragon, off centre, around a boost (episodes 2, 3;
-only with interpolation; not tinted, so paired wrong or screen-space).
-The freeze there was the projected textures; a white flash came from
-pairing the boost's full-screen layers by place (reverted 79db575).
-PDO_CAPTURE_BOOST=n captures boost ends. Logs: use `--log run.log`, not
+Boost/brake ends (fixed, confirmed: ghost gone): the game renders the
+scene at another size there (viewport 426x320 after 512x360 at 0,12) and
+moves every model to other vertex programs. Each pair carries its earlier
+draw's viewport transform; across a program switch, or when a read
+register jumped (bones moved), both frames' programs run and the outputs
+blend; vertex programs pair without the program in the key, ties in draw
+order. Left: a slight one-frame step at the size change, seen once (not
+timing: no late frames); likely the picture's rescale itself.
+PDO_CAPTURE_BOOST=n (armed by F10) captures program switches and 12
+frames after, with every command logged. Logs: use `--log run.log`, not
 PowerShell redirection (stalls the game).
 Glide wing: script `13000:y:8,13100:y:8`. Display: aspect 4:3 or 16:9 (the
 game's own anamorphic mode, src/guest/widescreen.c, read at start), fit
