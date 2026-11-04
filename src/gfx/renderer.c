@@ -3417,6 +3417,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
     uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
     uint32_t n_lod = 0;     /* vertex-program draws paired across models (below) */
     uint32_t n_progswitch = 0;
+    uint32_t n_outblend = 0;    /* same program, a read register jumped: outputs blended */
     uint32_t n_screen = 0;  /* copies of the picture pasted on screen, not blended */  /* paired with the same draw on another program (boost, brake end) */
     char resized_txt[96] = "";
 
@@ -3593,7 +3594,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
                 } else if (c->vsh && pc->vsh) {
-                    bool same_in = true;
+                    bool same_in = true, regs_jumped = false;
                     {   /* Rebuilt in another order: as below, on every input of
                          * floats of a vertex program (Concept of Love: JSRF's
                          * lightning keeps its positions and makes each zigzag
@@ -3646,6 +3647,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * flap through their bone registers, and five or six
                          * of them swinging past half their size left a
                          * flying creature unblended at the game's rate. */
+                        regs_jumped = jumped_regs > 0;
                         bool consts_rebuilt = jumped_regs >= 4 && jumped_regs * 2 >= read_regs &&
                                               pc->vu.info[0] == c->vu.info[0];  /* another program: its own constants */
                         c->strayed = sv > 0.2f;
@@ -3695,13 +3697,24 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->vu.interp[0] = pc->vu.info[2];
                     c->vu.interp[1] = same_in;
                     c->unpaired = false;
-                    if (pc->vu.info[0] != c->vu.info[0]) {
-                        n_progswitch++;
+                    if (pc->vu.info[0] != c->vu.info[0] || regs_jumped) {
+                        n_progswitch += pc->vu.info[0] != c->vu.info[0];
+                        n_outblend += regs_jumped;
                         /* A boost's or a brake's end: every model on
                          * screen goes back to its usual program. One
                          * program run on a mix of two programs' constants
                          * came out neither frame (the dragon brighter,
-                         * everything a little off): each runs its own. */
+                         * everything a little off): each runs its own.
+                         * The same when a register it reads jumped (by
+                         * over half its size): the game moved what it
+                         * holds -- a skinned model's bones to other
+                         * registers, as the boost's end hands the dragon
+                         * to its usual pose -- and blended register by
+                         * register, bones mixed with other bones (the
+                         * dragon with a second pair of wings for that
+                         * frame, capture of a boost's end). Each frame's
+                         * run is as the game drew it, and the outputs
+                         * blend. */
                         c->vu.prev_prog[0] = pc->vu.info[0];
                         c->vu.prev_prog[1] = pc->vu.info[1];
                     }
@@ -4158,9 +4171,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
                              corners ? b4[0] : -1.0f, corners ? b4[1] : -1.0f, corners ? b4[4] : -1.0f, corners ? b4[5] : -1.0f);
                 }
             }
-            SDL_Log("interp: frame %llu: %u draws paired with the same one on another program; %u copies of the "
-                    "picture on screen not blended; %u 3D draws sample the picture; those sampling it:%s",
-                    (unsigned long long)cur->frame, n_progswitch, n_screen, n3, txt);
+            SDL_Log("interp: frame %llu: %u draws paired with the same one on another program, %u whose read "
+                    "registers jumped; %u copies of the picture on screen not blended; %u 3D draws sample the picture; "
+                    "those sampling it:%s",
+                    (unsigned long long)cur->frame, n_progswitch, n_outblend, n_screen, n3, txt);
         }
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
