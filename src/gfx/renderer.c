@@ -85,10 +85,13 @@ static uint64_t capture_frame = UINT64_MAX;
 static uint64_t capture_seq = 1;
 /* PDO_CAPTURE_BOOST=n: up to n times, capture (as F12, with
  * PDO_CAPTURE_INTERP's blends) the frame where most groups of alike 3D
- * draws shrank -- the dragon's boost afterimages going -- and the two after. */
+ * draws shrank -- the dragon's boost afterimages going -- or where many
+ * draws went on to other vertex programs (a boost's or a brake's end), and
+ * the two after. */
 static int capture_boost_left = -1;
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
+static bool programs_switched;      /* match_frames: many draws on other programs (boost or brake end) */
 extern uint64_t pdo_input_x_frame;  /* input_hle.c: the last frame X (boost) was held */
 /* PDO_CAPTURE_CLOSE=n: up to n times, capture (with PDO_CAPTURE_INTERP's
  * blends) a frame where a draw in a pack of three or more alike 3D draws had
@@ -3312,6 +3315,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
      * matrices did not change at all (a frame the game held still). */
     uint32_t n_forced = 0, n_jumped = 0, n_rebuilt = 0, n_swapped = 0, n_still = 0, n_fvf_paired = 0;
     uint32_t n_lod = 0;     /* vertex-program draws paired across models (below) */
+    uint32_t n_progswitch = 0;  /* paired with the same draw on another program (boost, brake end) */
     char resized_txt[96] = "";
 
     for (uint32_t k = 0; k < cur->ncmds; k++) {
@@ -3567,6 +3571,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->vu.interp[0] = pc->vu.info[2];
                     c->vu.interp[1] = same_in;
                     c->unpaired = false;
+                    n_progswitch += pc->vu.info[0] != c->vu.info[0];
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
@@ -3964,6 +3969,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     n_still, n_fvf_paired, cam_step, cam_avg, resized, resized_txt);
         was_still = still;
         groups_shrank = shrank >= 10;
+        /* The boost's and the brake's end: many draws on other programs. */
+        programs_switched = n_progswitch >= 8;
+        if (programs_switched && odd_logs++ < 10)
+            SDL_Log("interp: frame %llu: %u draws paired with the same one on another program", (unsigned long long)cur->frame,
+                    n_progswitch);
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
@@ -4413,7 +4423,7 @@ void pdo_gfx_main_loop(void)
             }
             prev = cur;
             cur = f;
-            groups_shrank = picture_stopped = close_call = false;
+            groups_shrank = picture_stopped = close_call = programs_switched = false;
             if (capture_close_left < 0)
                 capture_close_left = getenv("PDO_CAPTURE_CLOSE") ? atoi(getenv("PDO_CAPTURE_CLOSE")) : 0;
             if (capture_boost_left < 0)
@@ -4432,11 +4442,12 @@ void pdo_gfx_main_loop(void)
                             (unsigned long long)cur->frame);
                     capture_interp(prev, cur);
                     follow = 2;
-                } else if ((groups_shrank || picture_stopped) && pdo_input_x_frame &&
-                           cur->frame < pdo_input_x_frame + 300 && prev && capture_boost_left > 0) {
+                } else if ((((groups_shrank || picture_stopped) && pdo_input_x_frame &&
+                            cur->frame < pdo_input_x_frame + 300) || programs_switched) && prev && capture_boost_left > 0) {
                     capture_boost_left--;
                     SDL_Log("capture: %s at frame %llu: capturing it and the two after",
-                            groups_shrank ? "groups shrank" : "the picture stopped", (unsigned long long)cur->frame);
+                            programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
+                            (unsigned long long)cur->frame);
                     capture_interp(prev, cur);
                     follow = 2;
                 }
