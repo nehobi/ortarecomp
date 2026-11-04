@@ -86,7 +86,8 @@ static uint64_t capture_seq = 1;
 /* PDO_CAPTURE_BOOST=n: up to n times, capture (as F12, with
  * PDO_CAPTURE_INTERP's blends) the frame where most groups of alike 3D
  * draws shrank -- the dragon's boost afterimages going -- or where many
- * draws went on to other vertex programs (a boost's or a brake's end), and
+ * draws went on to other vertex programs (a boost's or a brake's end; once F10
+ * armed it, as cutscenes switch programs too), and
  * the two after. */
 static int capture_boost_left = -1;
 static bool groups_shrank;          /* match_frames: this frame */
@@ -2868,7 +2869,7 @@ bool pdo_gfx_pump_events(void)
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F10 && !ev.key.repeat && getenv("PDO_CAPTURE_CLOSE")) {
             close_armed = !close_armed;
-            SDL_Log("capture: close calls %s", close_armed ? "armed (F10)" : "disarmed (F10)");
+            SDL_Log("capture: close calls and program switches %s", close_armed ? "armed (F10)" : "disarmed (F10)");
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
             /* The next whole frame: frames + 1 is often being recorded
@@ -4443,7 +4444,7 @@ void pdo_gfx_main_loop(void)
                     capture_interp(prev, cur);
                     follow = 2;
                 } else if ((((groups_shrank || picture_stopped) && pdo_input_x_frame &&
-                            cur->frame < pdo_input_x_frame + 300) || programs_switched) && prev && capture_boost_left > 0) {
+                            cur->frame < pdo_input_x_frame + 300) || (programs_switched && close_armed)) && prev && capture_boost_left > 0) {
                     capture_boost_left--;
                     SDL_Log("capture: %s at frame %llu: capturing it and the two after",
                             programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
