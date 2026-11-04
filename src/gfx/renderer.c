@@ -2096,8 +2096,13 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
     {   /* how it interpolates: kind, vertices, paired with which of the frame before, its corners */
         float b4[8];
         bool corners = draw_corners(F, c, b4);
-        SDL_Log("capture:     interp %s nv %u %s %s %u, tex0 %08x%s, corners %.1f,%.1f,%.1f,%.1f - %.1f,%.1f,%.1f,%.1f",
-                c->vsh ? "vsh" : c->fvf >= 0 ? "fvf" : "cpu", c->id_nv, is_3d(F, c) ? "3d" : "2d",
+        char prog[48] = "";
+        if (c->vsh)     /* its program, and the paired one's when another */
+            snprintf(prog, sizeof prog, " program %x%s", (unsigned)c->vu.info[0],
+                     !c->unpaired && P && c->pair_prev < P->ncmds && P->cmds[c->pair_prev].vsh &&
+                     P->cmds[c->pair_prev].vu.info[0] != c->vu.info[0] ? " (was another)" : "");
+        SDL_Log("capture:     interp %s%s nv %u %s %s %u, tex0 %08x%s, corners %.1f,%.1f,%.1f,%.1f - %.1f,%.1f,%.1f,%.1f",
+                c->vsh ? "vsh" : c->fvf >= 0 ? "fvf" : "cpu", prog, c->id_nv, is_3d(F, c) ? "3d" : "2d",
                 c->unpaired ? "unpaired" : "paired with", c->unpaired ? 0u : c->pair_prev, (unsigned)d->tex[0].data,
                 F->tex[i * 4].target_data ? " (a render target)" : "",
                 corners ? b4[0] : 0.0f, corners ? b4[1] : 0.0f, corners ? b4[2] : 0.0f, corners ? b4[3] : 0.0f,
