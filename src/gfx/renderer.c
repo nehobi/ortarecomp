@@ -4060,9 +4060,28 @@ static void match_frames(frame_data *prev, frame_data *cur)
         groups_shrank = shrank >= 10;
         /* The boost's and the brake's end: many draws on other programs. */
         programs_switched = n_progswitch >= 8;
-        if (programs_switched && odd_logs++ < 10)
+        if (programs_switched && odd_logs++ < 10) {
+            /* and every draw that samples the picture, 3D ones too: kind, vertices, screen corners */
+            char txt[512] = "";
+            uint32_t n3 = 0;
+            for (uint32_t k = 0; k < cur->ncmds; k++) {
+                const command *c = &cur->cmds[k];
+                float b4[8];
+                if (c->kind != CMD_DRAW || !reads_target(cur, c))
+                    continue;
+                n3 += is_3d(cur, c);
+                if (strlen(txt) < sizeof txt - 80) {
+                    size_t len = strlen(txt);
+                    bool corners = draw_corners(cur, c, b4);
+                    snprintf(txt + len, sizeof txt - len, " %s/%u/%s%s@%.0f,%.0f-%.0f,%.0f", c->vsh ? "v" : c->fvf >= 0 ? "f" : "c",
+                             c->id_nv, is_3d(cur, c) ? "3d" : "2d", c->unpaired ? "" : "/blended",
+                             corners ? b4[0] : -1.0f, corners ? b4[1] : -1.0f, corners ? b4[4] : -1.0f, corners ? b4[5] : -1.0f);
+                }
+            }
             SDL_Log("interp: frame %llu: %u draws paired with the same one on another program; %u copies of the "
-                    "picture on screen not blended", (unsigned long long)cur->frame, n_progswitch, n_screen);
+                    "picture on screen not blended; %u 3D draws sample the picture; those sampling it:%s",
+                    (unsigned long long)cur->frame, n_progswitch, n_screen, n3, txt);
+        }
     }
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
