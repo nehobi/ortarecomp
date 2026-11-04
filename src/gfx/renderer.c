@@ -3484,6 +3484,14 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 for (uint32_t a = 0; a < na; a++)
                     for (uint32_t b = 0; b < n; b++) {
                         cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd]);
+                        /* Ties keep the draw order: a mesh drawn twice in one
+                         * place (the dragon's passes, on other programs each)
+                         * pairs first with first, second with second. As a
+                         * boost or a brake ends every program changes, the
+                         * other-program tie-break counted alike for all, and
+                         * a pass blended toward another pass's constants: the
+                         * dragon came out brighter for that frame. */
+                        cand[nc2].d += 1e-5f * SDL_fabsf((float)a - (float)b);
                         cand[nc2].a = (uint16_t)a;
                         cand[nc2].b = (uint16_t)b;
                         nc2++;
@@ -3676,6 +3684,28 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         n_progswitch++;
                         memset(c->vu.blend_mask, 0, sizeof c->vu.blend_mask);
                         memcpy(c->vu.blend_mask, pc->consts_read, sizeof pc->consts_read);
+                        /* and only those both read whose values are near:
+                         * one that jumped means something else in this
+                         * program, and takes this frame's value */
+                        {
+                            const float *ca = prev->vconsts[pc->vu.info[2]], *cb = cur->vconsts[c->vu.info[2]];
+                            for (int q = 0; q < 192; q++) {
+                                float dd = 0.0f, mm = 0.0f;
+                                if (!(c->vu.blend_mask[q >> 5] >> (q & 31) & 1))
+                                    continue;
+                                for (int e = 0; e < 4; e++) {
+                                    float x = ca[4 * q + e], y = cb[4 * q + e];
+                                    if (!(SDL_fabsf(x) < 1e6f && SDL_fabsf(y) < 1e6f)) {
+                                        dd = mm = 1.0f;     /* stale, huge or NaN: as jumped */
+                                        break;
+                                    }
+                                    dd += SDL_fabsf(x - y);
+                                    mm += SDL_fabsf(x) + SDL_fabsf(y);
+                                }
+                                if (dd > 0.25f * mm && dd > 1e-3f)
+                                    c->vu.blend_mask[q >> 5] &= ~(1u << (q & 31));
+                            }
+                        }
                     }
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
