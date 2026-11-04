@@ -32,9 +32,10 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     ivec4 interp;
     ivec4 prev_in[4];
     vec4  blend_t;
-    // A bit per c register: blended, or this frame's (0: paired across
-    // programs, and the earlier one did not read it).
-    uvec4 blend_mask[2];
+    // Paired with a draw on another program: its base and count (y 0: the
+    // same program). Each program then runs on its own frame's constants and
+    // streams, and the outputs are blended.
+    ivec4 prev_prog;
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -85,9 +86,19 @@ vec4 fetch_at(int r, int base)
     return o;
 }
 
+// 0: one program, constants and streams blended; 1: the earlier frame's
+// alone; 2: this frame's alone (prev_prog).
+int mode = 0;
+
 vec4 fetch(int r)
 {
+    if (mode == 1 && interp.y != 0 && inputs[r].w != 0) {
+        from_prev = true;
+        return fetch_at(r, prev_in[r >> 2][r & 3]);
+    }
     from_prev = false;
+    if (mode != 0)
+        return fetch_at(r, inputs[r].x);
     vec4 cur = fetch_at(r, inputs[r].x);
     if (blend_t.x >= 1.0 || interp.y == 0 || inputs[r].w == 0)
         return cur;
@@ -121,8 +132,9 @@ vec4 operand(uint w, int cidx)
     vec4 s;
     if (((w >> 8) & 1u) == 0u)
         s = R[w & 0xFFu];
-    else if (blend_t.x >= 1.0 || interp.x < 0 ||
-             ((blend_mask[cidx >> 7][(cidx >> 5) & 3] >> uint(cidx & 31)) & 1u) == 0u)
+    else if (mode == 1)
+        s = pcbuf[interp.x + cidx];
+    else if (mode == 2 || blend_t.x >= 1.0 || interp.x < 0)
         s = cbuf[info.z + cidx];
     else
         s = mix(pcbuf[interp.x + cidx], cbuf[info.z + cidx], blend_t.x);
@@ -130,7 +142,7 @@ vec4 operand(uint w, int cidx)
     return ((w >> 9) & 1u) != 0u ? -v : v;
 }
 
-void main()
+void run(int base, int count)
 {
     int a0 = 0;
 
@@ -143,8 +155,8 @@ void main()
     O[5] = vec4(1.0);           // oFog
     O[6] = vec4(1.0, 0.0, 0.0, 0.0);
 
-    for (int pc = 0; pc < info.y; pc++) {
-        uvec4 h = prog[info.x + pc * 2], s = prog[info.x + pc * 2 + 1];
+    for (int pc = 0; pc < count; pc++) {
+        uvec4 h = prog[base + pc * 2], s = prog[base + pc * 2 + 1];
         uint mac = h.x & 15u, ilu = (h.x >> 4) & 7u, use = (h.x >> 8) & 7u;
         int cidx = int((h.x >> 16) & 0xFFu);
         vec4 A = vec4(1.0), B = vec4(1.0), C = vec4(1.0), M = vec4(0.0), I = vec4(0.0);
@@ -204,6 +216,23 @@ void main()
             R[o_index] = mix(R[o_index], ((h.x >> 24) & 1u) != 0u ? I : M, mask_of((h.z >> 8) & 15u));
         else if (o_kind == 2u)
             O[o_index] = mix(O[o_index], ((h.x >> 24) & 1u) != 0u ? I : M, mask_of((h.z >> 8) & 15u));
+    }
+}
+
+void main()
+{
+    if (prev_prog.y > 0 && interp.x >= 0 && blend_t.x < 1.0) {
+        mode = 1;
+        run(prev_prog.x, prev_prog.y);
+        vec4 pos = R[12];
+        vec4 po[16];
+        for (int i = 0; i < 16; i++) po[i] = O[i];
+        mode = 2;
+        run(info.x, info.y);
+        R[12] = mix(pos, R[12], blend_t.x);
+        for (int i = 0; i < 16; i++) O[i] = mix(po[i], O[i], blend_t.x);
+    } else {
+        run(info.x, info.y);
     }
 
     // Undo the viewport transform the program ended with, as fetch_vsh does.

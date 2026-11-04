@@ -139,10 +139,11 @@ typedef struct command {
         int32_t interp[4];
         int32_t prev_in[16];
         float   blend_t[4];
-        /* a bit per c register: blended (1), or this frame's (0) -- paired
-         * across programs, the ones the earlier program did not read hold
-         * another draw's leftovers */
-        uint32_t blend_mask[8];
+        /* paired with a draw on another program (count 0: the same): its
+         * program base and count. Then each runs as drawn -- the earlier
+         * program on the earlier frame's constants, this one on this
+         * frame's -- and what they output is blended (shaders/vsh.vert). */
+        int32_t prev_prog[4];
     } vu;
     /* What the draw drew from, to find it again in the next frame: the
      * host address of its (first) vertex data and its vertex count. */
@@ -3418,7 +3419,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
-            memset(c->vu.blend_mask, 0xFF, sizeof c->vu.blend_mask);
+            memset(c->vu.prev_prog, 0, sizeof c->vu.prev_prog);
         }
         if (c->fvf >= 0) {
             cur->fvf_us[c->fvf].interp[0] = -1;
@@ -3632,7 +3633,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
                          * flap through their bone registers, and five or six
                          * of them swinging past half their size left a
                          * flying creature unblended at the game's rate. */
-                        bool consts_rebuilt = jumped_regs >= 4 && jumped_regs * 2 >= read_regs;
+                        bool consts_rebuilt = jumped_regs >= 4 && jumped_regs * 2 >= read_regs &&
+                                              pc->vu.info[0] == c->vu.info[0];  /* another program: its own constants */
                         c->strayed = sv > 0.2f;
                         if (dbg_groups)
                             SDL_Log("vsh pair: cmd %u nv %u worst input %d (stride %d, prev %d) stray %.2f, "
@@ -3682,30 +3684,13 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->unpaired = false;
                     if (pc->vu.info[0] != c->vu.info[0]) {
                         n_progswitch++;
-                        memset(c->vu.blend_mask, 0, sizeof c->vu.blend_mask);
-                        memcpy(c->vu.blend_mask, pc->consts_read, sizeof pc->consts_read);
-                        /* and only those both read whose values are near:
-                         * one that jumped means something else in this
-                         * program, and takes this frame's value */
-                        {
-                            const float *ca = prev->vconsts[pc->vu.info[2]], *cb = cur->vconsts[c->vu.info[2]];
-                            for (int q = 0; q < 192; q++) {
-                                float dd = 0.0f, mm = 0.0f;
-                                if (!(c->vu.blend_mask[q >> 5] >> (q & 31) & 1))
-                                    continue;
-                                for (int e = 0; e < 4; e++) {
-                                    float x = ca[4 * q + e], y = cb[4 * q + e];
-                                    if (!(SDL_fabsf(x) < 1e6f && SDL_fabsf(y) < 1e6f)) {
-                                        dd = mm = 1.0f;     /* stale, huge or NaN: as jumped */
-                                        break;
-                                    }
-                                    dd += SDL_fabsf(x - y);
-                                    mm += SDL_fabsf(x) + SDL_fabsf(y);
-                                }
-                                if (dd > 0.25f * mm && dd > 1e-3f)
-                                    c->vu.blend_mask[q >> 5] &= ~(1u << (q & 31));
-                            }
-                        }
+                        /* A boost's or a brake's end: every model on
+                         * screen goes back to its usual program. One
+                         * program run on a mix of two programs' constants
+                         * came out neither frame (the dragon brighter,
+                         * everything a little off): each runs its own. */
+                        c->vu.prev_prog[0] = pc->vu.info[0];
+                        c->vu.prev_prog[1] = pc->vu.info[1];
                     }
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
