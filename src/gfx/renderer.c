@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #if defined(_MSC_VER)
@@ -3039,11 +3040,44 @@ typedef struct draw_key {
     uint32_t cmd;
 } draw_key;
 
+/* A screen-space draw's place in its texture: the first vertex's stage-0
+ * coordinates (Concept of Love). Glyphs and icons cut from one atlas are
+ * alike in every other way, and games draw them from the same buffer slots
+ * whichever they are: JSRF's custom-graffiti keyboard's "3" paired with the
+ * "4" beside it when the selection moved and showed between them for a
+ * frame. 0 for 3D draws and vertex programs (their texture coordinates move
+ * with animation, and Orta's world draws have no view of their own, so a
+ * "no view" UI plane cannot be told from them) and when unknown. */
+static uint64_t uv_sig(const frame_data *f, const command *c)
+{
+    float uv[2];
+
+    if (c->vsh)
+        return 0;
+    if (c->fvf >= 0) {
+        const pdo_fvf_uniforms *u = &f->fvf_us[c->fvf];
+        int set = u->stage_set[0];
+        if (!(u->layout0[2] & PDO_FVF_PRE) || set < 0 || set >= u->layout0[3] || set >= 4 || u->tc_n[set] < 2)
+            return 0;
+        if ((uint32_t)u->layout0[0] + (uint32_t)u->tc_off[set] + 8u > f->nblob)
+            return 0;
+        memcpy(uv, f->blob + u->layout0[0] + u->tc_off[set], 8);
+    } else {
+        if (!c->index_count || c->first_index >= f->nindices || f->indices[c->first_index] >= f->nverts)
+            return 0;
+        memcpy(uv, f->verts[f->indices[c->first_index]].tc[0], 8);
+    }
+    if (!(SDL_fabsf(uv[0]) < 1e6f && SDL_fabsf(uv[1]) < 1e6f))
+        return 0;                       /* NaN or huge: unknown */
+    /* to 1/4096: the same place in the atlas, whatever float noise */
+    return ((uint64_t)(uint32_t)(int32_t)lroundf(uv[0] * 4096.0f) << 32) | (uint32_t)(int32_t)lroundf(uv[1] * 4096.0f);
+}
+
 /* any_src: whatever vertex data it drew from (match_frames' second pass). */
 static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
 {
     uint64_t h = 1469598103934665603ull;
-    uint64_t v[7];
+    uint64_t v[8];
 
     v[0] = c->vsh ? 1 : c->fvf >= 0 ? 2 : 3;
     /* Vertex programs: not the program. As a boost or a brake ends the game
@@ -3061,7 +3095,8 @@ static uint64_t key_of(const frame_data *f, const command *c, bool any_src)
     v[4] = c->vsh || c->fvf >= 0 ? c->vsh_index_count : c->index_count;
     v[5] = c->draw.tex[0].data;
     v[6] = 0;
-    for (int i = 0; i < 7; i++)
+    v[7] = uv_sig(f, c);    /* screen space: the atlas cell */
+    for (int i = 0; i < 8; i++)
         h = (h ^ v[i]) * 1099511628211ull;
     return h;
 }
