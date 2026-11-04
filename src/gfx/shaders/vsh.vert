@@ -32,6 +32,9 @@ layout(set = 1, binding = 0, std140) uniform Draw {
     ivec4 interp;
     ivec4 prev_in[4];
     vec4  blend_t;
+    // A bit per c register: blended, or this frame's (0: paired across
+    // programs, and the earlier one did not read it).
+    uvec4 blend_mask[2];
 };
 
 layout(location = 0) out vec4 v_diffuse;
@@ -118,7 +121,8 @@ vec4 operand(uint w, int cidx)
     vec4 s;
     if (((w >> 8) & 1u) == 0u)
         s = R[w & 0xFFu];
-    else if (blend_t.x >= 1.0 || interp.x < 0)
+    else if (blend_t.x >= 1.0 || interp.x < 0 ||
+             ((blend_mask[cidx >> 7][(cidx >> 5) & 3] >> uint(cidx & 31)) & 1u) == 0u)
         s = cbuf[info.z + cidx];
     else
         s = mix(pcbuf[interp.x + cidx], cbuf[info.z + cidx], blend_t.x);

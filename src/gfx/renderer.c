@@ -131,6 +131,10 @@ typedef struct command {
         int32_t interp[4];
         int32_t prev_in[16];
         float   blend_t[4];
+        /* a bit per c register: blended (1), or this frame's (0) -- paired
+         * across programs, the ones the earlier program did not read hold
+         * another draw's leftovers */
+        uint32_t blend_mask[8];
     } vu;
     /* What the draw drew from, to find it again in the next frame: the
      * host address of its (first) vertex data and its vertex count. */
@@ -3331,6 +3335,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         if (c->vsh) {
             c->vu.interp[0] = -1;
             c->vu.interp[1] = 0;
+            memset(c->vu.blend_mask, 0xFF, sizeof c->vu.blend_mask);
         }
         if (c->fvf >= 0) {
             cur->fvf_us[c->fvf].interp[0] = -1;
@@ -3572,7 +3577,11 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     c->vu.interp[0] = pc->vu.info[2];
                     c->vu.interp[1] = same_in;
                     c->unpaired = false;
-                    n_progswitch += pc->vu.info[0] != c->vu.info[0];
+                    if (pc->vu.info[0] != c->vu.info[0]) {
+                        n_progswitch++;
+                        memset(c->vu.blend_mask, 0, sizeof c->vu.blend_mask);
+                        memcpy(c->vu.blend_mask, pc->consts_read, sizeof pc->consts_read);
+                    }
                     taken[pk[i + order[k]].cmd] = 1;
                     c->pair_prev = pk[i + order[k]].cmd;
                 } else if (c->fvf >= 0 && pc->fvf >= 0) {
