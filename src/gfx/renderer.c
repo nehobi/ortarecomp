@@ -3904,6 +3904,46 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         "%u another texture, %u another program word, %u other; targets%s",
                         (unsigned long long)cur->frame, nokey, alone, d_target, d_tex, d_info, d_none, tt);
             }
+            /* Many new (the boost end): which draws are new, and which of the
+             * frame before have nothing alike now (gone): v/f, program or
+             * layout, vertices, indices, first texture, where on screen. */
+            if (alone >= 10) {
+                for (int side = 0; side < 2; side++) {
+                    const frame_data *f = side ? prev : cur, *o = side ? cur : prev;
+                    char txt[1024] = "";
+                    uint32_t n = 0;
+                    for (uint32_t k = 0; k < f->ncmds; k++) {
+                        const command *c = &f->cmds[k];
+                        bool found = false;
+                        float x = 9.0f, y = 9.0f;
+                        if (c->kind != CMD_DRAW || !blendable(c) || !is_3d(f, c) || (!side && (!c->unpaired || grouped[k])))
+                            continue;
+                        for (uint32_t q = 0; q < o->ncmds && !found; q++) {
+                            const command *pc = &o->cmds[q];
+                            if (pc->kind != CMD_DRAW || !blendable(pc) || !is_3d(o, pc) || pc->vsh != c->vsh ||
+                                pc->id_nv != c->id_nv || pc->vsh_index_count != c->vsh_index_count)
+                                continue;
+                            found = c->vsh ? pc->vu.info[0] == c->vu.info[0]
+                                           : o->fvf_us[pc->fvf].layout0[1] == f->fvf_us[c->fvf].layout0[1] &&
+                                             o->fvf_us[pc->fvf].layout0[2] == f->fvf_us[c->fvf].layout0[2];
+                        }
+                        if (found)
+                            continue;
+                        if (c->vsh && c->anchored)
+                            x = c->anchor[0], y = c->anchor[1];
+                        else if (!c->vsh && !origin_ndc(f->fvf_us[c->fvf].wvp, &x, &y))
+                            x = y = 9.0f;
+                        if (n++ < 16) {
+                            size_t len = strlen(txt);
+                            snprintf(txt + len, sizeof txt - len, " %c%x/%u/%u/%x@%.2f,%.2f", c->vsh ? 'v' : 'f',
+                                     c->vsh ? (unsigned)c->vu.info[0] : (unsigned)f->fvf_us[c->fvf].layout0[1],
+                                     c->id_nv, c->vsh_index_count, (unsigned)c->draw.tex[0].data, x, y);
+                        }
+                    }
+                    SDL_Log("interp: frame %llu: %u %s:%s", (unsigned long long)cur->frame, n,
+                            side ? "gone since the frame before" : "new", txt);
+                }
+            }
         }
         if ((resized >= 3 || unp3d * 4 > all3d || (still && !was_still)) && odd_logs++ < 10)
             SDL_Log("interp: frame %llu: %u of %u 3D draws not blended (%u no partner near, %u jumped, %u rebuilt, "
