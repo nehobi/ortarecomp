@@ -88,7 +88,7 @@ static uint64_t capture_seq = 1;
  * PDO_CAPTURE_INTERP's blends) the frame where most groups of alike 3D
  * draws shrank -- the dragon's boost afterimages going -- or where many
  * draws went on to other vertex programs (a boost's or a brake's end), and
- * the five after, in a row. Only once F10 armed it: cutscenes switch programs, and
+ * the twelve after, in a row. Only once F10 armed it: cutscenes switch programs, and
  * fights shrink groups and stop the picture, too. */
 static int capture_boost_left = -1;
 /* Its frames after the first: up to this frame none is dropped, so the
@@ -97,7 +97,7 @@ static int capture_boost_left = -1;
 static SDL_AtomicInt boost_seq_end;
 static bool boost_logging;          /* a boost capture's frames: their commands logged (capture_interp) */
 static bool log_replay;             /* replay logs every command (as at the capture frame) */
-#define BOOST_FOLLOW 5
+#define BOOST_FOLLOW 12
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
 static bool programs_switched;      /* match_frames: many draws on other programs (boost or brake end) */
@@ -3375,15 +3375,28 @@ static uint32_t st_close;   /* alike draws paired with a runner-up near as good 
 static uint32_t st_swapped; /* pairs undone: another draw was far nearer (log) */
 static uint32_t st_rebuilt; /* pairs not blended: vertices rebuilt in another order (log) */
 
-/* Whether a draw samples a render target (texture_for found the memory is
- * one): a copy of the picture pasted back through a quad -- the back
- * buffer too, whose target reads data 0 in the frame's own commands. */
+/* Whether a draw samples the picture: a texture that is a render target
+ * (texture_for found the memory is one -- the back buffer too, whose
+ * target reads data 0 in the frame's own commands), or memory this frame
+ * drew to or copied to or from (a copy of the picture made into a
+ * texture). A copy of the picture pasted back through a quad. */
 static bool reads_target(const frame_data *f, const command *c)
 {
     uint32_t k = (uint32_t)(c - f->cmds);
     for (int st = 0; st < 4; st++)
         if (f->tex[k * 4 + st].target_data)
             return true;
+    for (uint32_t q = 0; q < f->ncmds; q++) {
+        const command *t = &f->cmds[q];
+        if (t->kind != CMD_TARGET && t->kind != CMD_COPY)
+            continue;
+        for (int st = 0; st < 4; st++) {
+            uint32_t d = c->draw.tex[st].data;
+            if (d && ((t->surf.data && phys(d) == phys(t->surf.data)) ||
+                      (t->kind == CMD_COPY && t->surf2.data && phys(d) == phys(t->surf2.data))))
+                return true;
+        }
+    }
     return false;
 }
 
@@ -4091,6 +4104,39 @@ static void match_frames(frame_data *prev, frame_data *cur)
         groups_shrank = shrank >= 10;
         /* The boost's and the brake's end: many draws on other programs. */
         programs_switched = n_progswitch >= 8;
+        {   /* The draws that sample the picture, when they change (the swirl
+             * of a boost's or a brake's end comes and goes): at most 20
+             * lines in 300 frames. */
+            static uint64_t last_sig;
+            static uint32_t pic_logs, pic_frames;
+            uint64_t sig = 1469598103934665603ull;
+            char txt[600] = "";
+            uint32_t n = 0;
+            if (++pic_frames >= 300)
+                pic_frames = pic_logs = 0;
+            for (uint32_t k = 0; k < cur->ncmds; k++) {
+                const command *c = &cur->cmds[k];
+                float b4[8];
+                bool corners;
+                if (c->kind != CMD_DRAW || !reads_target(cur, c))
+                    continue;
+                n++;
+                sig = (sig ^ ((uint64_t)c->id_nv << 8 | (uint64_t)is_3d(cur, c) << 1 | (uint64_t)(c->fvf >= 0)))
+                      * 1099511628211ull;
+                corners = draw_corners(cur, c, b4);
+                if (strlen(txt) < sizeof txt - 90) {
+                    size_t len = strlen(txt);
+                    snprintf(txt + len, sizeof txt - len, " %s/%u/%s%s/tex %08x@%.0f,%.0f-%.0f,%.0f",
+                             c->vsh ? "v" : c->fvf >= 0 ? "f" : "c", c->id_nv, is_3d(cur, c) ? "3d" : "2d",
+                             c->unpaired ? "" : "/blended", (unsigned)c->draw.tex[0].data,
+                             corners ? b4[0] : -1.0f, corners ? b4[1] : -1.0f, corners ? b4[4] : -1.0f,
+                             corners ? b4[5] : -1.0f);
+                }
+            }
+            if (sig != last_sig && pic_logs++ < 20)
+                SDL_Log("interp: frame %llu: %u draws sample the picture:%s", (unsigned long long)cur->frame, n, txt);
+            last_sig = sig;
+        }
         static uint32_t switch_logs;    /* its own budget: the lines above use theirs up in fights */
         if (odd_frames == 0)
             switch_logs = 0;
@@ -4591,7 +4637,7 @@ void pdo_gfx_main_loop(void)
                             cur->frame < pdo_input_x_frame + 300) || programs_switched) && close_armed && prev &&
                            capture_boost_left > 0) {
                     capture_boost_left--;
-                    SDL_Log("capture: %s at frame %llu: capturing it and the five after",
+                    SDL_Log("capture: %s at frame %llu: capturing it and the twelve after",
                             programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
                             (unsigned long long)cur->frame);
                     /* the game waits from now: a capture stalls */
