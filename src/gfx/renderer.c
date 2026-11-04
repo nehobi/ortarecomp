@@ -85,11 +85,10 @@ static uint64_t capture_frame = UINT64_MAX;
  * capture frame on (none of them dropped), to see motion. */
 static uint64_t capture_seq = 1;
 /* PDO_CAPTURE_BOOST=n: up to n times, capture (as F12, with
- * PDO_CAPTURE_INTERP's blends) the frame where most groups of alike 3D
- * draws shrank -- the dragon's boost afterimages going -- or where many
- * draws went on to other vertex programs (a boost's or a brake's end), and
- * the twelve after, in a row. Only once F10 armed it: cutscenes switch programs, and
- * fights shrink groups and stop the picture, too. */
+ * PDO_CAPTURE_INTERP's blends, every command logged) the frame where the
+ * scene's viewport changed or many draws went on to other vertex programs
+ * (a boost's or a brake's end), and the twelve after, in a row. Only once
+ * F10 armed it: cutscenes and form changes switch programs too. */
 static int capture_boost_left = -1;
 /* Its frames after the first: up to this frame none is dropped, so the
  * captures are of frames in a row (a capture stalls; the frames between
@@ -101,6 +100,7 @@ static bool log_replay;             /* replay logs every command (as at the capt
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
 static bool programs_switched;      /* match_frames: many draws on other programs (boost or brake end) */
+static bool viewport_changed;       /* match_frames: the scene's render size changed (boost or brake end) */
 extern uint64_t pdo_input_x_frame;  /* input_hle.c: the last frame X (boost) was held */
 /* PDO_CAPTURE_CLOSE=n: up to n times, capture (with PDO_CAPTURE_INTERP's
  * blends) a frame where a draw in a pack of three or more alike 3D draws had
@@ -4132,6 +4132,39 @@ static void match_frames(frame_data *prev, frame_data *cur)
         groups_shrank = shrank >= 10;
         /* The boost's and the brake's end: many draws on other programs. */
         programs_switched = n_progswitch >= 8;
+        {   /* The scene's render size changed (a boost's or a brake's end:
+             * 512x360 at 0,12 -> 426x320 at 0,0 in episode 1): the most
+             * used viewport of the 3D draws, against the frame before's. */
+            static float last_vp[4];
+            static uint32_t vp_logs, vp_frames;
+            float best[4] = { 0, 0, 0, 0 };
+            uint32_t best_n = 0;
+            if (++vp_frames >= 300)
+                vp_frames = vp_logs = 0;
+            for (uint32_t k = 0; k < cur->ncmds && best_n < 8; k++) {
+                const command *c = &cur->cmds[k];
+                uint32_t n = 0;
+                if (c->kind != CMD_DRAW || !is_3d(cur, c))
+                    continue;
+                for (uint32_t q = k; q < cur->ncmds; q++)
+                    if (cur->cmds[q].kind == CMD_DRAW && is_3d(cur, &cur->cmds[q]) &&
+                        !memcmp(cur->cmds[q].draw.viewport, c->draw.viewport, 4 * sizeof(float)))
+                        n++;
+                if (n > best_n) {
+                    best_n = n;
+                    memcpy(best, c->draw.viewport, sizeof best);
+                }
+                if (best_n * 2 > all3d)
+                    break;
+            }
+            viewport_changed = best_n && last_vp[2] > 0 && memcmp(best, last_vp, sizeof best) != 0;
+            if (viewport_changed && vp_logs++ < 10)
+                SDL_Log("interp: frame %llu: the scene's viewport changed, %.0f,%.0f %.0fx%.0f -> %.0f,%.0f %.0fx%.0f",
+                        (unsigned long long)cur->frame, last_vp[0], last_vp[1], last_vp[2], last_vp[3], best[0],
+                        best[1], best[2], best[3]);
+            if (best_n)
+                memcpy(last_vp, best, sizeof last_vp);
+        }
         {   /* The draws that sample the picture, when they change (the swirl
              * of a boost's or a brake's end comes and goes): at most 20
              * lines in 300 frames. */
@@ -4641,7 +4674,7 @@ void pdo_gfx_main_loop(void)
             }
             prev = cur;
             cur = f;
-            groups_shrank = picture_stopped = close_call = programs_switched = false;
+            groups_shrank = picture_stopped = close_call = programs_switched = viewport_changed = false;
             if (capture_close_left < 0)
                 capture_close_left = getenv("PDO_CAPTURE_CLOSE") ? atoi(getenv("PDO_CAPTURE_CLOSE")) : 0;
             if (capture_boost_left < 0)
@@ -4662,12 +4695,11 @@ void pdo_gfx_main_loop(void)
                             (unsigned long long)cur->frame);
                     capture_interp(prev, cur);
                     follow = 2;
-                } else if ((((groups_shrank || picture_stopped) && pdo_input_x_frame &&
-                            cur->frame < pdo_input_x_frame + 300) || programs_switched) && close_armed && prev &&
+                } else if ((programs_switched || viewport_changed) && close_armed && prev &&
                            capture_boost_left > 0) {
                     capture_boost_left--;
                     SDL_Log("capture: %s at frame %llu: capturing it and the twelve after",
-                            programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
+                            viewport_changed ? "the viewport changed" : programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
                             (unsigned long long)cur->frame);
                     /* the game waits from now: a capture stalls */
                     SDL_SetAtomicInt(&boost_seq_end, (int)(cur->frame + BOOST_FOLLOW + 1));
