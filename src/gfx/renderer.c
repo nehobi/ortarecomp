@@ -95,6 +95,8 @@ static int capture_boost_left = -1;
  * captures are of frames in a row (a capture stalls; the frames between
  * went by uncaptured, and a one-frame hitch fell between them). */
 static SDL_AtomicInt boost_seq_end;
+static bool boost_logging;          /* a boost capture's frames: their commands logged (capture_interp) */
+static bool log_replay;             /* replay logs every command (as at the capture frame) */
 #define BOOST_FOLLOW 5
 static bool groups_shrank;          /* match_frames: this frame */
 static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
@@ -2061,6 +2063,9 @@ static SDL_GPURenderPass *begin_pass(SDL_GPUCommandBuffer *cmd, const command *c
     return pass;
 }
 
+static bool is_3d(const frame_data *f, const command *c);
+static bool draw_corners(const frame_data *f, const command *c, float out[8]);
+
 static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex)
 {
     const pdo_draw *d = &c->draw;
@@ -2088,6 +2093,16 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
             d->ff.alpha_test[0], d->ff.alpha_test[1], d->ff.alpha_test[2], d->ff.alpha_test[3],
             d->ff.fog_mode[0], d->ff.fog_mode[1], d->ff.fog_params[0], d->ff.fog_params[1], d->ff.fog_params[2],
             d->ff.fog_color[0], d->ff.fog_color[1], d->ff.fog_color[2]);
+    {   /* how it interpolates: kind, vertices, paired with which of the frame before, its corners */
+        float b4[8];
+        bool corners = draw_corners(F, c, b4);
+        SDL_Log("capture:     interp %s nv %u %s %s %u, tex0 %08x%s, corners %.1f,%.1f,%.1f,%.1f - %.1f,%.1f,%.1f,%.1f",
+                c->vsh ? "vsh" : c->fvf >= 0 ? "fvf" : "cpu", c->id_nv, is_3d(F, c) ? "3d" : "2d",
+                c->unpaired ? "unpaired" : "paired with", c->unpaired ? 0u : c->pair_prev, (unsigned)d->tex[0].data,
+                F->tex[i * 4].target_data ? " (a render target)" : "",
+                corners ? b4[0] : 0.0f, corners ? b4[1] : 0.0f, corners ? b4[2] : 0.0f, corners ? b4[3] : 0.0f,
+                corners ? b4[4] : 0.0f, corners ? b4[5] : 0.0f, corners ? b4[6] : 0.0f, corners ? b4[7] : 0.0f);
+    }
     SDL_Log("capture:     vs %08x lighting %u colorvertex %u sources %04x ambient %08x "
             "material %08x/%08x/%08x lights %u", d->vertex_info[0], d->vertex_info[1], d->vertex_info[2] & 0xFF,
             d->vertex_info[3], d->vertex_info[4], d->vertex_info[5], d->vertex_info[6], d->vertex_info[7],
@@ -2388,7 +2403,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         if (c->kind == CMD_DRAW)
             for (int s = 0; s < 4; s++)
                 tex[s] = slot_texture(&F->tex[i * 4 + s]);
-        if (F->frame == capture_frame && replay_limit == UINT32_MAX)
+        if ((F->frame == capture_frame || log_replay) && replay_limit == UINT32_MAX)
             log_command(i, c, tex);
 
         if (c->kind == CMD_CLEAR) {
@@ -2692,7 +2707,9 @@ static void capture_interp_main(frame_data *prev, frame_data *cur)
         F = cur;
         P = prev;
         blend = ts[k];
+        log_replay = boost_logging && k == 1;   /* the in-between one */
         replay(cmd);
+        log_replay = false;
         cur_target = NULL;
         cur_size(&w, &h);
         snprintf(path, sizeof path, "capture_%05llu_t%03d.bmp", (unsigned long long)cur->frame,
@@ -4542,6 +4559,8 @@ void pdo_gfx_main_loop(void)
                 if (follow > 0 && prev) {
                     follow--;
                     capture_interp(prev, cur);
+                    if (!follow)
+                        boost_logging = false;
                 } else if (close_call && close_armed && prev && capture_close_left > 0) {
                     capture_close_left--;
                     SDL_Log("capture: a close call in a pack at frame %llu: capturing it and the two after",
@@ -4557,6 +4576,7 @@ void pdo_gfx_main_loop(void)
                             (unsigned long long)cur->frame);
                     /* the game waits from now: a capture stalls */
                     SDL_SetAtomicInt(&boost_seq_end, (int)(cur->frame + BOOST_FOLLOW + 1));
+                    boost_logging = true;   /* every command of their in-between frames, to the log */
                     capture_interp(prev, cur);
                     follow = BOOST_FOLLOW;
                 }
