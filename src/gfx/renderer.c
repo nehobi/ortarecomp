@@ -3706,6 +3706,38 @@ static void match_frames(frame_data *prev, frame_data *cur)
                                         dch, dmin, sv, jumped_regs, nread, notb ? " -> not blended" : "");
                         }
                         if (sv > 0.5f || (c->strayed && pc->strayed) || consts_rebuilt) {
+                            /* PDO_DBG_NOBLEND=1 (Concept of Love): each program
+                             * draw refused here, and by which test -- the stray,
+                             * the registers that jumped and the one that
+                             * changed most (in JSRF a hand left unblended was
+                             * the game snapping a bone ~100 degrees in a frame,
+                             * which blended would squash). */
+                            static int dbg_noblend = -1;
+                            static uint32_t nb_lines;
+                            if (dbg_noblend < 0)
+                                dbg_noblend = getenv("PDO_DBG_NOBLEND") && atoi(getenv("PDO_DBG_NOBLEND"));
+                            if (dbg_noblend && nb_lines < 20000) {
+                                int worst = -1;
+                                float wd = 0.0f;
+                                const float *ca = prev->vconsts[pc->vu.info[2]], *cb = cur->vconsts[c->vu.info[2]];
+                                for (int q = 0; q < 192; q++) {
+                                    float d = 0.0f;
+                                    for (int e = 0; e < 4; e++)
+                                        d += SDL_fabsf(ca[4 * q + e] - cb[4 * q + e]);
+                                    if (d > wd && d < 1e6f)
+                                        wd = d, worst = q;
+                                }
+                                nb_lines++;
+                                SDL_Log("noblend: frame %llu program %x nv %u idx %u stray %.2f strayed %d/%d "
+                                        "jumped %d of %d (most changed c%d by %.3f: %.3f %.3f %.3f %.3f -> %.3f %.3f "
+                                        "%.3f %.3f)",
+                                        (unsigned long long)cur->frame, (unsigned)c->vu.info[0], c->id_nv,
+                                        c->vsh_index_count, sv, c->strayed, pc->strayed, jumped_regs, read_regs, worst,
+                                        wd, worst >= 0 ? ca[4 * worst] : 0.0f, worst >= 0 ? ca[4 * worst + 1] : 0.0f,
+                                        worst >= 0 ? ca[4 * worst + 2] : 0.0f, worst >= 0 ? ca[4 * worst + 3] : 0.0f,
+                                        worst >= 0 ? cb[4 * worst] : 0.0f, worst >= 0 ? cb[4 * worst + 1] : 0.0f,
+                                        worst >= 0 ? cb[4 * worst + 2] : 0.0f, worst >= 0 ? cb[4 * worst + 3] : 0.0f);
+                            }
                             st_rebuilt++;
                             n_rebuilt++;
                             continue;
