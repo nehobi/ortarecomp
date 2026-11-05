@@ -175,10 +175,12 @@ void main()
         mwv[i] = bm ? mix(prev_wv[i], wv[i], blend_t.x) : wv[i];
         mworld[i] = bm ? mix(prev_world[i], world[i], blend_t.x) : world[i];
     }
+    vec3 p_now = p, p_was = p;      // this frame's position, the previous frame's
     if (blend) {
         uint q = uint(interp.x) + uint(gl_VertexIndex) * uint(layout0.y);
         from_prev = true;
         vec3 pp = vec3(f32(q), f32(q + 4u), f32(q + 8u));
+        p_was = pp;
         p = mix(pp, p, blend_t.x);
         if (hn) nrm = mix(vec3(f32(q + uint(offs.x)), f32(q + uint(offs.x) + 4u), f32(q + uint(offs.x) + 8u)), nrm, blend_t.x);
         if (pre) rhw = mix(f32(q + 12u), rhw, blend_t.x);
@@ -193,9 +195,25 @@ void main()
         gl_Position = vec4((p.x / rt.x * 2.0 - 1.0) * w, (1.0 - p.y / rt.y * 2.0) * w, p.z * w, w);
         if (blend_t.y != 0.0) gl_Position.z = (1.0 - p.z) * w;    // reversed depth
     } else {
-        gl_Position = xform(p, mwvp[0], mwvp[1], mwvp[2], mwvp[3]);
+        // A vertex on the two sides of the eye in the two frames (something
+        // passing the camera) stays as the newest frame has it: blended, it
+        // went through w 0 and its triangles covered the screen (Concept of
+        // Love).
+        bool across = false;
+        if (blend) {
+            vec4 was = interp.y != 0 ? xform(p_was, prev_wvp[0], prev_wvp[1], prev_wvp[2], prev_wvp[3])
+                                     : xform(p_was, wvp[0], wvp[1], wvp[2], wvp[3]);
+            vec4 now = xform(p_now, wvp[0], wvp[1], wvp[2], wvp[3]);
+            across = (was.w > 0.0) != (now.w > 0.0);
+        }
+        if (across) {
+            p = p_now;
+            gl_Position = xform(p, wvp[0], wvp[1], wvp[2], wvp[3]);
+        } else {
+            gl_Position = xform(p, mwvp[0], mwvp[1], mwvp[2], mwvp[3]);
+        }
         if (blend_t.y != 0.0) {     // reversed depth: w - z from its own column
-            vec4 c = (blend && interp.y != 0) ? mix(prev_rz, rz, blend_t.x) : rz;
+            vec4 c = (blend && interp.y != 0 && !across) ? mix(prev_rz, rz, blend_t.x) : rz;
             gl_Position.z = ((p.x * c.x + p.y * c.y) + p.z * c.z) + c.w;
         }
     }

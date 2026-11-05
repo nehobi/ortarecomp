@@ -239,23 +239,29 @@ vec4 to_clip(vec4 p, vec4 sc, vec4 of)
 void main()
 {
     bool blending = interp.x >= 0 && blend_t.x < 1.0;
-    if (prev_prog.y > 0 && blending) {
-        // Each frame's run as drawn, each through its own viewport.
+    if (blending) {
+        // Each frame's run as drawn -- the earlier frame's program (another
+        // one across a switch) on its constants and streams, then this
+        // frame's -- each through its own viewport, and the outputs blend
+        // (Concept of Love: one program run on blended constants gave mixed
+        // bone matrices, poses of neither frame).
         mode = 1;
-        run(prev_prog.x, prev_prog.y);
+        if (prev_prog.y > 0) run(prev_prog.x, prev_prog.y);
+        else run(info.x, info.y);
         vec4 pc = to_clip(R[12], prev_vp_scale, prev_vp_offset);
         vec4 po[16];
         for (int i = 0; i < 16; i++) po[i] = O[i];
         mode = 2;
         run(info.x, info.y);
-        gl_Position = mix(pc, to_clip(R[12], vp_scale, vp_offset), blend_t.x);
+        vec4 nc = to_clip(R[12], vp_scale, vp_offset);
+        // A vertex on the two sides of the eye in the two frames stays as the
+        // newest frame has it: blended, it went through w 0 and its triangles
+        // covered the screen.
+        gl_Position = (pc.w > 0.0) == (nc.w > 0.0) ? mix(pc, nc, blend_t.x) : nc;
         for (int i = 0; i < 16; i++) O[i] = mix(po[i], O[i], blend_t.x);
     } else {
         run(info.x, info.y);
-        // Blended constants end in a blended viewport transform.
-        gl_Position = blending ? to_clip(R[12], mix(prev_vp_scale, vp_scale, blend_t.x),
-                                         mix(prev_vp_offset, vp_offset, blend_t.x))
-                               : to_clip(R[12], vp_scale, vp_offset);
+        gl_Position = to_clip(R[12], vp_scale, vp_offset);
     }
     // Colours as the CPU packs them: NaN as 0, clamped, to 8 bits.
     vec4 d0 = mix(clamp(O[3], 0.0, 1.0), vec4(0.0), isnan(O[3]));
