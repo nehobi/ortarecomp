@@ -144,8 +144,9 @@ Every paired vertex program runs twice (each frame's program, constants,
 streams, viewport) and the outputs blend; vertices crossing the eye are
 not blended (Concept of Love); vertex programs pair by program first, a
 third pass across programs; the frame the render size changes is shown
-as drawn (PDO_INTERP_SIZE_HOLD=0 blends it too, to try: the hold may be
-the faint one-frame step still seen at a boost now and then). Episode 4
+as drawn (PDO_INTERP_SIZE_HOLD=0 blends it too: tried, the step then
+shows at every boost and brake, so the hold stays; a faint step now and
+then is left, likely the rescale itself). Episode 4
 ships and episode 1 packs confirmed smooth after these; headphones 3D
 audio confirmed.
 PDO_CAPTURE_BOOST=n (armed by F10) captures program switches and 12
