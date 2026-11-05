@@ -42,8 +42,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 1. Episode 2: the second boss shows and can be beaten (confirmed; it
    updates through 0x00111BC0, a function behind a jump table that
-   recomp.py now seeds). Tentacles confirmed right; some enemies white (a missing
-   texture in a fixed-function draw gives white).
+   recomp.py now seeds). Tentacles confirmed right; white enemies (a missing
+   texture in a fixed-function draw) not seen in the latest play past it.
 2. Sound balance: matches xemu (episode 1 flying, in-game options at
    defaults: -11.4 LUFS in both). The loud effects were in-game options
    turned down. The game sets music -26.0 dB, most effects -22.5 dB.
@@ -64,7 +64,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    filters. It does turn HRTF on (Sensaura, via DirectSound): for phones
    with headphones later, as "3D audio: Off / Headphones" -- first see
    whether the XBE's own HRTF tables are usable at run time.
-5. Hang skipping the cutscenes after episode 1 (Start): fix to confirm.
+5. Hang skipping the cutscenes after episode 1 (Start): not seen since
+   patches 0025/0026 (likely fixed).
    The wait tracer caught it: the main thread, stopping a worker
    (0x00225B80, worker routine 0x002266B0), asked "am I that worker?" and
    got yes, then waited on an event only the worker's own path sees set.
