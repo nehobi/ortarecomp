@@ -2099,6 +2099,18 @@ static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex
             d->ff.alpha_test[0], d->ff.alpha_test[1], d->ff.alpha_test[2], d->ff.alpha_test[3],
             d->ff.fog_mode[0], d->ff.fog_mode[1], d->ff.fog_params[0], d->ff.fog_params[1], d->ff.fog_params[2],
             d->ff.fog_color[0], d->ff.fog_color[1], d->ff.fog_color[2]);
+    SDL_Log("capture:     drawn from 0x%08x, 0x%08x, 0x%08x; colour write %08x", d->caller[0], d->caller[1],
+            d->caller[2], d->ps.color_write);
+    if (c->fvf >= 0) {  /* its matrices: world, and world * view * projection */
+        const pdo_fvf_uniforms *u = &F->fvf_us[c->fvf];
+        SDL_Log("capture:     world %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f",
+                u->world[0], u->world[1], u->world[2], u->world[3], u->world[4], u->world[5], u->world[6],
+                u->world[7], u->world[8], u->world[9], u->world[10], u->world[11], u->world[12], u->world[13],
+                u->world[14], u->world[15]);
+        SDL_Log("capture:     wvp %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f",
+                u->wvp[0], u->wvp[1], u->wvp[2], u->wvp[3], u->wvp[4], u->wvp[5], u->wvp[6], u->wvp[7], u->wvp[8],
+                u->wvp[9], u->wvp[10], u->wvp[11], u->wvp[12], u->wvp[13], u->wvp[14], u->wvp[15]);
+    }
     {   /* how it interpolates: kind, vertices, paired with which of the frame before, its corners */
         float b4[8];
         bool corners = draw_corners(F, c, b4);

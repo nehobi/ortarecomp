@@ -127,6 +127,9 @@ typedef struct pdo_draw {
      * specular, emissive: a nibble each), AMBIENT, the material's diffuse,
      * ambient and emissive as D3DCOLORs. */
     uint32_t           vertex_info[8];
+    /* For captures only: the game code that drew it -- the return address
+     * of the D3D call, then two up the ebp chain (0 where it ends). */
+    uint32_t           caller[3];
 } pdo_draw;
 
 /* Record a draw. idx are indices into v; both are copied. */

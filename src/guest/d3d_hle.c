@@ -1140,6 +1140,16 @@ static void fill_draw_state(pdo_draw *d, bool pretransformed)
 
     memset(d, 0, sizeof *d);
     target_size(&rtw, &rth);
+    {   /* who drew it (captures): the D3D call's return, then up the ebp chain */
+        uint32_t bp = g_ebp;
+        d->caller[0] = MEM32(g_esp);
+        for (int k = 1; k < 3; k++) {
+            if (bp < 0x00010000u || bp >= 0x04000000u || (bp & 3))
+                break;
+            d->caller[k] = MEM32(bp + 4);
+            bp = MEM32(bp);
+        }
+    }
     d->vertex_info[0] = st.vshader;
     d->vertex_info[1] = RS(RS_LIGHTING);
     {
