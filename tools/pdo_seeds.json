@@ -12,5 +12,11 @@
   {"start": "0x002AB630", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
   {"start": "0x002AB860", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
   {"start": "0x002ABA90", "observed": true, "note": "indirect call target at boot after TNRoman.bin; not found by the static sweep"},
-  {"start": "0x00307525", "observed": true, "note": "XAPI input init, called through a table from 0x003069DB; follows a ret 4 with no padding"}
+  {"start": "0x00307525", "observed": true, "note": "XAPI input init, called through a table from 0x003069DB; follows a ret 4 with no padding"},
+  {"start": "0x00193A78", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
+  {"start": "0x00193A7C", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
+  {"start": "0x00193A81", "observed": true, "note": "switch case of 0x00193931 (table 0x00193B60 through the byte table 0x00193BF4: 37 used, the lifter took 5); called through the dispatcher in episode 5 (0x00193A81), the moon's lens flare then drawn with other textures"},
+  {"start": "0x00193AB2", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
+  {"start": "0x00193B1E", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
+  {"start": "0x00193B41", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"}
 ]

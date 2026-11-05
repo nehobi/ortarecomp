@@ -79,6 +79,13 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    fixed by patch 0026: the kernel's handle table was claimed without
    locking, so two threads could share a token. Workers asked for
    suspended are now created suspended (0021, 0029; CRI's 8 workers).
+7. Episode 5: the moon's lens flare drew as hard squares with other
+   textures (no moon, a big see-through square where it should be). A
+   switch (0x00193931, table 0x00193B60 through the byte table 0x00193BF4)
+   uses 37 entries but the lifter took 5, and a case reached through the
+   dispatcher (0x00193A81, after st05_sky_04 loads) was no function: the
+   call was skipped. Its six cases are seeded (tools/pdo_seeds.json). To
+   confirm in play.
 6. Title red bars: a shadow map's memory reused for a colour texture was
    still taken as the depth target (b86af73; not seen since). Unbound
    stages read white (menu highlights need it; black turned them black).
