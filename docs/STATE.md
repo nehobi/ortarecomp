@@ -87,8 +87,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    switch (0x00193931, table 0x00193B60 through the byte table 0x00193BF4)
    uses 37 entries but the lifter took 5, and a case reached through the
    dispatcher (0x00193A81, after st05_sky_04 loads) was no function: the
-   call was skipped. Its six cases are seeded (tools/pdo_seeds.json). To
-   confirm in play.
+   call was skipped. Its six cases are seeded (tools/pdo_seeds.json):
+   fixed, confirmed (moon and flare right, no failed calls).
 
 ## Performance
 
