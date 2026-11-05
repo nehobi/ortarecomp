@@ -4233,7 +4233,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
          * the change, episode 4's dragon still came out a frame in another
          * pose at the boost's end (slow-motion video), after the viewport
          * fix for episode 1. At most a one-frame step, as at 60. */
-        if (viewport_changed) {
+        static int size_hold = -1;      /* PDO_INTERP_SIZE_HOLD=0: blend across it too (to try) */
+        if (size_hold < 0)
+            size_hold = !getenv("PDO_INTERP_SIZE_HOLD") || atoi(getenv("PDO_INTERP_SIZE_HOLD")) != 0;
+        if (viewport_changed && size_hold) {
             match_frames(NULL, cur);    /* returns before it looks at the viewport */
         } else if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
             match_frames(NULL, cur);

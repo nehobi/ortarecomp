@@ -144,7 +144,10 @@ Every paired vertex program runs twice (each frame's program, constants,
 streams, viewport) and the outputs blend; vertices crossing the eye are
 not blended (Concept of Love); vertex programs pair by program first, a
 third pass across programs; the frame the render size changes is shown
-as drawn. Episode 4 ships confirmed smooth after these.
+as drawn (PDO_INTERP_SIZE_HOLD=0 blends it too, to try: the hold may be
+the faint one-frame step still seen at a boost now and then). Episode 4
+ships and episode 1 packs confirmed smooth after these; headphones 3D
+audio confirmed.
 PDO_CAPTURE_BOOST=n (armed by F10) captures program switches and 12
 frames after, with every command logged. Logs: use `--log run.log`, not
 PowerShell redirection (stalls the game).
