@@ -4228,7 +4228,14 @@ static void match_frames(frame_data *prev, frame_data *cur)
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
         static uint32_t st_frames, st_cuts;
-        if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
+        /* The scene's render size changed (a boost's or a brake's end): the
+         * frame is shown as the game drew it, as on a cut. Blended across
+         * the change, episode 4's dragon still came out a frame in another
+         * pose at the boost's end (slow-motion video), after the viewport
+         * fix for episode 1. At most a one-frame step, as at 60. */
+        if (viewport_changed) {
+            match_frames(NULL, cur);    /* returns before it looks at the viewport */
+        } else if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
             match_frames(NULL, cur);
             st_cuts++;
             /* Rare, and a whole frame shown unblended: always logged. */
