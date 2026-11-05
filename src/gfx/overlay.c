@@ -20,7 +20,7 @@
 #include <string.h>
 
 enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
-       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_BOX, ITEM_LOGOS,
+       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
        ITEM_CONTROLS, ITEM_CLOSE,
        /* the launcher's own */
        ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
@@ -44,7 +44,7 @@ static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM
                                         ITEM_FPS, ITEM_BACK };
 static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
                                      ITEM_PIC_RESET, ITEM_BACK };
-static const int sound_items[] = { ITEM_VOLUME, ITEM_BACK };
+static const int sound_items[] = { ITEM_VOLUME, ITEM_3D, ITEM_BACK };
 static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_BACK };
 static const int advanced_game[] = { ITEM_INTERP, ITEM_VSH, ITEM_FVF, ITEM_BACK };
 static const int advanced_launcher[] = { ITEM_INTERP, ITEM_VSH, ITEM_FVF, ITEM_GPU, ITEM_BACK };
@@ -193,6 +193,7 @@ static void change(int dir)
     case ITEM_VOLUME: s->master_volume = SDL_clamp(s->master_volume + 5 * dir, 0, 100); break;
     case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
     case ITEM_LOGOS:  s->skip_logos = !s->skip_logos; break;
+    case ITEM_3D:     s->audio_3d = !s->audio_3d; break;
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
@@ -541,6 +542,7 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_PIC_SAT:      snprintf(v, n, "%d%%", s->pic_saturation); return s->pic_saturation / 200.0f;
     case ITEM_BOX:    snprintf(v, n, "%s", s->unlock_box ? "All open" : "Normal"); break;
     case ITEM_LOGOS:  snprintf(v, n, "%s", s->skip_logos ? "On" : "Off"); break;
+    case ITEM_3D:     snprintf(v, n, "%s", s->audio_3d ? "Headphones" : "Speakers"); break;
     case ITEM_VSH:    snprintf(v, n, "%s", s->gpu_vertex ? "GPU" : "CPU"); break;
     case ITEM_FVF:    snprintf(v, n, "%s", s->gpu_fixed ? "GPU" : "CPU"); break;
     case ITEM_INTERP: snprintf(v, n, "%s", s->frame_interp ? "On" : "Off"); break;
@@ -577,6 +579,7 @@ static const char *label_of(int item)
     case ITEM_PIC_RESET:    return "Reset picture";
     case ITEM_BOX:    return "Pandora's Box";
     case ITEM_LOGOS:  return "Skip logos";
+    case ITEM_3D:     return "3D audio";
     case ITEM_VSH:    return "Vertex programs";
     case ITEM_FVF:    return "Fixed function";
     case ITEM_INTERP: return "Frame interp.";
@@ -617,6 +620,7 @@ static const char *help_of(int item)
     case ITEM_PIC_RESET:    return "Back to the game's own picture.";
     case ITEM_BOX:    return "All open: every extra unlocked.";
     case ITEM_LOGOS:  return "A press skips the boot logos.";
+    case ITEM_3D:     return "Headphones: sounds around you.";
     case ITEM_VSH:    return "GPU is faster.";
     case ITEM_FVF:    return "GPU is faster.";
     case ITEM_INTERP: return "Smooth motion above 60 fps.";
@@ -629,7 +633,7 @@ static const char *help_of(int item)
     case ITEM_CONTROLS:    return "Keys, pad and mouse.";
     case ITEM_GO_DISPLAY:  return "Resolution, aspect, window.";
     case ITEM_GO_PICTURE:  return "CRT look, brightness, colour.";
-    case ITEM_GO_SOUND:    return "Volume.";
+    case ITEM_GO_SOUND:    return "Volume, 3D audio.";
     case ITEM_GO_GAMEPLAY: return "Pandora's Box, boot logos.";
     case ITEM_GO_ADVANCED: return "Frame interpolation and more.";
     }

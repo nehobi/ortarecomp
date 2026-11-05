@@ -36,6 +36,7 @@ typedef struct pdo_settings {
     int  pic_contrast;      /* 50..150 % */
     int  pic_gamma;         /* 50..200: 100 as is, more brightens the midtones */
     int  pic_saturation;    /* 0..200 % */
+    bool audio_3d;          /* 3D sounds through a model head, for headphones (mixer.c) */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

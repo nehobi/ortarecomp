@@ -27,6 +27,7 @@
 #include "recomp_types.h"
 
 #include "audio/mixer.h"
+#include "config.h"
 #include "xbox_memory_layout.h"
 
 #include <SDL3/SDL.h>
@@ -243,8 +244,9 @@ void sub_002C4833(void)
     RETURN(16, DS_OK);
 }
 
-/* DirectSound HRTF setup (called once during sound init); our mixer needs
- * no tables. Takes no arguments. */
+/* DirectSound HRTF setup (called once during sound init). The Xbox's
+ * tables are not used: with the 3D audio setting on Headphones, our mixer
+ * runs its own model head (src/audio/mixer.c). Takes no arguments. */
 void sub_002C12DA(void)
 {
     note_once("HRTF");
@@ -328,8 +330,8 @@ void sub_002C2494(void)
  * DSBCAPS_CTRL3D buffers are placed relative to the listener: DirectSound's
  * distance model (full volume up to the minimum distance, then
  * min / (min + rolloff * (d - min)), held from the maximum distance on) and
- * an equal-power left/right pan from the listener's orientation. No HRTF,
- * cones or Doppler. Deferred settings apply at once. Orta gives positions
+ * an equal-power left/right pan from the listener's orientation, or on
+ * headphones (the 3D audio setting) a model head. No cones or Doppler. Deferred settings apply at once. Orta gives positions
  * relative to the camera with the listener at the origin; enemy gunfire
  * (looping 3D buffers, stopped when the enemy stops) is near enough to
  * stay at full volume, panned. */
@@ -383,6 +385,18 @@ static void apply_3d(int id)
         float n = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
         if (n > 1e-6f)
             x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2]) / (d * n);
+    }
+    /* Headphones (the 3D audio setting): through a model head, which needs
+     * ahead or behind too. */
+    if (pdo_settings_get()->audio_3d) {
+        float fz = 0.0f;
+        const float fr[3] = { 0.0f, 0.0f, 1.0f };
+        const float *ff = src3d[id].mode == DS3DMODE_HEADRELATIVE ? fr : f;
+        float n = sqrtf(ff[0] * ff[0] + ff[1] * ff[1] + ff[2] * ff[2]);
+        if (d > 1e-6f && n > 1e-6f)
+            fz = (rel[0] * ff[0] + rel[1] * ff[1] + rel[2] * ff[2]) / (d * n);
+        pdo_voice_set_3d_ears(id, g, x, fz);
+        return;
     }
     /* Equal-power pan: a source straight ahead is -3 dB in each ear. */
     l = sqrtf(0.5f * (1.0f - x));

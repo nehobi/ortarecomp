@@ -38,6 +38,15 @@ typedef struct voice {
     uint32_t       loop_start, loop_len;/* frames; len 0 = whole buffer */
     float          volume, headroom;    /* linear */
     float          g3d[2];              /* 3D left/right gains */
+    /* Headphones (pdo_voice_set_3d_ears): a mono 3D voice heard through a
+     * head -- each ear's delay, head-shadow filter and a cue for behind. */
+    bool           ears;
+    float          ear_delay[2], ear_delay_now[2];   /* samples */
+    float          ear_b0[2], ear_b1[2], ear_a1[2];  /* head shadow, per ear */
+    float          ear_x1[2], ear_y1[2], ear_lp[2];
+    float          ear_rear;                         /* 0..0.5: behind */
+    float          ear_line[64];                     /* the voice's last samples */
+    uint32_t       ear_pos;
     float          direct, room;        /* I3DL2 source levels, linear */
     double         step;                /* frames per output frame */
     float          gain[2][COLUMNS];
@@ -121,6 +130,68 @@ static uint32_t frames_to_bytes(const voice *v, uint32_t frames)
 static void update_step(voice *v, uint32_t hz)
 {
     v->step = (double)(hz ? hz : v->desc.sample_rate) / PDO_MIX_RATE;
+}
+
+/* ── Headphones: a spherical head ─────────────────────────────────────
+ * The textbook structural model of a head (a sphere of radius 8.75 cm,
+ * ears at its sides): the far ear hears a sound later, by Woodworth's
+ * (a/c)(phi + sin phi) for a source at lateral angle phi, and the head
+ * shadows it -- a one-pole, one-zero filter whose high frequencies rise to
+ * +6 dB at the ear facing the sound and fall to -20 dB at 150 degrees from
+ * it. Our own code from the model's formulas; no measured data. Front and
+ * back sound alike to a sphere, so sounds behind lose some top end (a
+ * pinna's shadow, roughly). Mono 3D voices only. */
+#define HEAD_RADIUS 0.0875f
+#define SOUND_SPEED 343.0f
+
+static void ear_filter(voice *v, int ear, float cos_to_ear)
+{
+    /* alpha(theta) with alpha_min 0.1 at theta_min 150 degrees */
+    const float amin = 0.1f, tmin = 150.0f;
+    float th = acosf(cos_to_ear < -1.0f ? -1.0f : cos_to_ear > 1.0f ? 1.0f : cos_to_ear) * 57.2957795f;
+    float alpha = (1.0f + amin * 0.5f) + (1.0f - amin * 0.5f) * cosf(th / tmin * 3.14159265f);
+    float beta = 2.0f * SOUND_SPEED / HEAD_RADIUS;   /* 2 w0 */
+    float k = 2.0f * PDO_MIX_RATE / beta;            /* bilinear transform */
+    float a0 = 1.0f + k;
+    v->ear_b0[ear] = (1.0f + alpha * k) / a0;
+    v->ear_b1[ear] = (1.0f - alpha * k) / a0;
+    v->ear_a1[ear] = (1.0f - k) / a0;
+}
+
+/* One sample through both ears: e[0] left, e[1] right. */
+static void ears_process(voice *v, float s, float e[2])
+{
+    v->ear_line[v->ear_pos & 63] = s;
+    for (int ear = 0; ear < 2; ear++) {
+        float d = v->ear_delay_now[ear], t = v->ear_delay[ear], x, y;
+        uint32_t i;
+        float f;
+        /* Glide to a new delay (a jump clicks): under 0.1 sample a sample. */
+        d += t - d > 0.05f ? 0.05f : t - d < -0.05f ? -0.05f : t - d;
+        v->ear_delay_now[ear] = d;
+        i = (uint32_t)d;
+        f = d - (float)i;
+        x = v->ear_line[(v->ear_pos - i) & 63];
+        x += (v->ear_line[(v->ear_pos - i - 1) & 63] - x) * f;
+        y = v->ear_b0[ear] * x + v->ear_b1[ear] * v->ear_x1[ear] - v->ear_a1[ear] * v->ear_y1[ear];
+        v->ear_x1[ear] = x;
+        v->ear_y1[ear] = y;
+        /* behind: some of a ~4 kHz low-pass */
+        v->ear_lp[ear] += 0.41f * (y - v->ear_lp[ear]);
+        e[ear] = y + v->ear_rear * (v->ear_lp[ear] - y);
+    }
+    v->ear_pos++;
+}
+
+/* What a bin takes of the two ears: left bins the left, right bins the
+ * right, the centre and LFE both. */
+static float ear_mix(uint32_t bin, const float e[2])
+{
+    if (bin == PDO_BIN_FRONT_LEFT || bin == PDO_BIN_BACK_LEFT)
+        return e[0];
+    if (bin == PDO_BIN_FRONT_RIGHT || bin == PDO_BIN_BACK_RIGHT)
+        return e[1];
+    return 0.5f * (e[0] + e[1]);
 }
 
 /* Which channel of the buffer a mixbin pair feeds. One pair per channel in
@@ -292,6 +363,14 @@ static void mix_queue(voice *v, float bins[][COLUMNS], int frames)
             float s = sample_at(v, ch, f0);
             s += (sample_at(v, ch, f1) - s) * t;
             s *= g;
+            if (v->ears) {          /* headphones: through the head; the reverb send as is */
+                float e[2];
+                ears_process(v, s, e);
+                for (int b = 0; b < SEND; b++)
+                    bins[i][b] += ear_mix((uint32_t)b, e) * v->gain[ch][b];
+                bins[i][SEND] += s * v->gain[ch][SEND];
+                continue;
+            }
             for (int b = 0; b < COLUMNS; b++)
                 bins[i][b] += s * v->gain[ch][b];
         }
@@ -338,6 +417,14 @@ static void mix_voice(voice *v, float bins[][COLUMNS], int frames)
             float s = sample_at(v, ch, f0);
             s += (sample_at(v, ch, f1) - s) * t;
             s *= g;
+            if (v->ears) {          /* headphones: through the head; the reverb send as is */
+                float e[2];
+                ears_process(v, s, e);
+                for (int b = 0; b < SEND; b++)
+                    bins[i][b] += ear_mix((uint32_t)b, e) * v->gain[ch][b];
+                bins[i][SEND] += s * v->gain[ch][SEND];
+                continue;
+            }
             for (int b = 0; b < COLUMNS; b++)
                 bins[i][b] += s * v->gain[ch][b];
         }
@@ -636,7 +723,40 @@ void pdo_voice_set_loop_region(int id, uint32_t start, uint32_t length)
 
 void pdo_voice_set_3d(int id, float left, float right)
 {
-    WITH_VOICE(id, v->g3d[0] = left; v->g3d[1] = right; update_gains(v));
+    WITH_VOICE(id, v->ears = false; v->g3d[0] = left; v->g3d[1] = right; update_gains(v));
+}
+
+static void set_ears(voice *v, float gain, float lateral, float front)
+{
+    float lat = lateral < -1.0f ? -1.0f : lateral > 1.0f ? 1.0f : lateral;
+    float phi = asinf(lat < 0 ? -lat : lat);
+    float itd = HEAD_RADIUS / SOUND_SPEED * (phi + sinf(phi)) * PDO_MIX_RATE;   /* samples */
+    if (v->desc.channels != 1) {    /* stereo 3D buffers: the pan */
+        float l = sqrtf(0.5f * (1.0f - lat)), r = sqrtf(0.5f * (1.0f + lat));
+        v->ears = false;
+        v->g3d[0] = gain * l;
+        v->g3d[1] = gain * r;
+        update_gains(v);
+        return;
+    }
+    if (!v->ears) {                 /* start at the delays, not gliding from 0 */
+        v->ear_delay_now[0] = lat > 0 ? itd : 0.0f;
+        v->ear_delay_now[1] = lat < 0 ? itd : 0.0f;
+    }
+    v->ears = true;
+    v->ear_delay[0] = lat > 0 ? itd : 0.0f;     /* the far ear hears it later */
+    v->ear_delay[1] = lat < 0 ? itd : 0.0f;
+    ear_filter(v, 0, -lat);
+    ear_filter(v, 1, lat);
+    v->ear_rear = front < 0 ? -0.5f * front : 0.0f;
+    /* -3 dB each ear, as the pan has straight ahead */
+    v->g3d[0] = v->g3d[1] = gain * 0.70710678f;
+    update_gains(v);
+}
+
+void pdo_voice_set_3d_ears(int id, float gain, float lateral, float front)
+{
+    WITH_VOICE(id, set_ears(v, gain, lateral, front));
 }
 
 void pdo_voice_set_i3dl2(int id, int32_t direct, int32_t room)

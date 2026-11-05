@@ -61,9 +61,11 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    1 Bathroom: episode 1 boss; 3 and 6 Stone Corridor) and turns it off
    in open stages. Episode 1 trace: the game leaves source HF levels,
    obstruction and occlusion at no effect and uses no envelopes, LFOs or
-   filters. It does turn HRTF on (Sensaura, via DirectSound): for phones
-   with headphones later, as "3D audio: Off / Headphones" -- first see
-   whether the XBE's own HRTF tables are usable at run time.
+   filters. It turns HRTF on (Sensaura, via DirectSound). Ours: F1 > Sound
+   > 3D audio: Speakers (the pan) or Headphones (ini audio_3d), a model
+   head in src/audio/mixer.c for mono 3D voices -- the far ear's delay
+   (up to 0.66 ms) and head-shadow filter, top end cut behind. To check
+   by ear on Windows.
 5. Hang skipping the cutscenes after episode 1 (Start): not seen since
    patches 0025/0026 (likely fixed).
    The wait tracer caught it: the main thread, stopping a worker

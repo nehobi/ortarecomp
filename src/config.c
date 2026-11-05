@@ -14,7 +14,7 @@ static char data_dir[PDO_PATH_MAX];
 
 static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false, false,
                                   0, 0, 0, 0, false, true, 100, false, true, true,
-                                  false, 0, 100, 100, 100 };
+                                  false, 0, 100, 100, 100, false };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -131,6 +131,8 @@ bool pdo_config_load(pdo_config *cfg)
             settings.pic_gamma = clamp_int(SDL_atoi(eq + 1), 50, 200);
         else if (strcmp(line, "picture_saturation") == 0)
             settings.pic_saturation = clamp_int(SDL_atoi(eq + 1), 0, 200);
+        else if (strcmp(line, "audio_3d") == 0)
+            settings.audio_3d = strcmp(eq + 1, "headphones") == 0;
         else
             pdo_input_load_line(line, eq + 1);
     }
@@ -170,7 +172,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  "picture_brightness=%d\n"
                  "picture_contrast=%d\n"
                  "picture_gamma=%d\n"
-                 "picture_saturation=%d\n",
+                 "picture_saturation=%d\n"
+                 "audio_3d=%s\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
                  settings.aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3",
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
@@ -180,7 +183,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,
                  settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,
-                 settings.pic_saturation);
+                 settings.pic_saturation, settings.audio_3d ? "headphones" : "speakers");
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
     n += (int)pdo_input_save(text + n, sizeof text - (size_t)n);

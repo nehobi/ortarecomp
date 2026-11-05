@@ -82,6 +82,10 @@ void pdo_voice_set_bins(int id, const pdo_voice_bin *bins, int count);
 /* Extra gains from 3D positioning (DSBCAPS_CTRL3D voices), left and right;
  * 1, 1 means none. Applied on top of the mixbin volumes. */
 void pdo_voice_set_3d(int id, float left, float right);
+/* Headphones: a mono 3D voice heard through a model head instead -- the
+ * distance gain, then where it is: lateral -1 (left) .. 1 (right), front
+ * -1 (behind) .. 1 (ahead), both as cosines from the listener's axes. */
+void pdo_voice_set_3d_ears(int id, float gain, float lateral, float front);
 
 /* I3DL2 source levels, hundredths of a dB (SetI3DL2Source): the direct
  * path's and the reverb send's. A 3D voice sends to the reverb at `room`
