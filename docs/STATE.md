@@ -134,14 +134,14 @@ Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
 pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
 (+_SEQ=n, PDO_DBG_GROUPS), PDO_CAPTURE_TEXCHECK, PDO_TEX_ALWAYS/LEVEL0.
-Boost/brake ends (fixed, confirmed: ghost gone): the game renders the
-scene at another size there (viewport 426x320 after 512x360 at 0,12) and
-moves every model to other vertex programs. Each pair carries its earlier
-draw's viewport transform; across a program switch, or when a read
-register jumped (bones moved), both frames' programs run and the outputs
-blend; vertex programs pair without the program in the key, ties in draw
-order. Left: a slight one-frame step at the size change, seen once (not
-timing: no late frames); likely the picture's rescale itself.
+Boost/brake ends (fixed, confirmed in episodes 1 and 4: no ghost, no
+hitch): the game renders the scene at another size there (426x320 after
+512x360 at 0,12) and, in episode 1, moves models to other vertex programs.
+Every paired vertex program runs twice (each frame's program, constants,
+streams, viewport) and the outputs blend; vertices crossing the eye are
+not blended (Concept of Love); vertex programs pair by program first, a
+third pass across programs; the frame the render size changes is shown
+as drawn. Episode 4 ships confirmed smooth after these.
 PDO_CAPTURE_BOOST=n (armed by F10) captures program switches and 12
 frames after, with every command logged. Logs: use `--log run.log`, not
 PowerShell redirection (stalls the game).
