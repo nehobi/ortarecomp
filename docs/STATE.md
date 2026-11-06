@@ -88,7 +88,8 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    uses 37 entries but the lifter took 5, and a case reached through the
    dispatcher (0x00193A81, after st05_sky_04 loads) was no function: the
    call was skipped. Its six cases are seeded (tools/pdo_seeds.json):
-   fixed, confirmed (moon and flare right, no failed calls).
+   fixed, confirmed (moon and flare right, no failed calls). Episodes 5
+   and 6 then played through into 7 with no issues and no failed calls.
 
 ## Performance
 
