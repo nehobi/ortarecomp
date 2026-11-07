@@ -45,15 +45,18 @@ def fail(msg):
     sys.exit(1)
 
 
-def apply_patches():
+def apply_patches(again=False):
     """Apply the fixes we carry to external/xboxrecomp (patches/xboxrecomp/).
 
     CMake does the same at configure time; doing it here too matters because
     some patches fix the recompiler itself, and this script runs first.
+    With again=True (before each tool) it checks that nothing reset the
+    submodule since, and says so if something did.
     """
     patch_dir = os.path.join(ROOT, "patches", "xboxrecomp")
     if not os.path.isdir(patch_dir):
         return
+    warned = False
     for name in sorted(os.listdir(patch_dir)):
         if not name.endswith(".patch"):
             continue
@@ -62,6 +65,11 @@ def apply_patches():
                                  cwd=XBOXRECOMP, capture_output=True).returncode == 0
         if applied:
             continue
+        if again and not warned:
+            print("warning: external/xboxrecomp was reset while this script ran "
+                  "(by another program, such as an editor's git integration?); "
+                  "applying the patches again", file=sys.stderr)
+            warned = True
         if subprocess.run(["git", "apply", patch], cwd=XBOXRECOMP).returncode != 0:
             fail(f"could not apply {name} to external/xboxrecomp; reset it with "
                  "`git -C external/xboxrecomp checkout -- .` and try again")
@@ -69,6 +77,7 @@ def apply_patches():
 
 
 def run_tool(module, *args):
+    apply_patches(again=True)
     cmd = [sys.executable, "-m", f"tools.{module}", *args]
     print(f"\n== {module}", flush=True)
     result = subprocess.run(cmd, cwd=XBOXRECOMP)
