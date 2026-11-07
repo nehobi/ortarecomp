@@ -2,6 +2,7 @@
 #define PDO_CONFIG_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #define PDO_PATH_MAX 1024
 
@@ -37,6 +38,7 @@ typedef struct pdo_settings {
     int  pic_gamma;         /* 50..200: 100 as is, more brightens the midtones */
     int  pic_saturation;    /* 0..200 % */
     bool audio_3d;          /* 3D sounds through a model head, for headphones (mixer.c) */
+    int  save_slot;         /* 1-3: which save file the game sees (pdo_save_dir), chosen before it starts */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };
@@ -58,6 +60,13 @@ bool pdo_settings_save(void);
  * next to the executable this is the executable's folder; otherwise the
  * per-user data folder. Always ends in a path separator. */
 const char *pdo_data_dir(void);
+
+/* The game keeps one save. The console's E: (TDATA, UDATA), where it
+ * lives, is a folder under saves/ per save file: E for file 1 (where saves
+ * always were), E2 and E3. Written without a trailing separator. */
+void pdo_save_dir(int slot, char *out, size_t len);
+/* Whether that save file holds a save. */
+bool pdo_save_slot_used(int slot);
 
 bool pdo_config_load(pdo_config *cfg);
 bool pdo_config_save(const pdo_config *cfg);

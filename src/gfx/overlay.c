@@ -23,7 +23,7 @@ enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
        ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
        ITEM_CONTROLS, ITEM_CLOSE,
        /* the launcher's own */
-       ITEM_START, ITEM_PICK, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
+       ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
        /* Picture (present.frag) */
        ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT, ITEM_PIC_RESET,
        /* links to the pages, and back */
@@ -37,7 +37,7 @@ static const char *page_names[PAGE_COUNT] = { "OPTIONS", "DISPLAY", "PICTURE", "
 
 static const int game_main[] = { ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY,
                                  ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE };
-static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
+static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
                                      ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_EXIT };
 static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
 static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
@@ -183,6 +183,7 @@ static void change(int dir)
     case ITEM_START:  if (dir > 0 && launcher_files_ok) launcher_choice = PDO_LAUNCH_START; break;
     case ITEM_PICK:   if (dir > 0) launcher_choice = PDO_LAUNCH_PICK; break;
     case ITEM_EXIT:   if (dir > 0) launcher_choice = PDO_LAUNCH_EXIT; break;
+    case ITEM_SLOT:   s->save_slot = (s->save_slot - 1 + 3 + dir) % 3 + 1; break;
     case ITEM_FULLSCREEN: s->fullscreen = !s->fullscreen; break;
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
@@ -547,6 +548,7 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_FVF:    snprintf(v, n, "%s", s->gpu_fixed ? "GPU" : "CPU"); break;
     case ITEM_INTERP: snprintf(v, n, "%s", s->frame_interp ? "On" : "Off"); break;
     case ITEM_GPU:    snprintf(v, n, "Vulkan"); break;
+    case ITEM_SLOT:   snprintf(v, n, "%d%s", s->save_slot, pdo_save_slot_used(s->save_slot) ? "" : " (empty)"); break;
     case ITEM_PICK: {   /* the end of the path: the file or folder's name */
         const char *f = launcher_files ? launcher_files : "-";
         size_t len = strlen(f);
@@ -586,6 +588,7 @@ static const char *label_of(int item)
     case ITEM_GPU:    return "Graphics";
     case ITEM_START:  return launcher_files_ok ? "Start game" : "Start game (no files)";
     case ITEM_PICK:   return "Game files";
+    case ITEM_SLOT:   return "Save file";
     case ITEM_EXIT:   return "Exit";
     case ITEM_CLOSE:  return "Close";
     case ITEM_BACK:   return "Back";

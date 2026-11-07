@@ -14,7 +14,7 @@ static char data_dir[PDO_PATH_MAX];
 
 static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false, false,
                                   0, 0, 0, 0, false, true, 100, false, true, true,
-                                  false, 0, 100, 100, 100, false };
+                                  false, 0, 100, 100, 100, false, 1 };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -52,6 +52,43 @@ const char *pdo_data_dir(void)
         SDL_strlcpy(data_dir, base, sizeof data_dir);
     }
     return data_dir;
+}
+
+void pdo_save_dir(int slot, char *out, size_t len)
+{
+    const char *base = pdo_data_dir();
+    char sep = base[0] ? base[strlen(base) - 1] : '/';     /* the system's, as the data folder ends */
+    char e[4] = "E";
+
+    if (slot >= 2 && slot <= 3)
+        snprintf(e, sizeof e, "E%d", slot);
+    snprintf(out, len, "%ssaves%c%s", base, sep, e);
+}
+
+/* The game's saves, as the dashboard lays them out: UDATA/<title ID>/<a
+ * folder per save>, next to the title's own TitleMeta/TitleImage files. */
+static SDL_EnumerationResult SDLCALL find_save(void *found, const char *dir, const char *name)
+{
+    char path[PDO_PATH_MAX];
+    SDL_PathInfo info;
+
+    snprintf(path, sizeof path, "%s%s", dir, name);
+    if (SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_DIRECTORY) {
+        *(bool *)found = true;
+        return SDL_ENUM_SUCCESS;
+    }
+    return SDL_ENUM_CONTINUE;
+}
+
+bool pdo_save_slot_used(int slot)
+{
+    char dir[PDO_PATH_MAX], udata[PDO_PATH_MAX];
+    bool found = false;
+
+    pdo_save_dir(slot, dir, sizeof dir);
+    snprintf(udata, sizeof udata, "%s/UDATA/53450007", dir);
+    SDL_EnumerateDirectory(udata, find_save, &found);
+    return found;
 }
 
 static void config_path(char *out, size_t len)
@@ -133,6 +170,8 @@ bool pdo_config_load(pdo_config *cfg)
             settings.pic_saturation = clamp_int(SDL_atoi(eq + 1), 0, 200);
         else if (strcmp(line, "audio_3d") == 0)
             settings.audio_3d = strcmp(eq + 1, "headphones") == 0;
+        else if (strcmp(line, "save_slot") == 0)
+            settings.save_slot = clamp_int(SDL_atoi(eq + 1), 1, 3);
         else
             pdo_input_load_line(line, eq + 1);
     }
@@ -173,7 +212,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  "picture_contrast=%d\n"
                  "picture_gamma=%d\n"
                  "picture_saturation=%d\n"
-                 "audio_3d=%s\n",
+                 "audio_3d=%s\n"
+                 "save_slot=%d\n",
                  cfg->game_dir, settings.render_scale, settings.msaa,
                  settings.aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3",
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
@@ -183,7 +223,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,
                  settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,
-                 settings.pic_saturation, settings.audio_3d ? "headphones" : "speakers");
+                 settings.pic_saturation, settings.audio_3d ? "headphones" : "speakers",
+                 settings.save_slot);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
     n += (int)pdo_input_save(text + n, sizeof text - (size_t)n);
