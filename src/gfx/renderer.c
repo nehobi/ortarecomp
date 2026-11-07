@@ -3022,7 +3022,7 @@ typedef struct draw_key {
 } draw_key;
 
 /* A screen-space draw's place in its texture: the first vertex's stage-0
- * coordinates (Concept of Love). Glyphs and icons cut from one atlas are
+ * coordinates. Glyphs and icons cut from one atlas are
  * alike in every other way, and games draw them from the same buffer slots
  * whichever they are: JSRF's custom-graffiti keyboard's "3" paired with the
  * "4" beside it when the selection moved and showed between them for a
@@ -3674,7 +3674,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 }
                 if (!c->vsh && c->fvf < 0 && !pc->vsh && pc->fvf < 0) {
                     /* Rebuilt in another order (below, fixed-function), on
-                     * CPU-made vertices too (Concept of Love: JSRF's
+                     * CPU-made vertices too (JSRF's
                      * lightning, a new zigzag each frame, blended point by
                      * point was all over the screen). */
                     uint32_t nb = (uint32_t)sizeof(pdo_vertex);
@@ -3695,7 +3695,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 } else if (c->vsh && pc->vsh) {
                     bool same_in = true, regs_jumped = false;
                     {   /* Rebuilt in another order: as below, on every input of
-                         * floats of a vertex program (Concept of Love: JSRF's
+                         * floats of a vertex program (JSRF's
                          * lightning keeps its positions and makes each zigzag
                          * from another input); r: the worst one. */
                         int r = -1;
@@ -3716,7 +3716,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         }
                         /* The constants rebuilt: registers whose four values
                          * changed by over half their size in one frame
-                         * (Concept of Love: JSRF's lightning keeps its
+                         * (JSRF's lightning keeps its
                          * vertices and draws each zigzag through new random
                          * constants; blended, the mixed transforms flung
                          * the bolts over the screen). Things animated
@@ -3782,7 +3782,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                                         dch, dmin, sv, jumped_regs, nread, notb ? " -> not blended" : "");
                         }
                         if (sv > 0.5f || (c->strayed && pc->strayed) || consts_rebuilt) {
-                            /* PDO_DBG_NOBLEND=1 (Concept of Love): each program
+                            /* PDO_DBG_NOBLEND=1: each program
                              * draw refused here, and by which test -- the stray,
                              * the registers that jumped and the one that
                              * changed most (in JSRF a hand left unblended was

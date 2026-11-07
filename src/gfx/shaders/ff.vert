@@ -27,7 +27,7 @@ layout(location = 6) out float v_fog;
 
 void main()
 {
-    // Not across the eye (Concept of Love): a vertex on its two sides in the
+    // Not across the eye: a vertex on its two sides in the
     // two frames stays as the newest frame has it (blended through w 0, its
     // triangles covered the screen).
     gl_Position = (blend.y != 0.0 && blend.x < 1.0 && (in_prev_pos.w > 0.0) == (in_pos.w > 0.0))

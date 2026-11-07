@@ -3,12 +3,12 @@
 Find the functions Panzer Dragoon Orta shares with Jet Set Radio Future.
 
     python tools/xbe_match.py ORTA/default.xbe JSRF/default.xbe \\
-        --col ../conceptoflove [--jsrf-listing ../JSRF-Decompilation]
+        --col ../jsrf-port [--jsrf-listing ../JSRF-Decompilation]
 
 Both games are Smilebit titles of the same period, so they likely share XDK
 libraries (D3D, DSOUND, XAPI...), CRI middleware and maybe engine code. Every
-function both contain is work Concept of Love already did: its name, its
-override in conceptoflove/src/guest (re-addressed), its lifter fixes.
+function both contain is work the JSRF port already did: its name, its
+override in its src/guest (re-addressed), its lifter fixes.
 
 How: both XBEs go through xboxrecomp's disassembler (cached under
 build/match/). Each function is fingerprinted from its instructions with
@@ -23,7 +23,7 @@ addresses), kernel imports kept by ordinal. Then:
              1.5x; shown with its 3-gram similarity. Weakest: check it.
   similar    not identical (another XDK build, a small change), but most
              instruction 3-grams shared; only tried where it matters: XDK
-             sections, and JSRF functions Concept of Love overrides.
+             sections, and JSRF functions the JSRF port overrides.
 
 Matched pairs that are identical also pair the data addresses they use, so
 JSRF tables the overrides read (D3D__RenderState and friends) get their Orta
@@ -200,7 +200,7 @@ def grams(f):
     return f.grams
 
 
-# ── Names from Concept of Love and the JSRF decomp listing ──────────────
+# ── Names from the JSRF port and the JSRF decomp listing ──────────────
 
 SUB_RE = re.compile(r"^void sub_([0-9A-Fa-f]{8})(_enter)?\s*\(void\)")
 TRACE_RE = re.compile(r'd3d_trace_call\(0x([0-9A-Fa-f]{8})u?,\s*"([^"]*)"')
@@ -211,7 +211,7 @@ C_TYPES = {"VOID", "void", "DWORD", "BOOL", "HANDLE", "HRESULT", "ULONG", "LONG"
 
 
 def load_col(col):
-    """JSRF addresses Concept of Love overrides or hooks, with what it calls them.
+    """JSRF addresses the JSRF port overrides or hooks, with what it calls them.
 
     Returns ({va: [(kind, name, file)]}, {constant va: [file]}).
     """
@@ -388,7 +388,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("orta", help="Panzer Dragoon Orta default.xbe")
     ap.add_argument("jsrf", help="Jet Set Radio Future default.xbe")
-    ap.add_argument("--col", help="local clone of Concept of Love (its overrides and seeds)")
+    ap.add_argument("--col", help="local clone of the JSRF port (its overrides and seeds)")
     ap.add_argument("--jsrf-listing", help="local JSRF-Decompilation clone or its listing.tsv")
     ap.add_argument("--work", default=os.path.join(ROOT, "build", "match"))
     args = ap.parse_args()
@@ -431,7 +431,7 @@ def main():
         lines.append(f"| {sec} | {n} | {m} | {e} |")
 
     rev = {j: p for p, (j, _) in pairs.items()}
-    lines += ["", "## Concept of Love overrides and hooks", "",
+    lines += ["", "## JSRF port overrides and hooks", "",
               "| JSRF | name | kind | file | Orta | how |", "|---|---|---|---|---|---|"]
     carried = 0
     for j in sorted(overrides):
@@ -443,7 +443,7 @@ def main():
                      f"{f'{p:08X}' if p else '-'} | {pairs[p][1] if p else ''} |")
 
     if args.col:
-        lines += ["", "## Data addresses in Concept of Love's code", "",
+        lines += ["", "## Data addresses in the JSRF port's code", "",
                   "Constants in its sources that are JSRF data addresses, paired "
                   "through identical functions (votes / uses).", "",
                   "| JSRF | Orta | votes | files |", "|---|---|---|---|"]
@@ -484,7 +484,7 @@ def main():
     for sec, (n, m, e) in sorted(per.items(), key=lambda x: -x[1][0]):
         print(f"  {sec:<10} {m:>6} / {n:<6} ({e} exact)")
     if overrides:
-        print(f"Concept of Love overrides/hooks found in Orta: {carried} of {len(overrides)}")
+        print(f"JSRF port overrides/hooks found in Orta: {carried} of {len(overrides)}")
     print(f"\nreport: {report}\nnames : {os.path.join(work, 'names.json')} "
           f"({len(names)} names, for tools/recomp.py --names)")
 

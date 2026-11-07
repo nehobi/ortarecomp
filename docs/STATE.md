@@ -42,7 +42,7 @@ offsets and the nearest game function (`sub_XXXXXXXX`), no symbols needed.
 1. Frame interpolation: the main source of reports to expect (beta). A
    frame's pairing logs its stages when over 8 ms; blending holds off after
    two slow seconds. On weaker PCs, next: reuse group distances in the
-   wrong-pair check, lazy bounds (Concept of Love 7620dd3..f844f83).
+   wrong-pair check, lazy bounds.
 2. A full play on the release build with no `[ICALL] Failed` in the log.
 3. First-time pipeline stalls (kept in `pipelines.bin` after).
 4. Android (Vulkan/Turnip): measure the recompiled code and the guest CPU

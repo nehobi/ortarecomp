@@ -1,6 +1,6 @@
 /*
  * The boot logos, skipped with a press (the skip_logos setting, on by
- * default; as Concept of Love does for JSRF).
+ * default).
  *
  * The title screen is an object (pointer at 0x004741B0) whose state at
  * +0x1A0 runs 0 Sega, 1 Smilebit, 2 Sofdec, then 3 the title. Each frame

@@ -473,7 +473,7 @@ void main()
         int cop = color_op[s].x;
         if (cop <= 1) break;                         // D3DTOP_DISABLE
         // A stage with no texture that reads one passes the result on: it
-        // read opaque white and replaced it (Concept of Love: JSRF leaves
+        // read opaque white and replaced it (JSRF leaves
         // stage 1 at SELECTARG1 TEXTURE, unbound, on car shadows and
         // outlines, which turned white). A first stage modulating a missing
         // texture with the diffuse colour still gives the diffuse colour

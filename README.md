@@ -82,8 +82,6 @@ Else:
 - [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) by sp00nz and
   contributors: the recompiler and the Xbox kernel layer this port runs on
 - [SDL](https://libsdl.org): windowing, graphics, audio and input
-- [Concept of Love](https://github.com/wootbeer/conceptoflove), the Jet Set
-  Radio Future port this one grew out of
 
 ## License
 

@@ -1,6 +1,6 @@
 # Current state
 
-Repository set up from Concept of Love (JSRF): launcher, game-file picker,
+Repository set up from the JSRF port (JSRF): launcher, game-file picker,
 XISO reader, XBE identification, mixer, renderer (built; draws not wired
 yet), vertex-program runner (not built yet), crash report, xboxrecomp
 patches 0001-0008 plus 0009-0019 (Orta needed them). See
@@ -13,7 +13,7 @@ backgrounds, the title logo looks incomplete. The attract movie
 (Sofdec) plays with sound and returns to the title. **Windows (player's
 PC, full disc):** builds and runs from PowerShell; logos, intro movie and
 title loop with no hang.
-- **Input** (`src/guest/input_hle.c`, from Concept of Love): XAPI's
+- **Input** (`src/guest/input_hle.c`, from the JSRF port): XAPI's
   XGetDevices/XInputOpen/GetState/SetState/Poll/GetCapabilities replaced,
   fed from SDL gamepads and keyboard (Enter is Start, Space is A, arrows
   the d-pad). Start on the title opens the main menu.
@@ -34,7 +34,7 @@ Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
   the inline vertices like DrawVerticesUP. `PDO_D3D_TRACE=first-last`
   logs every D3D call (hooks from `tools/gen_d3d_calltrace.py`, names from
   a local XbSymbolDatabase run).
-- D3D (`src/guest/d3d_hle.c`): all of Concept of Love's replacements at
+- D3D (`src/guest/d3d_hle.c`): all of the JSRF port's replacements at
   Orta's addresses (vblank clock, device, clear, swap, draws, immediate
   mode, textures, render targets, lighting, vertex programs on the CPU,
   pixel shaders, gamma). Not seen drawing yet: the cloud copy stops at the
@@ -43,7 +43,7 @@ Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
   +0x21C0 (GetBackBuffer2 returns one), vertex constants read at draw time
   from the library's shadow at 0x002BEB08. Lavapipe works in the cloud
   (`mesa-vulkan-drivers`).
-- DirectSound (`src/guest/dsound_hle.c`): Concept of Love's 50 entry
+- DirectSound (`src/guest/dsound_hle.c`): the JSRF port's 50 entry
   points at Orta's addresses, plus GetSpeakerConfig, SetMixBinVolumes,
   buffer Pause and streams (DirectSoundCreateStream, the
   CDirectSoundStream methods, all IDirectSoundStream setters). Streams
@@ -81,7 +81,7 @@ Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
   address masking). By section: XPP 152/187, DSOUND 307/518, D3D 151/287,
   MMATRIX 37/66, XGRPH 16/24, .text 1,542/15,359 (CRT, CRI, maybe more).
   WMADEC and PSGSFD (Sofdec?) have no JSRF counterpart.
-- 115 of Concept of Love's 167 overrides/hooks have an Orta counterpart.
+- 115 of the JSRF port's 167 overrides/hooks have an Orta counterpart.
   CRI is shared: both `cri_hle.c` overrides match exactly, and so does the
   data address they use. XInput mostly changed in 4928.
 - "callgraph" pairs are the weakest; several D3D ones have low similarity
@@ -92,7 +92,7 @@ Files the boot reads beyond the main menu set: `st11\`, `messageevent\`,
 1. Fix what the title screen shows wrong (blending of the text boxes, the
    logo), check the attract movie plays (Sofdec, `PDO_PEEK` helps) and
    music plays (PDO_AUDIO_DUMP or PDO_AUDIO_STATS).
-2. Then Concept of Love's order: XInput, vertex programs, pixel shaders,
+2. Then the JSRF port's order: XInput, vertex programs, pixel shaders,
    culling, render targets, FF lighting, stencil, fog. Debug switches (F11
    thread dump, scripted input) with the first of them.
 3. What PSGSFD* (probably Sofdec) and WMADEC are used for: FMVs and music

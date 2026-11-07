@@ -56,17 +56,6 @@ python tools/recomp.py path/to/Orta.iso
 It checks that this is the USA release, then writes almost two million lines
 of C into `gen/`. This takes about five minutes.
 
-**Optional:** names from Jet Set Radio Future. Orta shares code with JSRF
-(same studio, same period). If you also own JSRF, `tools/xbe_match.py` finds
-the shared functions and writes their names to `build/match/names.json`,
-which `--names` applies to the generated code:
-
-```bash
-python tools/xbe_match.py path/to/orta/default.xbe path/to/jsrf/default.xbe \
-    --col path/to/conceptoflove [--jsrf-listing path/to/JSRF-Decompilation]
-python tools/recomp.py path/to/default.xbe --names build/match/names.json
-```
-
 ## 4. Build
 
 ```bash

@@ -1,7 +1,7 @@
 /*
  * DirectSound, replaced at its API.
  *
- * From Concept of Love (JSRF, XDK 4134); addresses are Orta's (XDK 4928),
+ * First written for JSRF (XDK 4134); addresses are Orta's (XDK 4928),
  * mapped by XbSymbolDatabase name, each `ret N` checked in Orta's code.
  *
  * The title links the XDK's DirectSound library, which drives the Xbox's

@@ -81,8 +81,8 @@ static bool parse_args(int argc, char **argv, options *o)
  * through PowerShell (2>&1 | Out-File) turns every line into an error
  * record, slowly; when it falls behind, the game's next write blocks, and
  * a guest thread blocked there can hold the lock the others need: the
- * game froze for seconds at a time, or for good, with the sound going on
- * (Concept of Love). */
+ * game froze for seconds at a time, or for good, with the sound going
+ * on. */
 static bool open_log(const char *path)
 {
 #ifdef _WIN32

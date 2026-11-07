@@ -3,7 +3,7 @@
  *
  * CRI's LOCK (0x00233BD0) and UNLOCK (0x00233C10) keep a nesting count at
  * 0x00485B20 (the same code as JSRF's 0x0013B0A0 and 0x0013B0E0, count
- * 0x0025EFA0: this is Concept of Love's file, re-addressed). The outermost
+ * 0x0025EFA0). The outermost
  * LOCK saves the thread's priority, raises it and resumes a helper thread; the outermost UNLOCK suspends the helper and
  * restores the priority. On the Xbox's single CPU, with its strict priority
  * scheduler, that keeps CRI's other threads off the CPU, so it works as

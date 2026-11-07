@@ -243,7 +243,7 @@ void main()
         // Each frame's run as drawn -- the earlier frame's program (another
         // one across a switch) on its constants and streams, then this
         // frame's -- each through its own viewport, and the outputs blend
-        // (Concept of Love: one program run on blended constants gave mixed
+        // (one program run on blended constants gave mixed
         // bone matrices, poses of neither frame).
         mode = 1;
         if (prev_prog.y > 0) run(prev_prog.x, prev_prog.y);

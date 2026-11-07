@@ -4,7 +4,7 @@
  * Like DirectSound, the title links the XDK's Direct3D library, which drives
  * the NV2A GPU directly. Its entry points are replaced here one by one.
  *
- * From Concept of Love (JSRF, XDK 4134). Addresses are Orta's (XDK 4928),
+ * First written for JSRF (XDK 4134). Addresses are Orta's (XDK 4928),
  * mapped by XbSymbolDatabase name, each checked in Orta's own code: same
  * shape and the same `ret N` as JSRF's. Where 4928 differs it says so.
  *
@@ -134,7 +134,7 @@ static bool benchmark(void)
 static Uint64 skipped_ns;          /* benchmark: vblank time jumped over */
 
 /* Stopped while the options overlay holds the game: vblanks that went on
- * coming had CRI's per-vblank server threads (Concept of Love: JSRF) see the
+ * coming had CRI's per-vblank server threads (in JSRF) see the
  * paused mixer's music not advance and drop it. */
 static Uint64 vblank_clock(void)
 {
@@ -1457,7 +1457,7 @@ static void stage_coords(bool pre, uint32_t set_of[4], uint32_t gen[4])
 /* The normal the hardware holds. Each vertex attribute's register keeps
  * the value of the last vertex a draw streamed (the last index, for an
  * indexed draw; xemu does the same), and a draw whose format has no normal
- * is lit with that one (Concept of Love: a JSRF map panel, lit FVF 0x102
+ * is lit with that one (a JSRF map panel, lit FVF 0x102
  * drawn after FVF 0x112 pins, was black with a zero normal). Set by
  * latch_normal after every draw and by SetVertexData*(D3DVSDE_NORMAL). */
 static float latched_normal[3];

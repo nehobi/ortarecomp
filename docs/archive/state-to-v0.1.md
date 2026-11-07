@@ -114,7 +114,7 @@ of 247 alike crystal spikes): 5ab1fde pairs groups over 64 x 64 through
 each draw's six nearest (near_of); the bosses now hold ~130-144 fps at
 3x with 200-500 ms a second pairing (key passes 5-8 ms a frame, the
 wrong-pair check 2-3 ms). Next if needed (weaker PCs): reuse the group's
-distances in the wrong-pair check, and Concept of Love's lazy bounds
+distances in the wrong-pair check, and the JSRF port's lazy bounds
 (its 7620dd3..f844f83). The main line logs ms pairing; a frame over 8 ms
 logs its stages. Blending holds off only after two slow seconds.
 
@@ -165,7 +165,7 @@ programs with half or more of the constant registers they read jumping
 vertex's screen position (run on the CPU at record time) and, with no
 partner, across models of the same program (episode 4's battleships switch
 detail levels): episode 4 ships and packs confirmed smooth. Ported
-from Concept of Love; to check: menus, HUD, effects, packs look smooth.
+from the JSRF port; to check: menus, HUD, effects, packs look smooth.
 Blending holds off 5 s when the screen is under 1.5x the game rate.
 Log: `main:` (fps, recording/waiting ms), `interp:` (cuts, close calls,
 pairs undone). Debug: PDO_INTERP_TINT (3D only), PDO_CAPTURE_INTERP
@@ -175,7 +175,7 @@ hitch): the game renders the scene at another size there (426x320 after
 512x360 at 0,12) and, in episode 1, moves models to other vertex programs.
 Every paired vertex program runs twice (each frame's program, constants,
 streams, viewport) and the outputs blend; vertices crossing the eye are
-not blended (Concept of Love); vertex programs pair by program first, a
+not blended (the JSRF port); vertex programs pair by program first, a
 third pass across programs; the frame the render size changes is shown
 as drawn (PDO_INTERP_SIZE_HOLD=0 blends it too: tried, the step then
 shows at every boost and brake, so the hold stays; a faint step now and
