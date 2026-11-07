@@ -18,5 +18,6 @@
   {"start": "0x00193A81", "observed": true, "note": "switch case of 0x00193931 (table 0x00193B60 through the byte table 0x00193BF4: 37 used, the lifter took 5); called through the dispatcher in episode 5 (0x00193A81), the moon's lens flare then drawn with other textures"},
   {"start": "0x00193AB2", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
   {"start": "0x00193B1E", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
-  {"start": "0x00193B41", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"}
+  {"start": "0x00193B41", "observed": false, "note": "switch case of 0x00193931, as 0x00193A81"},
+  {"start": "0x001EDDB0", "observed": true, "note": "a C++ method in the vtable at 0x003DBB60 (after 0x001ED750), right after 0x001EDC70's switch data, so the sweep folded it in; called through the dispatcher after dragon_tank.mtb loads (Pandora's Box extras); the only such pointer with a prologue in the data"}
 ]
