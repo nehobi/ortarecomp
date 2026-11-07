@@ -15,6 +15,28 @@ Frame interp. off in F1 > Advanced and see if it goes away, then report it.
 
 Android build is planned.
 
+## Features
+
+- **Higher resolutions:** render at 1x to 4x the original resolution.
+- **Widescreen:** the game's own 16:9 mode, or the original 4:3; bars,
+  stretch or zoom to fit any window or screen.
+- **Anti-aliasing:** MSAA up to 8x, or FXAA.
+- **Smooth motion:** frame interpolation above 60 fps for high refresh rate
+  displays (beta).
+- **Color correction:** brightness, contrast, gamma and saturation, a CRT
+  look, and optional TV softening.
+- **Sound:** stereo 3D positional audio with a headphones mode (a modelled
+  head: each ear hears a sound at its own time and loudness), the game's
+  room reverb, and a master volume.
+- **Controls:** controllers, keyboard and mouse (with mouse aim), every
+  button rebindable.
+- **Three save files** (the original keeps one), picked in the launcher.
+- **Extras:** open every Pandora's Box item without touching your save,
+  skip the boot logos, an FPS counter, fullscreen (Alt+Enter), portable
+  mode.
+- **Easy setup:** point the launcher at your disc image or game folder.
+- **Crash and freeze reports** written to a log, to attach to bug reports.
+
 ## Game Files
 
 You need Panzer Dragoon Orta (USA), either:
