@@ -684,7 +684,7 @@ void pdo_gfx_take_pass_counts(uint32_t out[4])
 }
 
 static Uint64 swap_wait_ns;              /* waiting for a swapchain image, for the timing log */
-static Uint64 main_wait_ns, main_record_ns;    /* the same, and recording frames: the main loop's log */
+static Uint64 main_wait_ns, main_record_ns, main_match_ns;   /* ... and pairing frames (match_frames) */    /* the same, and recording frames: the main loop's log */
 
 uint64_t pdo_gfx_take_swap_wait_ns(void)
 {
@@ -3264,6 +3264,31 @@ static bool draw_corners(const frame_data *f, const command *c, float out[8])
     return true;
 }
 
+/* Where two alike draws are, cheaply: the screen and world translation of
+ * a fixed-function draw, a program draw's anchors, else its corners. To
+ * pick a big group's few nearest before the full distance. */
+static float near_of(const frame_data *pf, const command *pc, const frame_data *cf, const command *c)
+{
+    float d = 0.0f;
+    if (c->fvf >= 0 && pc->fvf >= 0) {
+        const pdo_fvf_uniforms *u = &cf->fvf_us[c->fvf], *pu = &pf->fvf_us[pc->fvf];
+        for (int i = 12; i < 16; i++)
+            d += SDL_fabsf(u->wvp[i] - pu->wvp[i]);
+        for (int i = 12; i < 15; i++)
+            d += SDL_fabsf(u->world[i] - pu->world[i]);
+    } else if (c->vsh && c->anchored && pc->anchored) {
+        for (int i = 0; i < 2; i++)
+            d += SDL_fabsf(c->anchor[i] - pc->anchor[i]) + SDL_fabsf(c->anchor[4 + i] - pc->anchor[4 + i]);
+    } else {
+        float a4[8], b4[8];
+        if (draw_corners(pf, pc, a4) && draw_corners(cf, c, b4))
+            for (int i = 0; i < 8; i++)
+                if (a4[i] == a4[i] && b4[i] == b4[i])
+                    d += SDL_fabsf(a4[i] - b4[i]);
+    }
+    return d == d ? d : 3.4e38f;
+}
+
 /* How far apart two alike draws are, to pair a group nearest first: where
  * their vertices are, and their matrices (fixed-function) or constant sets
  * (programs; what all objects share is equal and adds nothing). */
@@ -3598,8 +3623,46 @@ static void match_frames(frame_data *prev, frame_data *cur)
                 bool used_a[256] = { false }, used_b[256] = { false };
                 uint32_t nc2 = 0;
                 cand = grow(cand, &cap_cand, na * n, sizeof *cand);
+                /* A big group (episode 10's boss: 247 alike crystal spikes, 61,000
+                 * pairs a frame, most of the main thread): each draw's full
+                 * distance only to its few nearest by where it is (near_of),
+                 * not to every one. Groups up to 64 x 64 as before. */
+                bool big = na * n > 4096;
+                enum { NEAR_K = 6 };
+                static uint16_t near_a[256][NEAR_K];
+                static uint8_t near_n[256];
+                if (big)
+                    for (uint32_t b = 0; b < n; b++) {
+                        float nd[NEAR_K];
+                        const command *cb = &cur->cmds[ck[j + b].cmd];
+                        near_n[b] = 0;
+                        for (uint32_t a = 0; a < na; a++) {
+                            float d = near_of(prev, &prev->cmds[pk[i + a].cmd], cur, cb);
+                            int m = near_n[b];
+                            if (m == NEAR_K && d >= nd[m - 1])
+                                continue;
+                            if (m < NEAR_K)
+                                near_n[b]++;
+                            else
+                                m--;
+                            while (m > 0 && nd[m - 1] > d) {    /* kept in order, nearest first */
+                                nd[m] = nd[m - 1];
+                                near_a[b][m] = near_a[b][m - 1];
+                                m--;
+                            }
+                            nd[m] = d;
+                            near_a[b][m] = (uint16_t)a;
+                        }
+                    }
                 for (uint32_t a = 0; a < na; a++)
                     for (uint32_t b = 0; b < n; b++) {
+                        if (big) {
+                            bool keep = false;
+                            for (int q = 0; q < near_n[b] && !keep; q++)
+                                keep = near_a[b][q] == a;
+                            if (!keep)
+                                continue;
+                        }
                         cand[nc2].d = draw_distance(prev, &prev->cmds[pk[i + a].cmd], cur, &cur->cmds[ck[j + b].cmd]);
                         /* Ties keep the draw order: a mesh drawn twice in one
                          * place (the dragon's passes, on other programs each)
@@ -4762,12 +4825,13 @@ void pdo_gfx_main_loop(void)
                 interp_ok = true;
             }
             if (++log_n % 5 == 0)
-                SDL_Log("main: %.0f fps on screen, %.0f game frames; per second %.0f ms recording, %.0f ms waiting "
-                        "for the window, %.0f ms submitting; GPU about %.1f ms a frame; blending %s", shown, games,
+                SDL_Log("main: %.0f fps on screen, %.0f game frames; per second %.0f ms pairing, %.0f ms recording, "
+                        "%.0f ms waiting for the window, %.0f ms submitting; GPU about %.1f ms a frame; blending %s",
+                        shown, games, main_match_ns / 1e6 / secs,
                         main_record_ns / 1e6 / secs, main_wait_ns / 1e6 / secs, main_submit_ns / 1e6 / secs,
                         gpu_frames ? gpu_busy_ns / 1e6 / gpu_frames : 0.0,
                         !want ? "off" : interp_ok ? "on" : "held off");
-            main_record_ns = main_wait_ns = main_submit_ns = gpu_busy_ns = 0;
+            main_record_ns = main_wait_ns = main_submit_ns = gpu_busy_ns = main_match_ns = 0;
             gpu_frames = 0;
             win_start = now;
             win_games = win_shown = 0;
@@ -4835,7 +4899,25 @@ void pdo_gfx_main_loop(void)
                 capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
             /* The capture triggers pair frames even while blending is held off
              * (a slow machine): unblended, the pairs are not used. */
-            match_frames(interp || capture_close_left > 0 || capture_boost_left > 0 ? prev : NULL, cur);
+            {
+                Uint64 m0 = SDL_GetTicksNS(), dm;
+                static uint32_t slow_logs;
+                static Uint64 slow_window;
+                match_frames(interp || capture_close_left > 0 || capture_boost_left > 0 ? prev : NULL, cur);
+                dm = SDL_GetTicksNS() - m0;
+                main_match_ns += dm;
+                if (now - slow_window > 5000000000ull) {
+                    slow_window = now;
+                    slow_logs = 0;
+                }
+                if (dm > 8000000 && slow_logs++ < 5) {     /* a frame's pairing over 8 ms */
+                    uint32_t nd = 0;
+                    for (uint32_t k = 0; k < cur->ncmds; k++)
+                        nd += cur->cmds[k].kind == CMD_DRAW;
+                    SDL_Log("interp: frame %llu: pairing took %.1f ms (%u draws)", (unsigned long long)cur->frame,
+                            dm / 1e6, nd);
+                }
+            }
             {
                 static int follow;          /* frames after a boost capture still to capture */
                 if (follow > 0 && prev) {
