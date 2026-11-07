@@ -58,8 +58,14 @@ static volatile bool paused;        /* the overlay menu holds the game */
 /* The overlay's holds, for the vblank clock (d3d_hle.c) to stop with the
  * game: when the current one began (ms, | 1 so never 0; 0: none), and the
  * ones before, in all. */
-static SDL_AtomicU32 pause_start_ms;
-static SDL_AtomicInt paused_total_ms;
+/* Time the menu held the game, taken off the game's vblank clock. Read and
+ * written under pause_lock, so a reader never sees a start that is after
+ * its own "now" (once a -1 ms that wrapped to 49 days and sent the clock to
+ * before vblank 0, which hung the game's Swap for good) nor a pause counted
+ * twice, in the total and still as running. */
+static SDL_SpinLock pause_lock;
+static Uint64 pause_start_ns, paused_total_ns;
+static SDL_AtomicInt pause_on;
 
 /* Window pass: the frame (aspect, softening) and the overlay over it; and the
  * seed pass that copies a resolved target back into its multisampled one. */
@@ -4738,7 +4744,10 @@ static void hold_for_overlay(void)
     SDL_LockMutex(q_lock);
     paused = true;
     SDL_UnlockMutex(q_lock);
-    SDL_SetAtomicU32(&pause_start_ms, (Uint32)SDL_GetTicks() | 1u);
+    SDL_LockSpinlock(&pause_lock);
+    pause_start_ns = SDL_GetTicksNS();
+    SDL_SetAtomicInt(&pause_on, 1);
+    SDL_UnlockSpinlock(&pause_lock);
     pdo_mixer_set_paused(true);
     while (pdo_overlay_open()) {
         SDL_GPUCommandBuffer *cmd;
@@ -4757,8 +4766,10 @@ static void hold_for_overlay(void)
             SDL_Delay(16);
     }
     pdo_mixer_set_paused(false);
-    SDL_AddAtomicInt(&paused_total_ms, (int)((Uint32)SDL_GetTicks() - SDL_GetAtomicU32(&pause_start_ms)));
-    SDL_SetAtomicU32(&pause_start_ms, 0);
+    SDL_LockSpinlock(&pause_lock);
+    paused_total_ns += SDL_GetTicksNS() - pause_start_ns;
+    SDL_SetAtomicInt(&pause_on, 0);
+    SDL_UnlockSpinlock(&pause_lock);
     SDL_LockMutex(q_lock);
     paused = false;
     SDL_BroadcastCondition(q_cond);
@@ -4767,17 +4778,19 @@ static void hold_for_overlay(void)
 
 uint64_t pdo_gfx_paused_ns(void)
 {
-    Uint32 start = SDL_GetAtomicU32(&pause_start_ms);
-    uint64_t ms = (uint64_t)(Uint32)SDL_GetAtomicInt(&paused_total_ms);
+    Uint64 ns;
 
-    if (start)
-        ms += (Uint32)SDL_GetTicks() - start;
-    return ms * SDL_NS_PER_MS;
+    SDL_LockSpinlock(&pause_lock);
+    ns = paused_total_ns;
+    if (SDL_GetAtomicInt(&pause_on))
+        ns += SDL_GetTicksNS() - pause_start_ns;    /* now >= start: read after it */
+    SDL_UnlockSpinlock(&pause_lock);
+    return ns;
 }
 
 bool pdo_gfx_paused(void)
 {
-    return SDL_GetAtomicU32(&pause_start_ms) != 0;
+    return SDL_GetAtomicInt(&pause_on) != 0;
 }
 
 void pdo_gfx_prepare_threads(void)

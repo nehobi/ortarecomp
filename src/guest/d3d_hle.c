@@ -158,6 +158,8 @@ static Uint64 wait_vblank_for(bool skip)
 
     if (!epoch)
         epoch = now;
+    if (now < epoch)            /* never before vblank 0 (see current_vblank) */
+        now = epoch;
     index = (now - epoch) / vblank_ns() + 1;
     at = epoch + index * vblank_ns();
     if (at > now && skip && benchmark()) {
@@ -184,9 +186,13 @@ static Uint64 wait_vblank(void)
     return wait_vblank_for(false);
 }
 
+/* A clock read before epoch would wrap to a vblank so far ahead that Swap
+ * then waits for it for good: count it as vblank 0. */
 static Uint64 current_vblank(void)
 {
-    return epoch ? (vblank_clock() - epoch) / vblank_ns() : 0;
+    Uint64 now = vblank_clock();
+
+    return epoch && now > epoch ? (now - epoch) / vblank_ns() : 0;
 }
 
 void sub_002ADCB0(void)
