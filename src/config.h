@@ -61,6 +61,10 @@ bool pdo_settings_save(void);
  * per-user data folder. Always ends in a path separator. */
 const char *pdo_data_dir(void);
 
+/* The log file this run writes, empty without one (main.c); a crash report
+ * names it. */
+extern char pdo_log_file[PDO_PATH_MAX];
+
 /* The game keeps one save. The console's E: (TDATA, UDATA), where it
  * lives, is a folder under saves/ per save file: E for file 1 (where saves
  * always were), E2 and E3. Written without a trailing separator. */

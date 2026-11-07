@@ -90,32 +90,8 @@ static uint64_t capture_frame = UINT64_MAX;
 /* PDO_CAPTURE_SEQ=n: PDO_CAPTURE_INTERP's pictures for n frames from the
  * capture frame on (none of them dropped), to see motion. */
 static uint64_t capture_seq = 1;
-/* PDO_CAPTURE_BOOST=n: up to n times, capture (as F12, with
- * PDO_CAPTURE_INTERP's blends, every command logged) the frame where the
- * scene's viewport changed or many draws went on to other vertex programs
- * (a boost's or a brake's end), and the twelve after, in a row. Only once
- * F10 armed it: cutscenes and form changes switch programs too. */
-static int capture_boost_left = -1;
-/* Its frames after the first: up to this frame none is dropped, so the
- * captures are of frames in a row (a capture stalls; the frames between
- * went by uncaptured, and a one-frame hitch fell between them). */
-static SDL_AtomicInt boost_seq_end;
-static bool boost_logging;          /* a boost capture's frames: their commands logged (capture_interp) */
-static bool log_replay;             /* replay logs every command (as at the capture frame) */
-#define BOOST_FOLLOW 12
-static bool groups_shrank;          /* match_frames: this frame */
-static bool picture_stopped;        /* match_frames: the picture moved far less than before (boost end) */
 static bool programs_switched;      /* match_frames: many draws on other programs (boost or brake end) */
 static bool viewport_changed;       /* match_frames: the scene's render size changed (boost or brake end) */
-extern uint64_t pdo_input_x_frame;  /* input_hle.c: the last frame X (boost) was held */
-/* PDO_CAPTURE_CLOSE=n: up to n times, capture (with PDO_CAPTURE_INTERP's
- * blends) a frame where a draw in a pack of three or more alike 3D draws had
- * a runner-up partner within 25% of the one it paired with -- where two
- * fighters can trade places (episode 4's packs) -- and the two after.
- * Only once F10 arms it: cutscenes have close calls too. */
-static int capture_close_left = -1;
-static bool close_call;             /* match_frames: this frame */
-static bool close_armed;            /* F10: close calls captured from now on (cutscenes have them too) */
 
 /* ── Frame recording ──────────────────────────────────────────────────── */
 
@@ -899,8 +875,8 @@ static int ntextures;
 
 /* A texture's bytes, to notice when the game rewrites them: it runs over
  * every texture in use every frame, so it has to be fast more than strong.
- * Four independent 64-bit lanes take 32 bytes a step (the byte-at-a-time
- * FNV-1a this replaced cost the player's PC about 300 ms a second). */
+ * Four independent 64-bit lanes take 32 bytes a step (byte-at-a-time
+ * FNV-1a cost about 300 ms a second). */
 static uint64_t rotl64(uint64_t x, int r)
 {
     return (x << r) | (x >> (64 - r));
@@ -1805,13 +1781,8 @@ static bool init_here(int width, int height)
     }
 
     vs = make_shader(ff_vert_spv, sizeof ff_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    if (getenv("PDO_TEST_SIMPLE_FS")) {     /* a test: how much of the GPU time is ff.frag */
-        SDL_Log("gfx: PDO_TEST_SIMPLE_FS: the cheapest fragment shader instead of ff.frag; pictures are wrong");
-        fs = make_shader(ff_test_frag_spv, sizeof ff_test_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
-    } else {
-        fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
-        fs_ps = make_shader(ff_ps_frag_spv, sizeof ff_ps_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
-    }
+    fs = make_shader(ff_frag_spv, sizeof ff_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    fs_ps = make_shader(ff_ps_frag_spv, sizeof ff_ps_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
     vsh_vs = make_shader_sb(vsh_vert_spv, sizeof vsh_vert_spv, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 5);
     if (!vsh_vs)
         SDL_Log("gfx: no GPU vertex programs (%s); they run on the CPU", SDL_GetError());
@@ -1902,47 +1873,6 @@ static bool init_here(int width, int height)
     if (every && atoi(every) > 0)
         shot_every = atoi(every);
     return true;
-}
-
-void pdo_gfx_shutdown(void)
-{
-    if (!dev)
-        return;
-    SDL_WaitForGPUIdle(dev);
-    for (int i = 0; i < ntextures; i++)
-        SDL_ReleaseGPUTexture(dev, textures[i].tex);
-    for (int i = 0; i < npipelines; i++)
-        SDL_ReleaseGPUGraphicsPipeline(dev, pipelines[i].p);
-    for (int i = 0; i < nsamplers; i++)
-        SDL_ReleaseGPUSampler(dev, samplers[i].s);
-    SDL_ReleaseGPUShader(dev, vs);
-    SDL_ReleaseGPUShader(dev, fs);
-    SDL_ReleaseGPUTexture(dev, frame_color);
-    SDL_ReleaseGPUTexture(dev, frame_depth);
-    SDL_ReleaseGPUTexture(dev, frame_ms);
-    SDL_ReleaseGPUTexture(dev, overlay_tex);
-    SDL_ReleaseGPUSampler(dev, linear);
-    SDL_ReleaseGPUGraphicsPipeline(dev, screen_pipeline);
-    SDL_ReleaseGPUGraphicsPipeline(dev, overlay_pipeline);
-    SDL_ReleaseGPUGraphicsPipeline(dev, seed_pipeline);
-    SDL_ReleaseGPUShader(dev, screen_vs);
-    SDL_ReleaseGPUShader(dev, screen_fs);
-    SDL_ReleaseGPUTexture(dev, white);
-    SDL_ReleaseGPUTexture(dev, output);
-    SDL_ReleaseGPUTexture(dev, gamma_lut);
-    SDL_ReleaseGPUSampler(dev, nearest);
-    SDL_ReleaseGPUGraphicsPipeline(dev, present_pipeline);
-    if (have_swapchain)
-        SDL_ReleaseWindowFromGPUDevice(dev, window);
-    SDL_DestroyWindow(window);
-    SDL_DestroyGPUDevice(dev);
-    dev = NULL;
-}
-
-void pdo_gfx_target_size(int *w, int *h)
-{
-    *w = frame_w;
-    *h = frame_h;
 }
 
 uint64_t pdo_gfx_frame_count(void)
@@ -2432,7 +2362,7 @@ static void replay(SDL_GPUCommandBuffer *cmd)
         if (c->kind == CMD_DRAW)
             for (int s = 0; s < 4; s++)
                 tex[s] = slot_texture(&F->tex[i * 4 + s]);
-        if ((F->frame == capture_frame || log_replay) && replay_limit == UINT32_MAX)
+        if (F->frame == capture_frame && replay_limit == UINT32_MAX)
             log_command(i, c, tex);
 
         if (c->kind == CMD_CLEAR) {
@@ -2736,9 +2666,7 @@ static void capture_interp_main(frame_data *prev, frame_data *cur)
         F = cur;
         P = prev;
         blend = ts[k];
-        log_replay = boost_logging && k == 1;   /* the in-between one */
         replay(cmd);
-        log_replay = false;
         cur_target = NULL;
         cur_size(&w, &h);
         snprintf(path, sizeof path, "capture_%05llu_t%03d.bmp", (unsigned long long)cur->frame,
@@ -2929,11 +2857,6 @@ bool pdo_gfx_pump_events(void)
             SDL_SetWindowFullscreen(window, st->fullscreen);
             pdo_settings_save();
             continue;
-        }
-        if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F10 && !ev.key.repeat &&
-            (getenv("PDO_CAPTURE_CLOSE") || getenv("PDO_CAPTURE_BOOST"))) {
-            close_armed = !close_armed;
-            SDL_Log("capture: close calls and program switches %s", close_armed ? "armed (F10)" : "disarmed (F10)");
         }
         if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F12 && !ev.key.repeat) {
             /* The next whole frame: frames + 1 is often being recorded
@@ -3544,7 +3467,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
     uint32_t np = 0, nc, i = 0, j = 0, fvf_pairs = 0, fvf_jumps = 0;
     /* Groups of alike 3D draws whose size changed from the frame before
      * (the log, below): how many, and the first few as before -> now x nv. */
-    uint32_t resized = 0, shrank = 0;
+    uint32_t resized = 0;
     float cam_step = -1.0f, cam_avg = -1.0f;    /* the picture's move, and the eight before (log) */
     static float moves[512];                     /* on-screen moves of paired draws (log) */
     uint32_t n_moves = 0;
@@ -3612,7 +3535,6 @@ static void match_frames(frame_data *prev, frame_data *cur)
             continue;               /* not the one such in both */
         }
         if (pass == 0 && i2 - i != j2 - j && is_3d(cur, &cur->cmds[ck[j].cmd])) {
-            shrank += i2 - i > j2 - j;
             if (resized++ < 6) {
                 size_t len = strlen(resized_txt);
                 snprintf(resized_txt + len, sizeof resized_txt - len, " %u->%ux%u", i2 - i, j2 - j,
@@ -3715,9 +3637,6 @@ static void match_frames(frame_data *prev, frame_data *cur)
                         if (cand[k].d > 1e-2f && second[cand[k].b] < cand[k].d * 1.25f &&
                             second[cand[k].b] > cand[k].d * 1.02f) {
                             st_close++;
-                            /* in a pack (three or more alike): PDO_CAPTURE_CLOSE */
-                            if (na >= 3 && n >= 3 && is_3d(cur, &cur->cmds[ck[j + cand[k].b].cmd]))
-                                close_call = true;
                         }
                         if (dbg_groups) {
                             const command *c0 = &cur->cmds[ck[j + cand[k].b].cmd];
@@ -4195,8 +4114,6 @@ static void match_frames(frame_data *prev, frame_data *cur)
             step = moves[n_moves * 3 / 4];
             for (uint32_t q = 0; q < SDL_min(nsteps, 8u); q++)
                 avg += steps[q] / (float)SDL_min(nsteps, 8u);
-            if (nsteps >= 8 && avg > 0.002f && step < avg * 0.3f)
-                picture_stopped = true;
             if (nsteps >= 8 && avg > 0.002f && step < avg * 0.3f && cam_logs++ < 10)
                 SDL_Log("interp: frame %llu: the picture moved %.4f, against %.4f a frame before (%u draws)",
                         (unsigned long long)cur->frame, step, avg, n_moves);
@@ -4346,7 +4263,6 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     (unsigned long long)cur->frame, unp3d, all3d, n_forced, n_jumped, n_rebuilt, n_swapped, n_lod,
                     n_still, n_fvf_paired, cam_step, cam_avg, resized, resized_txt);
         was_still = still;
-        groups_shrank = shrank >= 10;
         /* The boost's and the brake's end: many draws on other programs. */
         programs_switched = n_progswitch >= 8;
         {   /* The scene's render size changed (a boost's or a brake's end:
@@ -4450,14 +4366,10 @@ static void match_frames(frame_data *prev, frame_data *cur)
     {   /* A camera cut: over half of those on screen jumped. */
         static uint32_t st_frames, st_cuts;
         /* The scene's render size changed (a boost's or a brake's end): the
-         * frame is shown as the game drew it, as on a cut. Blended across
-         * the change, episode 4's dragon still came out a frame in another
-         * pose at the boost's end (slow-motion video), after the viewport
-         * fix for episode 1. At most a one-frame step, as at 60. */
-        static int size_hold = -1;      /* PDO_INTERP_SIZE_HOLD=0: blend across it too (to try) */
-        if (size_hold < 0)
-            size_hold = !getenv("PDO_INTERP_SIZE_HOLD") || atoi(getenv("PDO_INTERP_SIZE_HOLD")) != 0;
-        if (viewport_changed && size_hold) {
+         * frame is shown as the game drew it, as on a cut: blended across
+         * the change, episode 4's dragon showed a frame in another pose at
+         * the boost's end. At most a one-frame step, as at 60. */
+        if (viewport_changed) {
             match_frames(NULL, cur);    /* returns before it looks at the viewport */
         } else if (fvf_pairs >= 8 && fvf_jumps * 2 > fvf_pairs) {
             match_frames(NULL, cur);
@@ -4530,8 +4442,7 @@ static void hand_over(void)
      * GPU slower than the game) is dropped for this newer one. */
     while (paused)
         SDL_WaitCondition(q_cond, q_lock);
-    while (ready && ((ready->frame >= capture_frame && ready->frame < capture_frame + capture_seq) ||
-                     ready->frame < (uint64_t)(uint32_t)SDL_GetAtomicInt(&boost_seq_end)))
+    while (ready && ready->frame >= capture_frame && ready->frame < capture_frame + capture_seq)
         SDL_WaitConditionTimeout(q_cond, q_lock, 2);   /* a capture is never dropped */
     next = ready ? ready : free_frame();
     if (ready) {
@@ -4919,18 +4830,12 @@ void pdo_gfx_main_loop(void)
             }
             prev = cur;
             cur = f;
-            groups_shrank = picture_stopped = close_call = programs_switched = viewport_changed = false;
-            if (capture_close_left < 0)
-                capture_close_left = getenv("PDO_CAPTURE_CLOSE") ? atoi(getenv("PDO_CAPTURE_CLOSE")) : 0;
-            if (capture_boost_left < 0)
-                capture_boost_left = getenv("PDO_CAPTURE_BOOST") ? atoi(getenv("PDO_CAPTURE_BOOST")) : 0;
-            /* The capture triggers pair frames even while blending is held off
-             * (a slow machine): unblended, the pairs are not used. */
+            programs_switched = viewport_changed = false;
             {
                 Uint64 m0 = SDL_GetTicksNS(), dm;
                 static uint32_t slow_logs;
                 static Uint64 slow_window;
-                match_frames(interp || capture_close_left > 0 || capture_boost_left > 0 ? prev : NULL, cur);
+                match_frames(interp ? prev : NULL, cur);
                 dm = SDL_GetTicksNS() - m0;
                 main_match_ns += dm;
                 if (now - slow_window > 5000000000ull) {
@@ -4944,32 +4849,6 @@ void pdo_gfx_main_loop(void)
                     SDL_Log("interp: frame %llu: pairing took %.1f ms (%u draws): passes %.1f, across models %.1f, "
                             "wrong pairs %.1f, picture %.1f, logs %.1f", (unsigned long long)cur->frame, dm / 1e6, nd,
                             mf_ns[0] / 1e6, mf_ns[1] / 1e6, mf_ns[2] / 1e6, mf_ns[3] / 1e6, mf_ns[4] / 1e6);
-                }
-            }
-            {
-                static int follow;          /* frames after a boost capture still to capture */
-                if (follow > 0 && prev) {
-                    follow--;
-                    capture_interp(prev, cur);
-                    if (!follow)
-                        boost_logging = false;
-                } else if (close_call && close_armed && prev && capture_close_left > 0) {
-                    capture_close_left--;
-                    SDL_Log("capture: a close call in a pack at frame %llu: capturing it and the two after",
-                            (unsigned long long)cur->frame);
-                    capture_interp(prev, cur);
-                    follow = 2;
-                } else if ((programs_switched || viewport_changed) && close_armed && prev &&
-                           capture_boost_left > 0) {
-                    capture_boost_left--;
-                    SDL_Log("capture: %s at frame %llu: capturing it and the twelve after",
-                            viewport_changed ? "the viewport changed" : programs_switched ? "programs switched" : groups_shrank ? "groups shrank" : "the picture stopped",
-                            (unsigned long long)cur->frame);
-                    /* the game waits from now: a capture stalls */
-                    SDL_SetAtomicInt(&boost_seq_end, (int)(cur->frame + BOOST_FOLLOW + 1));
-                    boost_logging = true;   /* every command of their in-between frames, to the log */
-                    capture_interp(prev, cur);
-                    follow = BOOST_FOLLOW;
                 }
             }
             if (prev && f->frame >= capture_frame && f->frame < capture_frame + capture_seq)

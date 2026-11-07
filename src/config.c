@@ -11,6 +11,7 @@
 #define CONFIG_NAME "ortarecomp.ini"
 
 static char data_dir[PDO_PATH_MAX];
+char pdo_log_file[PDO_PATH_MAX];
 
 static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false, false,
                                   0, 0, 0, 0, false, true, 100, false, true, true,

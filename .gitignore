@@ -39,6 +39,7 @@ portable.txt
 # ── Build output ─────────────────────────────────────────────────────────
 build*/
 out/
+dist/
 cmake-build-*/
 CMakeUserPresets.json
 *.o

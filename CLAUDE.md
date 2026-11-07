@@ -70,6 +70,6 @@ own code.
 - `tools/recomp.py`: XBE/ISO -> `gen/` (xboxrecomp pipeline)
 - `src/`: launcher, game-file picker, XISO reader, XBE identification
 - `src/guest/`: bring-up of the recompiled title and overrides
-- `src/gfx/`, `src/audio/`: renderer and mixer from Concept of Love (gfx not
-  built until D3D is wired up)
+- `src/gfx/`, `src/audio/`: renderer, launcher/menu overlay, mixer
+- `tools/package.py`: release zip; `tools/make_icon.py`: the app icon
 - `external/xboxrecomp`, `external/SDL`: pinned submodules

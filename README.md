@@ -1,49 +1,73 @@
-# Orta Recomp
+# Orta Recomp: Panzer Dragoon Orta (2002 Xbox) Recompiled and Port
 
-A native port of **Panzer Dragoon Orta** (Xbox, 2002), made by statically
-recompiling the original game with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
-PC first (Windows, Linux, Steam Deck); Android is planned.
+You will need the game files from a licensed copy in order to play it.
+
+A native PC port of Panzer Dragoon Orta, made by statically recompiling the
+Xbox game with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp), with
+graphics, audio and input of its own on [SDL 3](https://libsdl.org).
 
 Unofficial, and not affiliated with the rights holders. **No game data is
-included.** You need your own copy of the game to build or play this.
+included.** You need your own copy of the game to play this.
 
-## Status
+**Beta.** The whole game plays through, but expect issues, mostly with frame
+interpolation (smooth motion above 60 fps). If something looks wrong, turn
+Frame interp. off in F1 > Advanced and see if it goes away, then report it.
 
-Early development. **Not playable yet.**
+Android build is planned.
 
-1. The exe builds from your own `default.xbe`, and the game-file picker works
-2. Boots to the first frame
-3. Title screen and menus, with audio
-4. First episode playable
-5. Full playthrough, polish, then Android
+## Game Files
 
-## Game files
+You need Panzer Dragoon Orta (USA), either:
 
-You need **Panzer Dragoon Orta (USA)**. On first launch the app asks for
-either:
+- a disc image (`.iso` / `.xiso`), or
+- a folder with the extracted game (`default.xbe` and the rest of the disc).
 
-- a disc image (`.iso` / `.xiso`, trimmed or full dump), which it copies into
-  its data folder, or
-- a folder that already holds the extracted game (`default.xbe` and every
-  other file from the disc).
+default.xbe SHA-256:
+c1af4eafccc02e11105d606b177263216cb7aa71bf1fbe8486ddfc3b1b848d2c
 
-The app checks `default.xbe` before using anything. Other regions are not
-supported yet.
+On first launch, choose Game files in the launcher and pick your disc image
+or folder. A disc image is copied into the app's data folder.
 
-You can also put the disc image (or a `game` folder with the extracted files)
-next to the executable before the first launch; it is found and imported
-automatically. Put a blank `portable.txt` next to the executable to keep
-settings, saves and imported game files beside it.
+Add a blank portable.txt in the application's folder to make portable if you
+want to save settings, saves and game files locally.
+
+## Playing
+
+- F1, or Back + Start on a controller: the options menu (resolution,
+  anti-aliasing, aspect ratio, picture, sound, controls and more).
+- Alt+Enter: fullscreen.
+- Save file 1, 2 or 3 is picked in the launcher before starting.
+- Needs a 64-bit Windows 10/11 PC with a Vulkan graphics driver.
+
+## Reporting Issues
+
+Every run writes `ortarecomp.log` to the data folder
+(`%APPDATA%\OrtaRecomp\OrtaRecomp`, or the app's folder when portable); the
+run before is kept as `ortarecomp-previous.log`. After a crash or a freeze,
+attach that log (the previous one if you have started the game again) to
+your report in the GitHub Issues section, with what you were doing.
 
 ## Building
 
 See [BUILDING.md](BUILDING.md).
 
+## Issues and Limitations
+
+Known:
+- Beta status. Tested on Windows.
+- Frame interpolation can show odd frames in some scenes.
+- The first time an effect appears it can stutter once while its shaders are
+  built; they are kept for next time.
+- USA version only.
+
+Else:
+- Please see the "Issues" section in GitHub.
+
 ## Credits
 
 - [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) by sp00nz and
   contributors: the recompiler and the Xbox kernel layer this port runs on
-- [SDL](https://libsdl.org): windowing, file dialogs, rendering, audio, input
+- [SDL](https://libsdl.org): windowing, graphics, audio and input
 - [Concept of Love](https://github.com/wootbeer/conceptoflove), the Jet Set
   Radio Future port this one grew out of
 

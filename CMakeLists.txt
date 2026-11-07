@@ -11,6 +11,11 @@ project(OrtaRecomp VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+option(PDO_RELEASE "A release build: no console window on Windows (tools/package.py)" OFF)
+
+# The C runtime linked in, so the exe needs no Visual C++ redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
@@ -40,12 +45,28 @@ add_executable(OrtaRecomp
 )
 target_include_directories(OrtaRecomp PRIVATE src)
 target_link_libraries(OrtaRecomp PRIVATE SDL3::SDL3-static)
+target_compile_definitions(OrtaRecomp PRIVATE PDO_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+    enable_language(RC)
+    target_sources(OrtaRecomp PRIVATE icons/app.rc)
+    # A console during development, so logs and --check output show;
+    # releases have none (--log still writes the log).
+    if(PDO_RELEASE)
+        set_target_properties(OrtaRecomp PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
+endif()
+if(PDO_RELEASE)
+    target_compile_definitions(OrtaRecomp PRIVATE PDO_RELEASE=1)
+    if(MSVC)
+        # Function pointers to the bodies, not incremental-link thunks: the
+        # crash report names game functions from them.
+        target_link_options(OrtaRecomp PRIVATE /INCREMENTAL:NO)
+    endif()
+endif()
 
 if(MSVC)
     target_compile_options(OrtaRecomp PRIVATE /W4 /wd4100)
     target_compile_definitions(OrtaRecomp PRIVATE _CRT_SECURE_NO_WARNINGS)
-    # Console app during development, so logs and --check output are visible.
-    # Switch to WIN32_EXECUTABLE for releases.
 else()
     target_compile_options(OrtaRecomp PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()

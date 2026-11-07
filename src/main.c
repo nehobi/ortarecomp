@@ -8,6 +8,10 @@
  *   OrtaRecomp --check          check the game files, print, exit
  *   OrtaRecomp --boot           play at once, without the launcher
  *   OrtaRecomp --no-boot        set the title up without running it
+ *   OrtaRecomp --log FILE       write the log into FILE
+ *
+ * Release builds always log: to ortarecomp.log in the data folder, the
+ * run before kept as ortarecomp-previous.log.
  */
 
 #include "assets.h"
@@ -91,6 +95,7 @@ static bool open_log(const char *path)
         fprintf(stderr, "cannot write the log %s\n", path);
         return false;
     }
+    SDL_strlcpy(pdo_log_file, path, sizeof pdo_log_file);
     fflush(stdout);
     fflush(stderr);
 #ifdef _WIN32
@@ -315,7 +320,19 @@ int main(int argc, char **argv)
         return 2;
     if (opt.log && !open_log(opt.log))
         return 2;
-    SDL_SetAppMetadata(APP_NAME, "0.1.0", "io.github.ortarecomp");
+#ifdef PDO_RELEASE
+    if (!opt.log) {
+        char log[PDO_PATH_MAX], old[PDO_PATH_MAX];
+        snprintf(log, sizeof log, "%sortarecomp.log", pdo_data_dir());
+        snprintf(old, sizeof old, "%sortarecomp-previous.log", pdo_data_dir());
+        SDL_RemovePath(old);
+        SDL_RenamePath(log, old);
+        open_log(log);
+    }
+#endif
+    SDL_SetAppMetadata(APP_NAME, PDO_VERSION, "io.github.ortarecomp");
+    SDL_Log("%s %s (built %s), %s, %d logical cores, %d MB RAM", APP_NAME, PDO_VERSION, __DATE__,
+            SDL_GetPlatform(), SDL_GetNumLogicalCPUCores(), SDL_GetSystemRAM());
 
     if (!SDL_Init(opt.check || opt.import_iso ? 0 : SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -323,6 +340,13 @@ int main(int argc, char **argv)
     }
 
     pdo_config_load(&cfg);
+    {
+        const pdo_settings *s = pdo_settings_get();
+        SDL_Log("settings: %dx, msaa %d, fxaa %d, frame interp %d, vertex programs on %s, fixed function on %s, "
+                "aspect %s, save file %d", s->render_scale, s->msaa, s->fxaa, s->frame_interp,
+                s->gpu_vertex ? "GPU" : "CPU", s->gpu_fixed ? "GPU" : "CPU",
+                s->aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3", s->save_slot);
+    }
 
     if (opt.import_iso) {
         char dst[PDO_PATH_MAX];

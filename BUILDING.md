@@ -94,3 +94,18 @@ OrtaRecomp --log FILE       write the log straight into FILE (on Windows,
                             use this instead of piping through PowerShell,
                             which can stall the game)
 ```
+
+## 6. Package a release
+
+```bash
+python tools/package.py
+```
+
+This builds into `build-release/` with no console window on Windows and the
+C runtime linked in (players need no Visual C++ redistributable), then writes
+`dist/OrtaRecomp-v<version>-windows-x64.zip` with the executable, README,
+CHANGELOG and licenses. Release builds always write `ortarecomp.log` in the
+data folder; keep `build-release/OrtaRecomp.pdb` from the build you publish,
+to read crash reports by their executable offsets.
+
+The app icon is drawn by `tools/make_icon.py` (needs Pillow) into `icons/`.

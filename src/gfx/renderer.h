@@ -21,7 +21,6 @@
 #include <stdint.h>
 
 bool pdo_gfx_init(int width, int height);
-void pdo_gfx_shutdown(void);
 
 /* Threads: the game runs on a thread of its own and the main thread, which
  * owns the window, does all the drawing. On the main thread, before the
@@ -281,6 +280,5 @@ bool pdo_gfx_paused(void);
 bool pdo_gfx_pump_events(void);
 
 uint64_t pdo_gfx_frame_count(void);
-void pdo_gfx_target_size(int *w, int *h);
 
 #endif

@@ -8,6 +8,10 @@
  * still on the guest stack: those name the guest call chain, and each one
  * can be looked up in gen/ by address.
  *
+ * Released builds ship without their .pdb, so a host address with no
+ * symbol is named after the game function it is in (sub_XXXXXXXX, from the
+ * dispatch table) and its offset in the executable.
+ *
  * Only on Windows. Linux crashes are read with gdb; there the kernel layer
  * also owns the SIGSEGV handler for its own memory traps, which this must
  * not replace.
@@ -23,11 +27,53 @@
 #include "recomp_types.h"
 
 #include "xbox_memory_layout.h"
+#include "config.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
+
+/* Game functions by host address, built at the first report. */
+typedef struct { DWORD64 host; uint32_t va; } func_at;
+static func_at funcs[1 << 15];
+static int nfuncs = -1;
+
+static int by_host(const void *a, const void *b)
+{
+    DWORD64 x = ((const func_at *)a)->host, y = ((const func_at *)b)->host;
+    return x < y ? -1 : x > y;
+}
+
+static uint32_t game_function_at(DWORD64 addr, DWORD64 *off)
+{
+    int lo = 0, hi;
+
+    if (nfuncs < 0) {
+        nfuncs = 0;
+        for (uint32_t va = g_xbox_code_lo; va < g_xbox_code_hi && nfuncs < (int)(sizeof funcs / sizeof *funcs); va++) {
+            recomp_func_t f = recomp_lookup(va);
+            if (f) {
+                funcs[nfuncs].host = (DWORD64)(uintptr_t)f;
+                funcs[nfuncs++].va = va;
+            }
+        }
+        qsort(funcs, (size_t)nfuncs, sizeof *funcs, by_host);
+    }
+    hi = nfuncs;
+    while (lo < hi) {               /* the last function starting at or before addr */
+        int mid = (lo + hi) / 2;
+        if (funcs[mid].host <= addr)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo == 0)
+        return 0;
+    *off = addr - funcs[lo - 1].host;
+    return *off < 0x100000 ? funcs[lo - 1].va : 0;
+}
 
 static void print_host_address(const char *what, DWORD64 addr)
 {
@@ -40,10 +86,27 @@ static void print_host_address(const char *what, DWORD64 addr)
     sym->SizeOfStruct = sizeof(SYMBOL_INFO);
     sym->MaxNameLen = 255;
     fprintf(stderr, "  %s 0x%016llx", what, (unsigned long long)addr);
-    if (SymFromAddr(GetCurrentProcess(), addr, &sym_off, sym))
+    if (SymFromAddr(GetCurrentProcess(), addr, &sym_off, sym)) {
         fprintf(stderr, "  %s+0x%llx", sym->Name, (unsigned long long)sym_off);
-    if (SymGetLineFromAddr64(GetCurrentProcess(), addr, &line_off, &line))
-        fprintf(stderr, "  (%s:%lu)", line.FileName, line.LineNumber);
+        if (SymGetLineFromAddr64(GetCurrentProcess(), addr, &line_off, &line))
+            fprintf(stderr, "  (%s:%lu)", line.FileName, line.LineNumber);
+    } else {
+        HMODULE mod = NULL;
+        char name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)(uintptr_t)addr, &mod)) {
+            char *base;
+            GetModuleFileNameA(mod, name, sizeof name);
+            base = strrchr(name, '\\');
+            fprintf(stderr, "  %s+0x%llx", base ? base + 1 : name, (unsigned long long)(addr - (DWORD64)(uintptr_t)mod));
+            if (mod == GetModuleHandleA(NULL)) {
+                DWORD64 off = 0;
+                uint32_t va = game_function_at(addr, &off);
+                if (va)
+                    fprintf(stderr, "  (in sub_%08X+0x%llx?)", va, (unsigned long long)off);
+            }
+        }
+    }
     fputc('\n', stderr);
 }
 
@@ -100,6 +163,12 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
     }
     fprintf(stderr, shown ? "\n" : " (none)\n");
     fflush(stderr);
+    if (pdo_log_file[0]) {
+        char msg[PDO_PATH_MAX + 256];
+        snprintf(msg, sizeof msg, "Orta Recomp crashed.\n\nThe details are in\n%s\n\n"
+                 "Please attach that file when you report it.", pdo_log_file);
+        MessageBoxA(NULL, msg, "Orta Recomp", MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
