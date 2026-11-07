@@ -37,12 +37,25 @@ want to save settings, saves and game files locally.
   anti-aliasing, aspect ratio, picture, sound, controls and more).
 - Alt+Enter: fullscreen.
 - Save file 1, 2 or 3 is picked in the launcher before starting.
-- Needs a 64-bit Windows 10/11 PC with a Vulkan graphics driver.
+- Needs a 64-bit PC with a Vulkan graphics driver: Windows 10/11, or
+  Linux / Steam Deck.
+
+## Steam Deck / Linux
+
+- Extract the `linux-x86_64` download and run `OrtaRecomp`.
+- Set up the game files once in Desktop Mode (the file picker needs it), or
+  put your disc image next to the executable before the first launch and it
+  is imported automatically.
+- Then add `OrtaRecomp` to Steam as a non-Steam game to play in Gaming Mode;
+  the launcher and the F1 menu work with the Deck's controls (View + Menu
+  opens the menu in game).
 
 ## Reporting Issues
 
 Every run writes `ortarecomp.log` to the data folder
-(`%APPDATA%\OrtaRecomp\OrtaRecomp`, or the app's folder when portable); the
+(`%APPDATA%\OrtaRecomp\OrtaRecomp` on Windows,
+`~/.local/share/OrtaRecomp/OrtaRecomp` on Linux and Steam Deck, or the
+app's folder when portable); the
 run before is kept as `ortarecomp-previous.log`. After a crash or a freeze,
 attach that log (the previous one if you have started the game again) to
 your report in the GitHub Issues section, with what you were doing.
@@ -54,7 +67,8 @@ See [BUILDING.md](BUILDING.md).
 ## Issues and Limitations
 
 Known:
-- Beta status. Tested on Windows.
+- Beta status. Played through on Windows; Linux and Steam Deck are less
+  tested so far.
 - Frame interpolation can show odd frames in some scenes.
 - The first time an effect appears it can stutter once while its shaders are
   built; they are kept for next time.

@@ -30,10 +30,12 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
 ## Release
 
 `tools/package.py` builds `build-release/` (no console, static C runtime,
-icon from `tools/make_icon.py`) and zips it into `dist/`. Release builds
+icon from `tools/make_icon.py`) into `dist/`: a zip on Windows, a tar.gz on
+Linux (stripped; needs only libc; build on Ubuntu 22.04 for SteamOS). Release builds
 always log to `ortarecomp.log` in the data folder (the run before kept as
-`ortarecomp-previous.log`); a crash shows a message naming it, and crash
-and hang reports name game functions (`sub_XXXXXXXX`) without the .pdb.
+`ortarecomp-previous.log`); a crash (Windows: exception filter and a
+message; Linux: fatal-signal handler) is reported there with executable
+offsets and the nearest game function (`sub_XXXXXXXX`), no symbols needed.
 
 ## Open
 

@@ -1,20 +1,23 @@
 /*
- * Crash report (Windows): say where a hard crash happened.
+ * Crash report: say where a hard crash happened.
  *
- * An access violation in game code otherwise ends the process with no word
- * in the log. This prints, to stderr (boot.log), the exception and the host
+ * A crash in game code otherwise ends the process with no word in the log.
+ * This prints, to stderr (the log), the exception and the host
  * address with its function and source line from the build's own debug
  * information, the guest registers, and the game-code return addresses
  * still on the guest stack: those name the guest call chain, and each one
  * can be looked up in gen/ by address.
  *
- * Released builds ship without their .pdb, so a host address with no
- * symbol is named after the game function it is in (sub_XXXXXXXX, from the
- * dispatch table) and its offset in the executable.
+ * Released builds ship without their symbols, so a host address with none
+ * is given as its offset in the executable (read with the .pdb or the
+ * unstripped binary of that build) and, as a hint, the game function before
+ * it (sub_XXXXXXXX, from the dispatch table; overrides in src/ are among
+ * those, so our own code can sit "near" one too).
  *
- * Only on Windows. Linux crashes are read with gdb; there the kernel layer
- * also owns the SIGSEGV handler for its own memory traps, which this must
- * not replace.
+ * Windows: an unhandled-exception filter, with symbols from the .pdb when
+ * it is there, and F11/watchdog thread dumps. Linux: a handler for the
+ * fatal signals on its own stack (a stack overflow too), with glibc's
+ * backtrace; thread dumps there are gdb's (thread apply all bt).
  */
 
 #ifdef _WIN32
@@ -22,6 +25,12 @@
 #include <windows.h>
 #include <dbghelp.h>
 #include <tlhelp32.h>
+#else
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
 #endif
 
 #include "recomp_types.h"
@@ -33,20 +42,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-
 /* Game functions by host address, built at the first report. */
-typedef struct { DWORD64 host; uint32_t va; } func_at;
+typedef struct { uint64_t host; uint32_t va; } func_at;
 static func_at funcs[1 << 15];
 static int nfuncs = -1;
 
 static int by_host(const void *a, const void *b)
 {
-    DWORD64 x = ((const func_at *)a)->host, y = ((const func_at *)b)->host;
+    uint64_t x = ((const func_at *)a)->host, y = ((const func_at *)b)->host;
     return x < y ? -1 : x > y;
 }
 
-static uint32_t game_function_at(DWORD64 addr, DWORD64 *off)
+static uint32_t game_function_at(uint64_t addr, uint64_t *off)
 {
     int lo = 0, hi;
 
@@ -55,7 +62,7 @@ static uint32_t game_function_at(DWORD64 addr, DWORD64 *off)
         for (uint32_t va = g_xbox_code_lo; va < g_xbox_code_hi && nfuncs < (int)(sizeof funcs / sizeof *funcs); va++) {
             recomp_func_t f = recomp_lookup(va);
             if (f) {
-                funcs[nfuncs].host = (DWORD64)(uintptr_t)f;
+                funcs[nfuncs].host = (uint64_t)(uintptr_t)f;
                 funcs[nfuncs++].va = va;
             }
         }
@@ -69,11 +76,39 @@ static uint32_t game_function_at(DWORD64 addr, DWORD64 *off)
         else
             hi = mid;
     }
-    if (lo == 0)
+    /* Only between two game functions, and near the one before: past the
+     * last one, or far from it, is our own code. */
+    if (lo == 0 || lo == nfuncs)
         return 0;
     *off = addr - funcs[lo - 1].host;
-    return *off < 0x100000 ? funcs[lo - 1].va : 0;
+    return *off < 0x10000 ? funcs[lo - 1].va : 0;
 }
+
+/* The guest registers, and the return addresses into game code still on the
+ * guest stack: not every code-range value there is one, but the call chain
+ * is among them. */
+static void print_guest_state(void)
+{
+    uint32_t sp = g_esp;   /* not "esp": recomp_types.h defines that */
+    int shown = 0;
+
+    fprintf(stderr, "  guest eax %08X ebx %08X ecx %08X edx %08X\n"
+                    "        esi %08X edi %08X esp %08X\n",
+            g_eax, g_ebx, g_ecx, g_edx, g_esi, g_edi, sp);
+    fprintf(stderr, "  guest stack, code addresses:");
+    if (sp >= 0x1000 && sp < XBOX_HEAP_TOP - 0x400) {
+        for (uint32_t a = sp; a < sp + 0x400 && shown < 16; a += 4) {
+            uint32_t v = MEM32(a);
+            if (v >= g_xbox_code_lo && v < g_xbox_code_hi) {
+                fprintf(stderr, " %08X", v);
+                shown++;
+            }
+        }
+    }
+    fprintf(stderr, shown ? "\n" : " (none)\n");
+}
+
+#ifdef _WIN32
 
 static void print_host_address(const char *what, DWORD64 addr)
 {
@@ -100,10 +135,10 @@ static void print_host_address(const char *what, DWORD64 addr)
             base = strrchr(name, '\\');
             fprintf(stderr, "  %s+0x%llx", base ? base + 1 : name, (unsigned long long)(addr - (DWORD64)(uintptr_t)mod));
             if (mod == GetModuleHandleA(NULL)) {
-                DWORD64 off = 0;
+                uint64_t off = 0;
                 uint32_t va = game_function_at(addr, &off);
                 if (va)
-                    fprintf(stderr, "  (in sub_%08X+0x%llx?)", va, (unsigned long long)off);
+                    fprintf(stderr, "  (near sub_%08X+0x%llx)", va, (unsigned long long)off);
             }
         }
     }
@@ -114,8 +149,6 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
 {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     CONTEXT *c = ep->ContextRecord;
-    uint32_t sp = g_esp;   /* not "esp": recomp_types.h defines that */
-    int shown = 0;
 
     fprintf(stderr, "\n=== CRASH: exception 0x%08lX", er->ExceptionCode);
     if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
@@ -145,23 +178,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
         }
     }
 #endif
-    fprintf(stderr, "  guest eax %08X ebx %08X ecx %08X edx %08X\n"
-                    "        esi %08X edi %08X esp %08X\n",
-            g_eax, g_ebx, g_ecx, g_edx, g_esi, g_edi, sp);
-
-    /* Return addresses into game code still on the guest stack. Not every
-     * code-range value there is one, but the call chain is among them. */
-    fprintf(stderr, "  guest stack, code addresses:");
-    if (sp >= 0x1000 && sp < XBOX_HEAP_TOP - 0x400) {
-        for (uint32_t a = sp; a < sp + 0x400 && shown < 16; a += 4) {
-            uint32_t v = MEM32(a);
-            if (v >= g_xbox_code_lo && v < g_xbox_code_hi) {
-                fprintf(stderr, " %08X", v);
-                shown++;
-            }
-        }
-    }
-    fprintf(stderr, shown ? "\n" : " (none)\n");
+    print_guest_state();
     fflush(stderr);
     if (pdo_log_file[0]) {
         char msg[PDO_PATH_MAX + 256];
@@ -266,8 +283,60 @@ void pdo_dump_threads(void)
 
 #else
 
+static void print_host_frame(void *pc)
+{
+    Dl_info info;
+
+    fprintf(stderr, "  at %p", pc);
+    if (dladdr(pc, &info) && info.dli_fname) {
+        const char *base = strrchr(info.dli_fname, '/');
+        uint64_t off = 0;
+        uint32_t va;
+        fprintf(stderr, "  %s+0x%llx", base ? base + 1 : info.dli_fname,
+                (unsigned long long)((uintptr_t)pc - (uintptr_t)info.dli_fbase));
+        if (info.dli_sname)
+            fprintf(stderr, "  %s", info.dli_sname);
+        else if ((va = game_function_at((uint64_t)(uintptr_t)pc, &off)) != 0)
+            fprintf(stderr, "  (near sub_%08X+0x%llx)", va, (unsigned long long)off);
+    }
+    fputc('\n', stderr);
+}
+
+static void crash_signal(int sig, siginfo_t *si, void *uc)
+{
+    void *pcs[24];
+    int n;
+
+    (void)uc;
+    fprintf(stderr, "\n=== CRASH: signal %d (%s), address %p (guest 0x%08llx) on thread %ld\n", sig,
+            strsignal(sig), si->si_addr,
+            (unsigned long long)((uintptr_t)si->si_addr - (uintptr_t)g_xbox_mem_offset), (long)gettid());
+    n = backtrace(pcs, 24);
+    for (int i = 1; i < n; i++)     /* 0 is this handler */
+        print_host_frame(pcs[i]);
+    print_guest_state();
+    if (pdo_log_file[0])
+        fprintf(stderr, "Orta Recomp crashed. Please attach this log (%s) when you report it.\n", pdo_log_file);
+    fflush(stderr);
+    signal(sig, SIG_DFL);           /* and end as the signal would have */
+    raise(sig);
+}
+
 void pdo_crash_report_install(void)
 {
+    static char alt[64 * 1024];     /* this thread (the main one): a stack overflow still gets its report */
+    stack_t ss = { .ss_sp = alt, .ss_size = sizeof alt };
+    struct sigaction sa;
+    static const int sigs[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT };
+
+    sigaltstack(&ss, NULL);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = crash_signal;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    for (size_t i = 0; i < sizeof sigs / sizeof *sigs; i++)
+        sigaction(sigs[i], &sa, NULL);
+    backtrace(&(void *){ NULL }, 1);    /* loads libgcc now, not in the handler */
 }
 
 void pdo_dump_threads(void)

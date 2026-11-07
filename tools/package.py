@@ -4,15 +4,20 @@
 
 Needs gen/ (tools/recomp.py) first. Builds into build-release/ with no
 console window on Windows and the C runtime linked in, then writes
-dist/OrtaRecomp-v<version>-<platform>.zip: the executable, README,
-CHANGELOG and the licenses. Run it from a Visual Studio developer shell
-on Windows, like a normal build.
+dist/OrtaRecomp-v<version>-windows-x64.zip (Windows; run it from a Visual
+Studio developer shell, like a normal build) or
+dist/OrtaRecomp-v<version>-linux-x86_64.tar.gz (Linux and Steam Deck: a
+tarball keeps the executable bit, and the binary is stripped; the
+unstripped one stays in build-release/ to read crash reports), with the
+README, CHANGELOG and the licenses.
 """
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -40,15 +45,29 @@ def main():
 
     windows = platform.system() == "Windows"
     exe = "OrtaRecomp.exe" if windows else "OrtaRecomp"
-    tag = "windows-x64" if windows else f"{platform.system().lower()}-{platform.machine().lower()}"
+    files = [(os.path.join(BUILD, exe), exe)]
+    if not windows:                     # symbols left in build-release/
+        stripped = os.path.join(BUILD, "OrtaRecomp.stripped")
+        shutil.copyfile(files[0][0], stripped)
+        run("strip", "--strip-debug", stripped)
+        os.chmod(stripped, 0o755)
+        files = [(stripped, exe)]
+    files += [(os.path.join(ROOT, n), n) for n in ("README.md", "CHANGELOG.md", "COPYING")]
+    files += [(os.path.join(ROOT, "licenses", n), f"licenses/{n}")
+              for n in sorted(os.listdir(os.path.join(ROOT, "licenses")))]
+
     os.makedirs(DIST, exist_ok=True)
-    out = os.path.join(DIST, f"OrtaRecomp-v{version}-{tag}.zip")
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(os.path.join(BUILD, exe), exe)
-        for name in ("README.md", "CHANGELOG.md", "COPYING"):
-            z.write(os.path.join(ROOT, name), name)
-        for name in sorted(os.listdir(os.path.join(ROOT, "licenses"))):
-            z.write(os.path.join(ROOT, "licenses", name), f"licenses/{name}")
+    name = f"OrtaRecomp-v{version}-" + ("windows-x64" if windows else f"linux-{platform.machine().lower()}")
+    if windows:
+        out = os.path.join(DIST, name + ".zip")
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+            for src, arc in files:
+                z.write(src, arc)
+    else:
+        out = os.path.join(DIST, name + ".tar.gz")
+        with tarfile.open(out, "w:gz") as t:
+            for src, arc in files:
+                t.add(src, f"{name}/{arc}")
     print(f"wrote {out}")
 
 

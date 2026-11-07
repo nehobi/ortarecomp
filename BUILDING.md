@@ -34,9 +34,15 @@ includes CMake and Ninja. Build from the "x64 Native Tools Command Prompt".
 ```bash
 sudo apt-get install build-essential cmake ninja-build python3-pip libssl-dev \
     libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev \
-    libxtst-dev libxfixes-dev libxkbcommon-dev libwayland-dev libdbus-1-dev \
-    libudev-dev libpulse-dev libasound2-dev
+    libxtst-dev libxfixes-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
+    libdbus-1-dev libudev-dev libpulse-dev libpipewire-0.3-dev libasound2-dev
 ```
+
+SDL loads X11, Wayland, the sound servers and Vulkan at run time, so the
+executable needs only the C library; the packages above are what lets SDL
+build that support in. For a release that runs on the Steam Deck and other
+distributions, build on Ubuntu 22.04 (WSL2 on Windows works): the binary
+then needs no newer glibc than 2.35 (SteamOS has newer).
 
 ## 3. Generate the recompiled code
 
@@ -104,7 +110,10 @@ python tools/package.py
 This builds into `build-release/` with no console window on Windows and the
 C runtime linked in (players need no Visual C++ redistributable), then writes
 `dist/OrtaRecomp-v<version>-windows-x64.zip` with the executable, README,
-CHANGELOG and licenses. Release builds always write `ortarecomp.log` in the
+CHANGELOG and licenses. On Linux it writes
+`dist/OrtaRecomp-v<version>-linux-x86_64.tar.gz` (a tarball keeps the
+executable bit) with the binary stripped; the unstripped one stays in
+`build-release/` to read crash reports (`addr2line -f -e OrtaRecomp 0xOFFSET`). Release builds always write `ortarecomp.log` in the
 data folder; keep `build-release/OrtaRecomp.pdb` from the build you publish,
 to read crash reports by their executable offsets.
 

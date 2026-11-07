@@ -8,6 +8,7 @@ The first release. Changes are listed against the original Xbox game.
 
 - Native PC port: the Xbox game statically recompiled, running without an
   emulator.
+- Windows and Linux builds; the Linux one runs on the Steam Deck.
 - Launcher: pick your game files (disc image or extracted folder), save
   file and settings before starting.
 - Three save files (the original keeps one).
@@ -27,6 +28,7 @@ The first release. Changes are listed against the original Xbox game.
 - Skip the boot logos with a press.
 - FPS counter.
 - Portable mode (a blank portable.txt next to the executable).
+- A log of every run, and a crash report in it, to attach to bug reports.
 
 ### Changed
 
