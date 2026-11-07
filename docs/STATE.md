@@ -90,6 +90,10 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    call was skipped. Its six cases are seeded (tools/pdo_seeds.json):
    fixed, confirmed (moon and flare right, no failed calls). Episodes 5
    and 6 then played through into 7 with no issues and no failed calls.
+8. Episode 8's fire and the train's smoke (particle systems re-sorted or
+   respawned in their vertex data) flashed and swapped with
+   interpolation: quads_resorted() leaves such a frame unblended (89c6228);
+   confirmed fixed.
 
 ## Performance
 
