@@ -3460,22 +3460,40 @@ static uint32_t st_rebuilt; /* pairs not blended: vertices rebuilt in another or
  * target reads data 0 in the frame's own commands), or memory this frame
  * drew to or copied to or from (a copy of the picture made into a
  * texture). A copy of the picture pasted back through a quad. */
-static bool reads_target(const frame_data *f, const command *c)
+static uint32_t rt_addr[32];      /* the frame's targets and copies, phys (rt_gather) */
+static int rt_n;
+static const frame_data *rt_of;
+static uint64_t rt_frame;           /* frame data is pooled: the frame it was for */
+
+static void rt_gather(const frame_data *f)
 {
-    uint32_t k = (uint32_t)(c - f->cmds);
-    for (int st = 0; st < 4; st++)
-        if (f->tex[k * 4 + st].target_data)
-            return true;
-    for (uint32_t q = 0; q < f->ncmds; q++) {
+    rt_n = 0;
+    rt_of = f;
+    rt_frame = f->frame;
+    for (uint32_t q = 0; q < f->ncmds && rt_n < 30; q++) {
         const command *t = &f->cmds[q];
         if (t->kind != CMD_TARGET && t->kind != CMD_COPY)
             continue;
-        for (int st = 0; st < 4; st++) {
-            uint32_t d = c->draw.tex[st].data;
-            if (d && ((t->surf.data && phys(d) == phys(t->surf.data)) ||
-                      (t->kind == CMD_COPY && t->surf2.data && phys(d) == phys(t->surf2.data))))
-                return true;
-        }
+        if (t->surf.data)
+            rt_addr[rt_n++] = phys(t->surf.data);
+        if (t->kind == CMD_COPY && t->surf2.data)
+            rt_addr[rt_n++] = phys(t->surf2.data);
+    }
+}
+
+static bool reads_target(const frame_data *f, const command *c)
+{
+    uint32_t k = (uint32_t)(c - f->cmds);
+    if (rt_of != f || rt_frame != f->frame)
+        rt_gather(f);
+    for (int st = 0; st < 4; st++) {
+        uint32_t d = c->draw.tex[st].data;
+        if (f->tex[k * 4 + st].target_data)
+            return true;
+        if (d)
+            for (int i = 0; i < rt_n; i++)
+                if (phys(d) == rt_addr[i])
+                    return true;
     }
     return false;
 }
@@ -4287,12 +4305,15 @@ static void match_frames(frame_data *prev, frame_data *cur)
              * lines in 300 frames. */
             static uint64_t last_sig;
             static uint32_t pic_logs, pic_frames;
+            static int dbg_picture = -1;     /* PDO_DBG_PICTURE=1: this log (it looks at every draw) */
+            if (dbg_picture < 0)
+                dbg_picture = getenv("PDO_DBG_PICTURE") && atoi(getenv("PDO_DBG_PICTURE"));
             uint64_t sig = 1469598103934665603ull;
             char txt[600] = "";
             uint32_t n = 0;
             if (++pic_frames >= 300)
                 pic_frames = pic_logs = 0;
-            for (uint32_t k = 0; k < cur->ncmds; k++) {
+            for (uint32_t k = 0; dbg_picture && k < cur->ncmds; k++) {
                 const command *c = &cur->cmds[k];
                 float b4[8];
                 bool corners;
@@ -4311,7 +4332,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                              corners ? b4[5] : -1.0f);
                 }
             }
-            if (sig != last_sig && pic_logs++ < 20)
+            if (dbg_picture && sig != last_sig && pic_logs++ < 20)
                 SDL_Log("interp: frame %llu: %u draws sample the picture:%s", (unsigned long long)cur->frame, n, txt);
             last_sig = sig;
         }
@@ -4710,6 +4731,7 @@ void pdo_gfx_main_loop(void)
      * five seconds when the screen is under 1.5 times the game's rate,
      * then tried again. */
     bool interp_ok = true;
+    int bad_windows = 0;    /* seconds in a row under 1.5 times */
     Uint64 win_start = SDL_GetTicksNS(), retry_at = 0;
     uint32_t win_games = 0, win_shown = 0, win_drops = drops_total, log_n = 0;
 
@@ -4726,7 +4748,12 @@ void pdo_gfx_main_loop(void)
             /* Skipped game frames alone do not count: in busy scenes the
              * game itself runs late, and holding blending off then made
              * it worse. */
-            if (want && interp_ok && games > 30 && shown < games * 1.5) {
+            /* Two seconds in a row: one short stall (a load, a pipeline made
+             * the first time, an effect starting) turned blending off for five
+             * seconds, again and again through episode 9's and 10's bosses. */
+            bad_windows = want && interp_ok && games > 30 && shown < games * 1.5 ? bad_windows + 1 : 0;
+            if (bad_windows >= 2) {
+                bad_windows = 0;
                 interp_ok = false;
                 retry_at = now + 5000000000ull;
                 SDL_Log("interp: off for 5 s: %.0f fps on screen for %.0f game frames, %u skipped", shown, games,
