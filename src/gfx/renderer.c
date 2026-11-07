@@ -3523,8 +3523,15 @@ static bool reads_target(const frame_data *f, const command *c)
     return false;
 }
 
+/* match_frames' last call, by stage (the slow-pairing log): the key
+ * passes, the cross-model pass, the wrong-pair check, the picture's move,
+ * the diagnostics, the cut test. */
+static Uint64 mf_ns[6];
+#define MF_MARK(i) do { Uint64 _t = SDL_GetTicksNS(); mf_ns[i] = _t - mf_t0; mf_t0 = _t; } while (0)
+
 static void match_frames(frame_data *prev, frame_data *cur)
 {
+    Uint64 mf_t0 = SDL_GetTicksNS();
     static draw_key *pk, *ck;
     static uint8_t *taken, *grouped;    /* prev draws paired; cur draws that had alike ones */
     static uint32_t cap_pk, cap_ck, cap_taken, cap_grouped;
@@ -3579,6 +3586,8 @@ static void match_frames(frame_data *prev, frame_data *cur)
      * ahead of the rest of the dragon. A third: vertex-program draws that
      * had nothing alike on their own program, with those left on another
      * (a boost's or a brake's end), nearest first. */
+    memset(mf_ns, 0, sizeof mf_ns);
+    mf_t0 = SDL_GetTicksNS();
     for (int pass = 0; pass < 3; pass++) {
     np = keys_of(prev, &pk, &cap_pk, pass >= 1, pass == 2, taken);
     nc = keys_of(cur, &ck, &cap_ck, pass >= 1, pass == 2, grouped);
@@ -4027,6 +4036,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
         j = j2;
     }
     }
+    MF_MARK(0);
     /* A vertex-program draw that found no partner, with an unused one of the
      * same program in the frame before, in the same render target, by the
      * constants the program reads alone -- its vertices may differ. Episode
@@ -4096,6 +4106,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
             n_lod++;
         }
     }
+    MF_MARK(1);
     /* A check on every 3D pair, data aside: paired by the address of its
      * vertex data, a draw is taken on trust when it alone has that address
      * in both frames -- but the game hands out vertex buffers from a pool,
@@ -4153,6 +4164,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
             }
         }
     }
+    MF_MARK(2);
     /* How far the picture moved this frame: the 75th percentile of the
      * on-screen moves of the paired fixed-function draws on screen (the
      * world is most of them, past the dragon's parts and afterimages; Orta places them round the eye, so the camera is not read
@@ -4189,6 +4201,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
             nsteps = 0;
         }
     }
+    MF_MARK(3);
     /* What did not blend, when it is a lot or alike groups changed size:
      * a one-frame freeze with a ghost of the dragon as the boost ends
      * (episodes 2, 3) is still unexplained. At most ten lines in 300 frames. */
@@ -4426,6 +4439,7 @@ static void match_frames(frame_data *prev, frame_data *cur)
                     (unsigned long long)cur->frame, n_progswitch, n_outblend, n_screen, n3, txt);
         }
     }
+    MF_MARK(4);
     /* A camera cut: most things jumped. Show the new frame as it is. */
     {   /* A camera cut: over half of those on screen jumped. */
         static uint32_t st_frames, st_cuts;
@@ -4914,8 +4928,9 @@ void pdo_gfx_main_loop(void)
                     uint32_t nd = 0;
                     for (uint32_t k = 0; k < cur->ncmds; k++)
                         nd += cur->cmds[k].kind == CMD_DRAW;
-                    SDL_Log("interp: frame %llu: pairing took %.1f ms (%u draws)", (unsigned long long)cur->frame,
-                            dm / 1e6, nd);
+                    SDL_Log("interp: frame %llu: pairing took %.1f ms (%u draws): passes %.1f, across models %.1f, "
+                            "wrong pairs %.1f, picture %.1f, logs %.1f", (unsigned long long)cur->frame, dm / 1e6, nd,
+                            mf_ns[0] / 1e6, mf_ns[1] / 1e6, mf_ns[2] / 1e6, mf_ns[3] / 1e6, mf_ns[4] / 1e6);
                 }
             }
             {
