@@ -1,0 +1,124 @@
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index e7ab880..fadb6e4 100644
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -397,7 +397,6 @@ _EFLAGS_SETTERS = frozenset({
+ _FLAGS_UNDEFINED = frozenset({
+     "mul", "div", "idiv",  # Flags partially undefined
+     "rdtsc", "cpuid",      # Special instructions
+-    "lock xadd",           # Lock prefix - complex flag behavior
+     # popfd REPLACES every flag with whatever was pushed. Its flags are not
+     # architecturally undefined -- they are simply not knowable from the
+     # instruction stream -- but the tracking action is the same: whatever the
+@@ -984,9 +983,13 @@ def _make_condition(jcc, flag_setter, flag_ops):
+     # ── xadd: exchange and add, flags from addition ──
+     if flag_setter == "xadd":
+         if jcc in ("je", "jz"):
+-            return f"({lhs} == 0)", desc
++            return "(_fa == 0)", desc
+         if jcc in ("jne", "jnz"):
+-            return f"({lhs} != 0)", desc
++            return "(_fa != 0)", desc
++        if jcc == "js":
++            return "(_fas < 0)", desc
++        if jcc == "jns":
++            return "(_fas >= 0)", desc
+         return None
+ 
+     # ── repe cmpsb / repne scasb: string comparison ──
+@@ -1743,9 +1746,14 @@ class Lifter:
+                 src = _fmt_operand_read(ops[1])
+                 if atomic_m == "xadd":
+                     # dst = dst + src, and src receives dst's old value.
++                    # The flags are those of the addition; the sum is
++                    # snapshotted into _fa for the branch that follows, as
++                    # re-reading dst would race another thread's update.
+                     return [
+-                        "{ uint32_t _old = RECOMP_ATOMIC_ADD32("
+-                        f"XBOX_PTR({addr}), {src});",
++                        f"{{ uint32_t _src = {src};",
++                        "  uint32_t _old = RECOMP_ATOMIC_ADD32("
++                        f"XBOX_PTR({addr}), _src);",
++                        "  _fa = _old + _src; _fas = (int32_t)_fa;",
+                         "  " + _fmt_operand_write(ops[1], "_old") + " }"
+                         f"  /* {m} */",
+                     ]
+@@ -3988,6 +3996,15 @@ def lift_basic_block(lifter, bb, flag_state=None):
+         elif curr.mnemonic in FLAG_SETTERS:
+             last_flag_setter, last_flag_ops = normalise_zero_test(
+                 curr.mnemonic, list(curr.operands))
++        elif curr.mnemonic in ("lock xadd", "lock cmpxchg"):
++            # Capstone keeps the prefix in the mnemonic. The locked forms set
++            # the flags exactly as the plain ones do, and they are the forms
++            # InterlockedDecrement and InterlockedCompareExchange compile to:
++            # a `lock xadd` followed by jne is a COM Release deciding whether
++            # the object is still referenced. Untracked, that jne read the
++            # fallback flag variable and every Release freed its object.
++            last_flag_setter = curr.mnemonic[5:]
++            last_flag_ops = list(curr.operands)
+         elif curr.mnemonic in _FLAGS_UNDEFINED:
+             # Flags are undefined after these - clear tracking
+             last_flag_setter = None
+diff --git a/tools/recomp/test_lifter_atomics.py b/tools/recomp/test_lifter_atomics.py
+index cd1dcb4..4a65807 100644
+--- a/tools/recomp/test_lifter_atomics.py
++++ b/tools/recomp/test_lifter_atomics.py
+@@ -55,3 +55,43 @@ class AtomicLiftTest(unittest.TestCase):
+                 generated = _lift(m, "edx")
+                 self.assertNotIn("TODO", generated)
+                 self.assertIn("RECOMP_ATOMIC_", generated)
++
++
++def _lift_with_branch(mnemonic, jcc):
++    """`lock xadd [ecx], edx` followed by a conditional jump on its flags."""
++    insn = Instruction(0, 4, mnemonic, "dword ptr [ecx], edx", "f00fc111")
++    insn.operands = [_mem_ecx(), Operand(type="reg", reg="edx")]
++    jump = Instruction(4, 2, jcc, "0x10", "750a")
++    jump.jump_target = 0x10
++    lifter = Lifter()
++    lifter.func_start = 0
++    lifter.func_end = 0x20
++    lifted, _ = lift_basic_block(
++        lifter, BasicBlock(start=0, instructions=[insn, jump]))
++    return chr(10).join(lifted)
++
++
++class XaddFlagsTest(unittest.TestCase):
++    """InterlockedDecrement inlined: `or edx,-1; lock xadd [ecx],edx; jne`.
++
++    That is how a COM Release decides whether the object is still referenced.
++    The locked form used to be treated as leaving the flags undefined, so the
++    jne read the fallback flag variable, never jumped, and every Release freed
++    its object -- a double free on the second Release.
++    """
++
++    def test_locked_xadd_snapshots_the_sum(self):
++        generated = _lift_with_branch("lock xadd", "jne")
++        self.assertIn("_fa = _old + _src;", generated)
++
++    def test_jne_after_locked_xadd_tests_the_sum(self):
++        for m in ("xadd", "lock xadd"):
++            with self.subTest(mnemonic=m):
++                generated = _lift_with_branch(m, "jne")
++                self.assertIn("(_fa != 0)", generated)
++                self.assertNotIn("_flags /*", generated)
++
++    def test_je_and_sign_branches_after_locked_xadd(self):
++        self.assertIn("(_fa == 0)", _lift_with_branch("lock xadd", "je"))
++        self.assertIn("(_fas < 0)", _lift_with_branch("lock xadd", "js"))
++        self.assertIn("(_fas >= 0)", _lift_with_branch("lock xadd", "jns"))
+diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
+index 3cd9250..ee803ad 100644
+--- a/tools/recomp/translator.py
++++ b/tools/recomp/translator.py
+@@ -1390,7 +1390,9 @@ class FunctionTranslator:
+                          or last_setter in BT_MODIFY
+                          or last_setter == "rep-compare")):
+                 return True
+-            if m in FLAG_SETTERS or m in _EFLAGS_SETTERS:
++            if m in ("lock xadd", "lock cmpxchg"):
++                last_setter = m[5:]
++            elif m in FLAG_SETTERS or m in _EFLAGS_SETTERS:
+                 last_setter = m
+             elif _is_rep_compare(insn):
+                 # A REPE/REPNE CMPS/SCAS produces CF into _cf, so a jb/ja

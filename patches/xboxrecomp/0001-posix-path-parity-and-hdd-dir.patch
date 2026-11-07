@@ -1,0 +1,289 @@
+diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
+index b9a02bc..cd357fe 100644
+--- a/src/kernel/kernel.h
++++ b/src/kernel/kernel.h
+@@ -538,6 +538,11 @@ void xbox_kernel_set_ordinal_remap(const unsigned short *map, int count);
+ /* Initialize path translation with base directories */
+ void xbox_path_init(const char* game_dir, const char* save_dir);
+ 
++/* Map the hard disk's game/save partition (\Device\Harddisk0\Partition1\,
++ * the console's E:) to this host directory instead of the game directory.
++ * Disc titles keep their saves apart from the game files this way. */
++void xbox_path_set_hdd_dir(const char *dir);
++
+ /*
+  * Character type of a translated host path. The Win32 file APIs take wide
+  * chars; POSIX takes bytes. kernel_path.c and kernel_file.c are split on
+diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
+index caf6390..387843f 100644
+--- a/src/kernel/kernel_path.c
++++ b/src/kernel/kernel_path.c
+@@ -21,6 +21,13 @@
+  * example to print who opened a file). NULL by default. */
+ void (*g_xbox_path_hook)(const char *xbox_path) = NULL;
+ 
++/* "\Device\Harddisk0\Partition1\" is the console's E: drive (TDATA, UDATA).
++ * It maps to the game directory by default, which suits titles installed to
++ * the hard disk. A disc title wants it kept apart from the game files, so a
++ * project can point it at its own directory with xbox_path_set_hdd_dir. */
++#define XBOX_PARTITION1_PREFIX "\\Device\\Harddisk0\\Partition1\\"
++static char s_hdd_dir_utf8[MAX_PATH];
++
+ /*
+  * Helper: check if an ANSI string starts with a prefix (case-insensitive).
+  * Returns the number of chars consumed from the prefix, or 0 if no match.
+@@ -176,8 +183,23 @@ const wchar_t *xbox_LastHostPath(void)
+ 
+ static WCHAR s_game_dir[MAX_PATH];
+ static WCHAR s_save_dir[MAX_PATH];
++static WCHAR s_hdd_dir[MAX_PATH];
+ static BOOL  s_initialized = FALSE;
+ 
++void xbox_path_set_hdd_dir(const char *dir)
++{
++    snprintf(s_hdd_dir_utf8, sizeof(s_hdd_dir_utf8), "%s", dir ? dir : "");
++    s_hdd_dir[0] = 0;
++    if (dir && dir[0]) {
++        size_t n;
++        MultiByteToWideChar(CP_UTF8, 0, dir, -1, s_hdd_dir, MAX_PATH);
++        n = wcslen(s_hdd_dir);
++        if (n > 0 && (s_hdd_dir[n - 1] == L'\\' || s_hdd_dir[n - 1] == L'/'))
++            s_hdd_dir[n - 1] = 0;
++        SHCreateDirectoryExW(NULL, s_hdd_dir, NULL);
++    }
++}
++
+ /*
+  * The raw disk device, \Device\Harddisk0\Partition0.
+  *
+@@ -419,6 +441,13 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+         return TRUE;
+     }
+ 
++    if (s_hdd_dir[0] && (skip = match_prefix(xbox_path, XBOX_PARTITION1_PREFIX))) {
++        remainder = xbox_path + skip;
++        base_dir  = s_hdd_dir;
++        sub_dir   = NULL;
++        goto translate;
++    }
++
+     for (int i = 0; i < PATH_RULE_COUNT; i++) {
+         skip = match_prefix(xbox_path, s_rules[i].prefix);
+         if (skip) {
+@@ -490,6 +519,140 @@ static char s_game_dir[MAX_PATH];
+ static char s_save_dir[MAX_PATH];
+ static BOOL s_initialized = FALSE;
+ 
++void xbox_path_set_hdd_dir(const char *dir)
++{
++    snprintf(s_hdd_dir_utf8, sizeof(s_hdd_dir_utf8), "%s", dir ? dir : "");
++    {
++        size_t n = strlen(s_hdd_dir_utf8);
++        if (n > 1 && s_hdd_dir_utf8[n - 1] == '/')
++            s_hdd_dir_utf8[n - 1] = 0;
++    }
++}
++
++/* The raw disk's partition table; the Win32 xbox_write_partition_table
++ * documents the layout. */
++static void xbox_write_partition_table_posix(const char *path)
++{
++    static const struct { const char *name; uint32_t start, size; } parts[] = {
++        { "XBOX_PART_X",  0x00000400, 0x00177000 },
++        { "XBOX_PART_Y",  0x00177400, 0x00177000 },
++        { "XBOX_PART_Z",  0x002EE400, 0x00177000 },
++        { "XBOX_PART_C",  0x00465400, 0x000FA000 },
++        { "XBOX_PART_E",  0x0055F400, 0x00465400 },
++    };
++    unsigned char sector[512];
++    FILE *f;
++
++    memset(sector, 0, sizeof(sector));
++    memcpy(sector, "****PARTINFO****", 16);
++    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
++        unsigned char *e = sector + 48 + i * 32;
++        size_t n = strlen(parts[i].name);
++        uint32_t v[4] = { 0x80000000u, parts[i].start, parts[i].size, 0 };
++        memset(e, ' ', 16);
++        memcpy(e, parts[i].name, n < 16 ? n : 16);
++        for (int k = 0; k < 4; k++) {          /* little-endian fields */
++            e[16 + k * 4]     = (unsigned char)v[k];
++            e[16 + k * 4 + 1] = (unsigned char)(v[k] >> 8);
++            e[16 + k * 4 + 2] = (unsigned char)(v[k] >> 16);
++            e[16 + k * 4 + 3] = (unsigned char)(v[k] >> 24);
++        }
++    }
++    f = fopen(path, "r+b");
++    if (!f)
++        f = fopen(path, "w+b");
++    if (!f)
++        return;
++    if (fseek(f, 0x800, SEEK_SET) == 0)
++        fwrite(sector, 1, sizeof(sector), f);
++    fclose(f);
++}
++
++/* "\Device\Harddisk0\PartitionN" with nothing below it -> its image file. */
++static BOOL xbox_partition_device_path_posix(const char *xbox_path, char *out, DWORD n)
++{
++    static const char *prefix = "\\Device\\Harddisk0\\Partition";
++    int len = match_prefix(xbox_path, prefix);
++    const char *rest;
++    int digit;
++
++    if (!len)
++        return FALSE;
++    digit = xbox_path[len];
++    if (digit < '0' || digit > '9')
++        return FALSE;
++    /* Only the bare device. With a trailing separator the title is opening
++     * the partition's root directory (XAPI does this before creating TDATA
++     * and UDATA), and open() cannot treat an image file as a directory. */
++    rest = xbox_path + len + 1;
++    if (*rest != '\0')
++        return FALSE;
++    snprintf(out, n, "%s/Partition%c.img", s_save_dir, digit);
++    return TRUE;
++}
++
++/* Xbox file names are case-insensitive; most Linux filesystems are not.
++ * When a translated path does not exist as written, find each component
++ * ignoring case. The last component may legitimately not exist yet (a file
++ * being created); it is then kept as the title spelled it. */
++#include <dirent.h>
++static void xbox_resolve_case_posix(char *path, size_t size)
++{
++    struct stat st;
++    char out[MAX_PATH], comp[MAX_PATH];
++    const char *p;
++    size_t olen;
++
++    if (stat(path, &st) == 0 || path[0] != '/')
++        return;
++
++    out[0] = '\0';
++    olen = 0;
++    p = path;
++    while (*p) {
++        size_t clen;
++        const char *next;
++        DIR *d;
++        struct dirent *de;
++        BOOL found = FALSE;
++
++        while (*p == '/')
++            p++;
++        if (!*p)
++            break;
++        next = strchr(p, '/');
++        clen = next ? (size_t)(next - p) : strlen(p);
++        if (clen >= sizeof(comp))
++            return;
++        memcpy(comp, p, clen);
++        comp[clen] = '\0';
++
++        d = opendir(olen ? out : "/");
++        if (d) {
++            while ((de = readdir(d)) != NULL) {
++                if (strcasecmp(de->d_name, comp) == 0) {
++                    snprintf(comp, sizeof(comp), "%s", de->d_name);
++                    found = TRUE;
++                    break;
++                }
++            }
++            closedir(d);
++        }
++        /* "dir/" ends in a separator: its last component is "dir", which a
++         * directory create may be about to make. */
++        if (!found && next && next[strspn(next, "/")])
++            return;     /* a missing directory: leave the path alone */
++        if (olen + 1 + strlen(comp) + 1 > sizeof(out))
++            return;
++        out[olen++] = '/';
++        strcpy(out + olen, comp);
++        olen += strlen(comp);
++        p = next ? next : p + clen;
++    }
++    if (olen && olen < size)
++        memcpy(path, out, olen + 1);
++}
++
+ /* Strip a single trailing '/' (but never the root '/'). */
+ static void strip_trailing_slash(char* s)
+ {
+@@ -548,6 +711,35 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+     strip_trailing_slash(s_game_dir);
+     strip_trailing_slash(s_save_dir);
+ 
++    /* Same layout as the Win32 backend: the save-side directories, the raw
++     * disk image with its partition table, and sparse images for the other
++     * partition devices. See the Win32 xbox_path_init for why each exists. */
++    {
++        static const char *subs[] = { "TitleData", "UserData", "Cache", "SystemData" };
++        static const unsigned long long part_sectors[6] = {
++            0, 0x00465400ull, 0x000FA000ull, 0x00177000ull, 0x00177000ull, 0x00177000ull,
++        };
++        char path[MAX_PATH];
++
++        mkdir_p(s_save_dir);
++        for (int i = 0; i < (int)(sizeof(subs) / sizeof(subs[0])); i++) {
++            snprintf(path, sizeof(path), "%s/%s", s_save_dir, subs[i]);
++            mkdir_p(path);
++        }
++        snprintf(path, sizeof(path), "%s/Partition0.img", s_save_dir);
++        xbox_write_partition_table_posix(path);
++        for (int p = 1; p <= 5; p++) {
++            FILE *f;
++            snprintf(path, sizeof(path), "%s/Partition%d.img", s_save_dir, p);
++            f = fopen(path, "ab");      /* create if missing, keep contents */
++            if (!f)
++                continue;
++            fclose(f);
++            if (truncate(path, (off_t)(part_sectors[p] * 512ull)) != 0)
++                xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "size %s: %s", path, strerror(errno));
++        }
++    }
++
+     s_initialized = TRUE;
+     xbox_log(XBOX_LOG_INFO, XBOX_LOG_PATH, "Path init: game=%s, save=%s",
+              s_game_dir, s_save_dir);
+@@ -572,6 +764,20 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+             return xbox_translate_path(linked, host_path_buf, buf_size);
+     }
+ 
++    if (xbox_partition_device_path_posix(xbox_path, host_path_buf, buf_size)) {
++        fprintf(stderr, "  [PATH] %s -> partition image\n", xbox_path);
++        fflush(stderr);
++        return TRUE;
++    }
++
++    if (s_hdd_dir_utf8[0] && (skip = match_prefix(xbox_path, XBOX_PARTITION1_PREFIX))) {
++        remainder = xbox_path + skip;
++        base_dir  = s_hdd_dir_utf8;
++        sub_dir   = NULL;
++        mkdir_p(s_hdd_dir_utf8);
++        goto translate;
++    }
++
+     for (int i = 0; i < PATH_RULE_COUNT; i++) {
+         skip = match_prefix(xbox_path, s_rules[i].prefix);
+         if (skip) {
+@@ -590,6 +796,10 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+     return TRUE;
+ 
+ translate:
++    if (g_xbox_path_hook)
++        g_xbox_path_hook(xbox_path);
++    fprintf(stderr, "  [PATH] %s\n", xbox_path);
++    fflush(stderr);
+     {
+         char remainder_posix[MAX_PATH];
+         snprintf(remainder_posix, sizeof(remainder_posix), "%s", remainder);
+@@ -616,6 +826,7 @@ translate:
+                 host_path_buf[--n] = '\0';
+         }
+ 
++        xbox_resolve_case_posix(host_path_buf, buf_size);
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         return TRUE;
+     }

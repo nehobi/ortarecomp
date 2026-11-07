@@ -1,0 +1,42 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index 96d55bf..cbcce27 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -1149,6 +1149,14 @@ static void bridge_NtFreeVirtualMemory(void)
+         uint32_t left = xbox_HeapBlockSize(vm_base);
+ 
+         if (left) {
++            /* The title may have changed the pages' protection while it held
++             * them (NtProtectVirtualMemory applies it to the host pages), and
++             * neither a freed nor a decommitted block may stay that way: the
++             * heap zero-fills a block it hands out again, and with a read-only
++             * page in it that write faults. JSRF crashed starting a new game
++             * exactly so, inside the allocator. */
++            DWORD was;
++            VirtualProtect(XBOX_TO_NATIVE(vm_base), left, PAGE_READWRITE, &was);
+             if (free_type & 0x8000) {              /* MEM_RELEASE */
+                 xbox_HeapFree(vm_base);
+                 BRIDGE_MEM32(size_ptr) = 0;
+@@ -7602,6 +7610,22 @@ static void bridge_NtProtectVirtualMemory(void)
+     uint32_t size    = size_ptr ? BRIDGE_MEM32(size_ptr) : 0;
+     DWORD old = 0;
+ 
++    {   /* Which protections a title asks for, once each: they decide whether
++         * host pages can fault under it later. */
++        static uint32_t seen[16];
++        static int nseen;
++        int i;
++        for (i = 0; i < nseen && seen[i] != new_prot; i++)
++            ;
++        if (i == nseen && nseen < 16) {
++            seen[nseen++] = new_prot;
++            fprintf(stderr, "  [KERNEL] NtProtectVirtualMemory: protection 0x%X"
++                            " (first at 0x%08X, %u bytes, from 0x%08X)\n",
++                    new_prot, base_va, size, g_xbox_kernel_caller);
++            fflush(stderr);
++        }
++    }
++
+     if (VirtualProtect(XBOX_TO_NATIVE(base_va), size, (DWORD)new_prot, &old)) {
+         if (old_ptr)
+             BRIDGE_MEM32(old_ptr) = (uint32_t)old;

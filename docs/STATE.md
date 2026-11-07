@@ -1,0 +1,58 @@
+# Current state
+
+v0.1.0 (beta): Panzer Dragoon Orta plays through all ten episodes and the
+ending on Windows, with music, movies, saves, bosses and Pandora's Box.
+History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
+`docs/archive/state-bring-up.md`; facts about the game: `docs/orta-facts.md`.
+
+## How it fits together
+
+- `tools/recomp.py`: the USA `default.xbe` -> `gen/` through xboxrecomp
+  v0.13.1 and patches 0001-0030 (`patches/xboxrecomp/`), with seeds for
+  functions the sweep misses (`tools/pdo_seeds.json`; every failed indirect
+  call seen in play is seeded). 42 lifter jumps still go to stubs, all from
+  data decoded as code.
+- `src/guest/`: Direct3D, DirectSound, CRI (movies) and input in place of
+  the Xbox's (`d3d_hle.c`, `dsound_hle.c`, `cri_hle.c`, `input_hle.c`),
+  vertex programs compiled for the CPU (`vsh.c`), option hooks
+  (`widescreen.c`, `unlocks.c`, `intro_skip.c`), crash and hang reports
+  (`crash_report.c`, `wait_trace.c`).
+- `src/gfx/renderer.c`: the game records frames on its thread; the main
+  thread owns the window and draws them on the SDL GPU API (Vulkan), with
+  vertex programs and fixed-function vertices on the GPU. Frame
+  interpolation pairs the draws of the last two frames (`match_frames`) and
+  blends them; see the archive for what is and is not blended, and why.
+- `src/audio/`: mixer, I3DL2 reverb, 3D audio for headphones.
+- `src/gfx/overlay.c`: the launcher and the F1 menu; settings in
+  `ortarecomp.ini` (`src/config.c`); save files 1-3 are `saves/E`, `E2`,
+  `E3`.
+
+## Release
+
+`tools/package.py` builds `build-release/` (no console, static C runtime,
+icon from `tools/make_icon.py`) into `dist/`: a zip on Windows, a tar.gz on
+Linux (stripped; needs only libc; build on Ubuntu 22.04 for SteamOS). Release builds
+always log to `ortarecomp.log` in the data folder (the run before kept as
+`ortarecomp-previous.log`); a crash (Windows: exception filter and a
+message; Linux: fatal-signal handler) is reported there with executable
+offsets and the nearest game function (`sub_XXXXXXXX`), no symbols needed.
+
+## Open
+
+1. Frame interpolation: the main source of reports to expect (beta). A
+   frame's pairing logs its stages when over 8 ms; blending holds off after
+   two slow seconds. On weaker PCs, next: reuse group distances in the
+   wrong-pair check, lazy bounds.
+2. A full play on the release build with no `[ICALL] Failed` in the log.
+3. First-time pipeline stalls (kept in `pipelines.bin` after).
+4. Android (Vulkan/Turnip): measure the recompiled code and the guest CPU
+   lock on ARM; Linux's WaitForMultipleObjects polls with sleeps.
+
+## Testing
+
+- Cloud: `PDO_NO_DRAW=1 PDO_FAST=4`, `PDO_SCREENSHOT=dir`, `PDO_CAPTURE=frame`
+  (+ `PDO_CAPTURE_INTERP`, `_SEQ`), `PDO_INPUT_SCRIPT` for buttons (the
+  standard script reaches episode 1 by frame ~11000). Interpolation never
+  runs offscreen.
+- Windows: build from a Developer PowerShell; `--log run.log`, not
+  PowerShell redirection. F12 captures a frame, F11 dumps threads.

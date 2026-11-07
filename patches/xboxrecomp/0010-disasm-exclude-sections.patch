@@ -1,0 +1,95 @@
+diff --git a/tools/disasm/__main__.py b/tools/disasm/__main__.py
+index 2ddd891..37f4c5c 100644
+--- a/tools/disasm/__main__.py
++++ b/tools/disasm/__main__.py
+@@ -66,6 +66,12 @@ def main():
+              "(for sections marked non-executable in the XBE but containing code, "
+              "e.g., --extra-sections XIPS,DOLBY)",
+     )
++    parser.add_argument(
++        "--exclude-sections",
++        default=None,
++        help="Comma-separated list of sections that hold data although the XBE "
++             "marks them executable (e.g., --exclude-sections APPDATA)",
++    )
+     parser.add_argument(
+         "--seed-functions",
+         action="append",
+@@ -94,6 +100,7 @@ def main():
+         config.configure_from_xbe(args.xbe_path)
+ 
+         extra = [s.strip() for s in args.extra_sections.split(",")] if args.extra_sections else []
++        exclude = [s.strip() for s in args.exclude_sections.split(",")] if args.exclude_sections else []
+         seed_funcs = []
+         observed = set()
+         for _seed_path in (args.seed_functions or []):
+@@ -111,6 +118,7 @@ def main():
+             verbose=args.verbose,
+             force=args.force,
+             extra_sections=extra,
++            exclude_sections=exclude,
+             seed_functions=seed_funcs,
+             observed_seeds=observed,
+         )
+diff --git a/tools/disasm/disasm.py b/tools/disasm/disasm.py
+index 447f4d0..8e8f83b 100644
+--- a/tools/disasm/disasm.py
++++ b/tools/disasm/disasm.py
+@@ -38,6 +38,7 @@ class Disassembler:
+                  verbose: bool = False,
+                  force: bool = False,
+                  extra_sections: Optional[list] = None,
++                 exclude_sections: Optional[list] = None,
+                  seed_functions: Optional[list] = None,
+                  observed_seeds: Optional[set] = None):
+         self.xbe_path = xbe_path
+@@ -47,7 +48,9 @@ class Disassembler:
+         self.stats_only = stats_only
+         self.verbose = verbose
+         self.force = force
+-        self.extra_sections = extra_sections or []
++        # The cache key covers both lists: an excluded section is marked "-".
++        self.extra_sections = (extra_sections or []) + [f"-{n}" for n in exclude_sections or []]
++        self.exclude_sections = frozenset(exclude_sections or [])
+         self.seed_functions = seed_functions or []
+         # Seeds a run actually reached (see _load_seed_functions). They are
+         # not guesses, so the mid-instruction guard below does not apply.
+@@ -98,6 +101,7 @@ class Disassembler:
+         if self.verbose:
+             print("Phase 1: Loading binary image...")
+         self.image = load_image(self.xbe_path, self.analysis_json)
++        self.image.excluded_sections = self.exclude_sections
+         if self.verbose:
+             print(f"  Loaded: {self.image.filepath}")
+             print(f"  Base: 0x{self.image.base_address:08X}  "
+@@ -324,7 +328,7 @@ class Disassembler:
+         if self.extra_sections:
+             existing_names = {s.name for s in sections}
+             for name in self.extra_sections:
+-                if name in existing_names:
++                if name in existing_names or name.startswith("-"):
+                     continue
+                 sec = self.image.get_section(name)
+                 if sec is None:
+diff --git a/tools/disasm/loader.py b/tools/disasm/loader.py
+index 6c09e10..35fc8ca 100644
+--- a/tools/disasm/loader.py
++++ b/tools/disasm/loader.py
+@@ -140,11 +140,15 @@ class BinaryImage:
+ 
+         So data sections are excluded by name regardless of their flags. A
+         title that genuinely hides code in one of them can put it back with
+-        --extra-sections, which is exactly what that flag is for.
++        --extra-sections, which is exactly what that flag is for. A title whose
++        data sits in a section of its own name (Panzer Dragoon Orta's APPDATA:
++        1.9 MB, no .data) names it with --exclude-sections.
+         """
++        excluded = getattr(self, "excluded_sections", ())
+         return [s for s in self.sections
+                 if s.executable and s.raw_size > 0
+-                and s.name not in DATA_SECTION_NAMES]
++                and s.name not in DATA_SECTION_NAMES
++                and s.name not in excluded]
+ 
+ 
+ def _parse_hex(s: str) -> int:

@@ -1,0 +1,53 @@
+diff --git a/tools/disasm/functions.py b/tools/disasm/functions.py
+--- a/tools/disasm/functions.py
++++ b/tools/disasm/functions.py
+@@ -10,6 +10,7 @@
+ """
+ 
+ import bisect
++import re
+ from dataclasses import dataclass, field
+ from typing import Dict, List, Optional, Set, Tuple
+ 
+@@ -576,6 +577,16 @@
+             if not (self.engine.probes_as_returning_body(target)
+                     or self.engine.probes_as_vcall_thunk(target)):
+                 continue
++            # Nor where the instruction before it runs on into it: code that
++            # falls through to an address is the body it belongs to, not a
++            # function start. Panzer Dragoon Orta's main menu (0x000BFB90) is
++            # followed by 0x000C001B after a `je`, and a push-buffer word
++            # (`mov [edi], 0C001Bh` in D3D) made it a function: the menu's
++            # branches into its own tail became unresolved stubs, and NEW GAME
++            # returned page 0 instead of 5. A call may not return, and padding
++            # and terminators end a body, so only those may precede.
++            if self._falls_through_to(target):
++                continue
+             if target not in self.engine.instructions:
+                 if not self.engine.decode_at(target):
+                     continue
+@@ -587,6 +598,24 @@
+             print(f"  {found} function address(es) taken as an immediate")
+         return found > 0
+ 
++    def _falls_through_to(self, addr: int) -> bool:
++        """Whether a decoded instruction ending at `addr` continues into it:
++        anything but a ret, an unconditional jmp, a call, int3 or padding
++        (nop, and MSVC's `lea esp, [esp]`-style and `mov edi, edi` fillers)."""
++        for back in range(1, 16):
++            insn = self.engine.get_instruction(addr - back)
++            if insn is None or insn.address + insn.size != addr:
++                continue
++            if (insn.is_ret or insn.is_call or insn.is_nop
++                    or (insn.is_jump and not insn.is_cond_jump)
++                    or insn.mnemonic in ("int3", "hlt", "ud2")):
++                return False
++            if insn.mnemonic in ("lea", "mov") and re.fullmatch(
++                    r"(\w+), (?:dword ptr )?\[?\1(?: \+ 0)?\]?", insn.op_str):
++                return False
++            return True
++        return False
++
+     def _pass_tail_jump_targets(self, sections: List[SectionInfo]) -> bool:
+         """
+         Pass 6: Add the target of every unconditional jmp that leaves the body

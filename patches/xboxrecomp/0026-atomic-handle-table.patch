@@ -1,0 +1,35 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -2911,11 +2911,16 @@
+     if (!h || h == INVALID_HANDLE_VALUE) return 0;
+     for (i = 1; i < BRIDGE_HANDLE_MAX; i++)
+         if (s_handle_table[i] == h) return BRIDGE_HANDLE_TAG | (uint32_t)i;
++    /* Claimed with a compare-and-swap: guest threads make handles at the
++     * same time, and two that both saw a slot empty used to both write it.
++     * One object's token then named the other's handle, and once that one
++     * was closed and the slot reused, a SetEvent on the token went nowhere
++     * -- Panzer Dragoon Orta's stream workers then never saw their stop
++     * event, and the thread waiting for one to end waited for good. */
+     for (i = 1; i < BRIDGE_HANDLE_MAX; i++)
+-        if (s_handle_table[i] == NULL) {
+-            s_handle_table[i] = h;
++        if (s_handle_table[i] == NULL
++                && InterlockedCompareExchangePointer((PVOID volatile *)&s_handle_table[i], h, NULL) == NULL)
+             return BRIDGE_HANDLE_TAG | (uint32_t)i;
+-        }
+     fprintf(stderr, "  [BRIDGE] handle table full\n");
+     return 0;
+ }
+@@ -2973,8 +2978,10 @@
+     if ((token & 0xFF000000u) == BRIDGE_HANDLE_TAG) {
+         uint32_t i = token & BRIDGE_HANDLE_MASK;
+         if (i > 0 && i < BRIDGE_HANDLE_MAX) {
++            /* Atomically, so two closes of one token cannot both get it. */
+             HANDLE h = s_handle_table[i];
+-            s_handle_table[i] = NULL;
++            while (h && InterlockedCompareExchangePointer((PVOID volatile *)&s_handle_table[i], NULL, h) != h)
++                h = s_handle_table[i];
+             return h;
+         }
+     }

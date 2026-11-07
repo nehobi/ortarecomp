@@ -1,0 +1,100 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -4037,6 +4037,61 @@
+ }
+ 
+ /* ── ObReferenceObjectByHandle (ordinal 246) ─────────────── */
++/* A guest-visible ETHREAD for each thread handle a title references. Titles
++ * read it directly: the XDK's GetExitCodeThread (Panzer Dragoon Orta's CRI
++ * shutdown loops on it until a worker reports its exit status) reads
++ * Header.SignalState at +4 and ExitStatus at +0x120. Both are refreshed
++ * from the host thread on every reference. */
++#define BRIDGE_ETHREAD_SIZE     0x140
++#define BRIDGE_ETHREAD_MAX      64
++static struct { uint32_t handle, va; } s_ethreads[BRIDGE_ETHREAD_MAX];
++
++static uint32_t bridge_thread_object(uint32_t handle)
++{
++    uint32_t va = 0;
++    DWORD code = 0;
++    int i;
++
++    for (i = 0; i < BRIDGE_ETHREAD_MAX && s_ethreads[i].va; i++)
++        if (s_ethreads[i].handle == handle) {
++            va = s_ethreads[i].va;
++            break;
++        }
++    if (!va) {
++        if (i == BRIDGE_ETHREAD_MAX)
++            return 0;
++        va = xbox_HeapAlloc(BRIDGE_ETHREAD_SIZE, 16);
++        if (!va)
++            return 0;
++        memset((void *)XBOX_TO_NATIVE(va), 0, BRIDGE_ETHREAD_SIZE);
++        BRIDGE_MEM32(va) = 6;                           /* Header.Type: ThreadObject */
++        s_ethreads[i].handle = handle;
++        s_ethreads[i].va = va;
++    }
++    /* Only a real thread handle can have exited: NtCurrentThread() (-2) and
++     * synthetic handles are not host objects (the POSIX layer would
++     * dereference them). */
++    if ((handle & 0xFF000000u) == BRIDGE_HANDLE_TAG
++            && GetExitCodeThread(bridge_resolve_handle(handle), &code) && code != 0x103) {
++        BRIDGE_MEM32(va + 4) = 1;                       /* Header.SignalState */
++        BRIDGE_MEM32(va + 0x120) = code;                /* ExitStatus */
++    } else {
++        BRIDGE_MEM32(va + 4) = 0;
++    }
++    return va;
++}
++
++/* True for an object bridge_thread_object handed out. The priority calls
++ * take the object, not a handle: they get NULL for these, as they effectively
++ * did when the object was NULL, so priorities are unchanged by this. */
++static int bridge_is_thread_object(uint32_t va)
++{
++    for (int i = 0; i < BRIDGE_ETHREAD_MAX && s_ethreads[i].va; i++)
++        if (s_ethreads[i].va == va)
++            return 1;
++    return 0;
++}
++
+ static void bridge_ObReferenceObjectByHandle(void)
+ {
+     /* Xbox: NTSTATUS ObReferenceObjectByHandle(HANDLE Handle, PVOID ObjectType, PVOID* Object)
+@@ -4044,7 +4099,11 @@
+     uint32_t handle = STACK_ARG(0);
+     uint32_t obj_type = STACK_ARG(1);
+     uint32_t object_ptr = STACK_ARG(2);
+-    if (object_ptr) BRIDGE_MEM32(object_ptr) = 0;
++    uint32_t object = 0;
++
++    if (obj_type == XBOX_KERNEL_DATA_BASE + KDATA_THREAD_OBJ_TYPE)
++        object = bridge_thread_object(handle);
++    if (object_ptr) BRIDGE_MEM32(object_ptr) = object;
+     g_eax = 0;  /* STATUS_SUCCESS */
+ }
+ 
+@@ -4250,16 +4309,19 @@
+ /* KeQueryBasePriorityThread (ordinal 124, 1 arg). The implementation has
+  * existed in kernel_thread.c all along; only the bridge wrapper was
+  * missing, so the thunk fell through to the fallback and returned 0. */
++static int bridge_is_thread_object(uint32_t va);
++
+ static void bridge_KeQueryBasePriorityThread(void)
+ {
+     g_eax = (uint32_t)xbox_KeQueryBasePriorityThread(
+-        XBOX_TO_NATIVE(STACK_ARG(0)));
++        bridge_is_thread_object(STACK_ARG(0)) ? NULL : XBOX_TO_NATIVE(STACK_ARG(0)));
+ }
+ 
+ static void bridge_KeSetBasePriorityThread(void)
+ {
+     g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
+-        XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
++        bridge_is_thread_object(STACK_ARG(0)) ? NULL : XBOX_TO_NATIVE(STACK_ARG(0)),
++        (LONG)STACK_ARG(1));
+ }
+ 
+ /* ── KeStallExecutionProcessor (ordinal 151, 1 arg) */

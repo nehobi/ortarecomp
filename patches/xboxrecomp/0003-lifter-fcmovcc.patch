@@ -1,0 +1,120 @@
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index fadb6e4..4bcc526 100644
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -3815,6 +3815,13 @@ def _is_rep_compare(insn):
+                                    "scasb", "scasw", "scasd"))
+ 
+ 
++# FCMOVcc tests the same EFLAGS bits as these jumps.
++_FCMOV_JCC = {
++    "fcmovb": "jb", "fcmove": "je", "fcmovbe": "jbe", "fcmovu": "jp",
++    "fcmovnb": "jae", "fcmovne": "jne", "fcmovnbe": "ja", "fcmovnu": "jnp",
++}
++
++
+ def lift_basic_block(lifter, bb, flag_state=None):
+     """
+     Lift a basic block to C statements.
+@@ -3949,6 +3956,23 @@ def lift_basic_block(lifter, bb, flag_state=None):
+                 i += 1
+                 continue
+ 
++        # FCMOVcc st(0), st(i) copies st(i) into st(0) on an EFLAGS
++        # condition. It fell through to the FPU comment fallback, so the move
++        # never happened: the MSVC CRT's fmin/fmax (fld; fld; fcom; fnstsw;
++        # test ah, 1; fcmove/fcmovne) then returned their second argument
++        # every time, and a clamp to [0, 1] wrote 0 back. One title's screen
++        # fade was reset to its start colour every frame and never finished.
++        if (curr.mnemonic in _FCMOV_JCC and last_flag_setter
++                and curr.operands):
++            cond = _make_condition(_FCMOV_JCC[curr.mnemonic],
++                                   last_flag_setter, last_flag_ops)
++            if cond:
++                src = lifter._st_expr(lifter._st_index(curr.operands[-1].reg))
++                stmts.append(f"if ({cond[0]}) fp_top() = {src};"
++                             f" /* {curr.mnemonic} {curr.op_str} */")
++                i += 1
++                continue
++
+         # NEG sets CF when its operand is nonzero. Preserve that value when
+         # a later SBB/ADC consumes it, skipping over EFLAGS-preserving
+         # instructions (e.g. neg eax; push edi; sbb eax, eax).
+diff --git a/tools/recomp/test_lifter_fcmov.py b/tools/recomp/test_lifter_fcmov.py
+new file mode 100644
+index 0000000..d00ded5
+--- /dev/null
++++ b/tools/recomp/test_lifter_fcmov.py
+@@ -0,0 +1,72 @@
++"""FCMOVcc: a conditional move between x87 registers on an EFLAGS condition.
++
++It used to be dropped (lifted to a comment), so the move never happened. The
++MSVC CRT's fmin/fmax are built on it, and both then returned their second
++argument whatever the inputs.
++"""
++import unittest
++
++from .disasm import BasicBlock, Instruction, Operand
++from .lifter import Lifter, lift_basic_block
++
++
++def _insn(mnemonic, op_str, operands):
++    insn = Instruction(0, 2, mnemonic, op_str, "")
++    insn.operands = operands
++    return insn
++
++
++def _crt_minmax(fcmov):
++    # fld [esp+4]; fld [esp+8]; fcom st(1); xor eax, eax; fnstsw ax;
++    # test ah, 1; fcmov st(0), st(1); fxch st(1); fstp st(0)
++    def arg(disp):
++        return Operand(type="mem", mem_base="esp", mem_disp=disp, mem_size=4)
++    st = [Operand(type="reg", reg="st(0)"), Operand(type="reg", reg="st(1)")]
++    insns = [
++        _insn("fld", "dword ptr [esp + 4]", [arg(4)]),
++        _insn("fld", "dword ptr [esp + 8]", [arg(8)]),
++        _insn("fcom", "st(1)", [st[1]]),
++        _insn("xor", "eax, eax", [Operand(type="reg", reg="eax"),
++                                  Operand(type="reg", reg="eax")]),
++        _insn("fnstsw", "ax", [Operand(type="reg", reg="ax")]),
++        _insn("test", "ah, 1", [Operand(type="reg", reg="ah"),
++                                Operand(type="imm", imm=1)]),
++        _insn(fcmov, "st(0), st(1)", st),
++        _insn("fxch", "st(1)", st),
++        _insn("fstp", "st(0)", [st[0]]),
++    ]
++    lifted, _ = lift_basic_block(
++        Lifter(), BasicBlock(start=0, instructions=insns))
++    return "\n".join(lifted)
++
++
++class FcmovLiftTest(unittest.TestCase):
++    def test_fcmove_moves_when_zf_is_set(self):
++        generated = _crt_minmax("fcmove")
++        self.assertNotIn("/* FPU: fcmove", generated)
++        line = next(l for l in generated.splitlines() if "fcmove" in l)
++        self.assertIn("fp_top() = fp_st1();", line)
++        # ZF after `test ah, 1` is "C0 clear", i.e. the zero-result test.
++        self.assertTrue(line.startswith("if (TEST_Z("), line)
++
++    def test_fcmovne_moves_when_zf_is_clear(self):
++        generated = _crt_minmax("fcmovne")
++        line = next(l for l in generated.splitlines() if "fcmovne" in l)
++        self.assertIn("fp_top() = fp_st1();", line)
++        self.assertTrue(line.startswith("if (TEST_NZ("), line)
++
++    def test_fcmov_reads_the_named_register(self):
++        st = [Operand(type="reg", reg="st(0)"), Operand(type="reg", reg="st(3)")]
++        insns = [
++            _insn("test", "ah, 1", [Operand(type="reg", reg="ah"),
++                                    Operand(type="imm", imm=1)]),
++            _insn("fcmovb", "st(0), st(3)", st),
++        ]
++        lifted, _ = lift_basic_block(
++            Lifter(), BasicBlock(start=0, instructions=insns))
++        self.assertIn("fp_top() = g_fp_stack[(g_fp_top + 3) & 7];",
++                      "\n".join(lifted))
++
++
++if __name__ == "__main__":
++    unittest.main()

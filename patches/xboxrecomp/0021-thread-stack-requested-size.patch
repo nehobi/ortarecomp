@@ -1,0 +1,127 @@
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -2992,13 +2992,34 @@
+     #undef TIB_VA
+ }
+ 
++/* Live stacks and their sizes, so a free gives back what was taken. */
++static struct { uint32_t top, size; } g_thread_stack_sizes[XBOX_MAX_THREAD_STACKS];
++
+ uint32_t xbox_AllocThreadStack(void)
+ {
++    return xbox_AllocThreadStackSized(XBOX_THREAD_STACK_SIZE);
++}
++
++/* A stack of the size the title asked for, as the console's kernel gives it.
++ *
++ * Every worker used to get XBOX_THREAD_STACK_SIZE whatever it requested, all
++ * from the title's own heap. Panzer Dragoon Orta fills that heap nearly to the
++ * top while its boss cutscene loads, with eight or more workers alive; the next
++ * 512 KB slice did not fit, the loader ran inline and the game waited forever.
++ * Its workers ask for far less. Sizes below 64 KB are raised to it, a margin
++ * for anything the recompiled code keeps on the stack that the original did
++ * not. */
++uint32_t xbox_AllocThreadStackSized(uint32_t size)
++{
+     uint32_t base;
++    int i;
+ 
+     if (g_thread_stacks_used >= XBOX_MAX_THREAD_STACKS) {
+         return 0;
+     }
++    if (size < 64 * 1024)
++        size = 64 * 1024;
++    size = (size + 0xFFF) & ~0xFFFu;
+ 
+     /* From the heap, not from XBOX_STACK_BASE.
+      *
+@@ -3014,13 +3035,20 @@
+      * taking slices from it is correct for any image size instead of only
+      * for small ones.
+      */
+-    base = xbox_HeapAlloc(XBOX_THREAD_STACK_SIZE, 4096);
++    base = xbox_HeapAlloc(size, 4096);
+     if (!base)
+         return 0;
+     g_thread_stacks_used++;
++    for (i = 0; i < XBOX_MAX_THREAD_STACKS; i++) {
++        if (!g_thread_stack_sizes[i].top) {
++            g_thread_stack_sizes[i].top = base + size - 16;
++            g_thread_stack_sizes[i].size = size;
++            break;
++        }
++    }
+ 
+     /* Top of the slice, 16-byte aligned, growing down. */
+-    return base + XBOX_THREAD_STACK_SIZE - 16;
++    return base + size - 16;
+ }
+ 
+ /* Give a worker's stack back when the worker ends.
+@@ -3039,9 +3067,19 @@
+  */
+ void xbox_FreeThreadStack(uint32_t stack_top)
+ {
++    uint32_t size = XBOX_THREAD_STACK_SIZE;
++    int i;
++
+     if (!stack_top)
+         return;
+-    xbox_HeapFree(stack_top + 16 - XBOX_THREAD_STACK_SIZE);
++    for (i = 0; i < XBOX_MAX_THREAD_STACKS; i++) {
++        if (g_thread_stack_sizes[i].top == stack_top) {
++            size = g_thread_stack_sizes[i].size;
++            g_thread_stack_sizes[i].top = 0;
++            break;
++        }
++    }
++    xbox_HeapFree(stack_top + 16 - size);
+     if (g_thread_stacks_used > 0)
+         g_thread_stacks_used--;
+ }
+diff --git a/src/kernel/xbox_memory_layout.h b/src/kernel/xbox_memory_layout.h
+--- a/src/kernel/xbox_memory_layout.h
++++ b/src/kernel/xbox_memory_layout.h
+@@ -478,6 +478,8 @@
+ /* Carve a simulated stack for a spawned thread. Returns the Xbox VA of the
+  * stack top, or 0 when the pool is exhausted. */
+ uint32_t xbox_AllocThreadStack(void);
++/* The same, of at least `size` bytes (the thread's requested stack size). */
++uint32_t xbox_AllocThreadStackSized(uint32_t size);
+ 
+ /* A TIB and TLS block for a newly spawned guest thread, copied from the
+  * template the loader built. Returns the new TIB's Xbox VA, or 0. */
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -623,20 +623,22 @@
+                     return;
+                 }
+ 
+-                stack_top = xbox_AllocThreadStack();
++                /* KernelStackSize: on the console a thread's only stack. */
++                stack_top = xbox_AllocThreadStackSized(STACK_ARG(2));
+ 
+                 if (!stack_top) {
+                     fprintf(stderr, "  [KERNEL] PsCreateSystemThreadEx: out of "
+-                            "thread stacks, running worker 0x%08X inline\n",
+-                            start_routine);
++                            "thread stacks (asked for %u bytes), running worker "
++                            "0x%08X inline\n", STACK_ARG(2), start_routine);
+                     fflush(stderr);
+                     bridge_run_thread_inline(fn, start_context1, start_context2);
+                 } else {
+-                    HANDLE th = bridge_spawn_thread(fn, start_context1,
+-                                                    start_context2, stack_top);
++                    HANDLE th = bridge_spawn_thread_as(fn, start_context1, start_context2, stack_top,
++                                                       (STACK_ARG(7) & 0xFF) != 0);
+                     fprintf(stderr, "  [KERNEL] PsCreateSystemThreadEx: spawned "
+-                            "worker 0x%08X (ctx=0x%08X, stack top 0x%08X)\n",
+-                            start_routine, start_context1, stack_top);
++                            "worker 0x%08X (ctx=0x%08X, stack top 0x%08X, "
++                            "%u bytes asked%s)\n", start_routine, start_context1,
++                            stack_top, STACK_ARG(2), (STACK_ARG(7) & 0xFF) ? ", suspended" : "");
+                     fflush(stderr);
+                     if (xbox_handle_ptr && th) {
+                         bridge_write_handle(xbox_handle_ptr, th);

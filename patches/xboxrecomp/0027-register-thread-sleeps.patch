@@ -1,0 +1,17 @@
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -1057,7 +1057,12 @@
+         *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
+                                + g_memory_offset) = GetTickCount();
+ 
+-        Sleep(0);  /* yield; the waiter is spinning on another core */
++        /* Sleep(0) here kept this thread spinning on a whole core for the
++         * life of the process. A title that drives its own D3D can wait on
++         * these registers; Panzer Dragoon Orta's renderer is replaced, and
++         * the one wait it still had (CDevice::KickOff's flush) is overridden
++         * in the port. A millisecond is also KeTickCount's own unit. */
++        Sleep(1);
+     }
+     return 0;
+ }

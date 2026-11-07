@@ -1,0 +1,85 @@
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+index dc5a3ba..3a4d660 100644
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -1186,6 +1186,8 @@ int g_force_return = 0;
+ /* x87 control and status. The reset default masks every exception and
+  * rounds to nearest, which is what the CRT expects before _control87. */
+ RECOMP_TLS uint16_t g_fp_control_word = 0x037Fu;
++/* MXCSR reset value: every SSE exception masked, round to nearest. */
++RECOMP_TLS uint32_t g_mxcsr = 0x1F80u;
+ RECOMP_TLS int g_fp_cmp = 0;
+ RECOMP_TLS uint16_t g_fp_cc = 0x4000;
+ 
+diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
+index 8e9325e..383d043 100644
+--- a/templates/runtime/recomp_types.h
++++ b/templates/runtime/recomp_types.h
+@@ -255,6 +255,8 @@ extern RECOMP_TLS int g_df;
+    and the FNSTSW that reads it can land in different bodies, and the control
+    word has to survive a call. (g_fp_stack/g_fp_top are declared above.) */
+ extern RECOMP_TLS uint16_t g_fp_control_word;
++/* SSE MXCSR as the guest sees it (stmxcsr/ldmxcsr). */
++extern RECOMP_TLS uint32_t g_mxcsr;
+ extern RECOMP_TLS int g_fp_cmp;
+ extern RECOMP_TLS uint16_t g_fp_cc;
+ /* x87 precision control (control word bits 8-9). The stack is double-backed,
+diff --git a/tools/conformance/corpus_run.py b/tools/conformance/corpus_run.py
+index 0adb3f1..a3401c6 100644
+--- a/tools/conformance/corpus_run.py
++++ b/tools/conformance/corpus_run.py
+@@ -162,7 +162,7 @@ RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
+ RECOMP_TLS uint32_t g_seh_ebp, g_ebp;
+ RECOMP_TLS int g_df;   /* EFLAGS.DF: the direction the string ops walk */
+ RECOMP_TLS double g_fp_stack[8]; RECOMP_TLS int g_fp_top;
+-RECOMP_TLS uint16_t g_fp_control_word = 0x027F; RECOMP_TLS int g_fp_cmp; RECOMP_TLS uint16_t g_fp_cc = 0x4000;
++RECOMP_TLS uint16_t g_fp_control_word = 0x027F; RECOMP_TLS uint32_t g_mxcsr = 0x1F80u; RECOMP_TLS int g_fp_cmp; RECOMP_TLS uint16_t g_fp_cc = 0x4000;
+ RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
+ RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
+ volatile uint32_t g_icall_trace[16]; volatile uint32_t g_icall_trace_idx;
+diff --git a/tools/conformance/harness.py b/tools/conformance/harness.py
+index a23525c..d07efa4 100644
+--- a/tools/conformance/harness.py
++++ b/tools/conformance/harness.py
+@@ -151,7 +151,7 @@ RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
+ RECOMP_TLS uint32_t g_seh_ebp, g_ebp;
+ RECOMP_TLS int g_df;   /* EFLAGS.DF: the direction the string ops walk */
+ RECOMP_TLS double g_fp_stack[8]; RECOMP_TLS int g_fp_top;
+-RECOMP_TLS uint16_t g_fp_control_word = 0x027F; RECOMP_TLS int g_fp_cmp; RECOMP_TLS uint16_t g_fp_cc = 0x4000;
++RECOMP_TLS uint16_t g_fp_control_word = 0x027F; RECOMP_TLS uint32_t g_mxcsr = 0x1F80u; RECOMP_TLS int g_fp_cmp; RECOMP_TLS uint16_t g_fp_cc = 0x4000;
+ RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
+ RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
+ volatile uint32_t g_icall_trace[16]; volatile uint32_t g_icall_trace_idx;
+diff --git a/tools/conformance/xbe_run.py b/tools/conformance/xbe_run.py
+index 7ecb09d..6abbb18 100644
+--- a/tools/conformance/xbe_run.py
++++ b/tools/conformance/xbe_run.py
+@@ -283,7 +283,7 @@ _HARNESS = '''/* generated -- a real title's own code, lifted and run against it
+ RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
+ RECOMP_TLS uint32_t g_seh_ebp, g_ebp;
+ RECOMP_TLS double g_fp_stack[8]; RECOMP_TLS int g_fp_top;
+-RECOMP_TLS uint16_t g_fp_control_word = 0x027F; RECOMP_TLS int g_fp_cmp; RECOMP_TLS uint16_t g_fp_cc = 0x4000;
++RECOMP_TLS uint16_t g_fp_control_word = 0x027F; RECOMP_TLS uint32_t g_mxcsr = 0x1F80u; RECOMP_TLS int g_fp_cmp; RECOMP_TLS uint16_t g_fp_cc = 0x4000;
+ RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
+ volatile uint32_t g_icall_trace[16]; volatile uint32_t g_icall_trace_idx;
+ volatile uint64_t g_icall_count;
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index 3d25b76..880561f 100644
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -1644,6 +1644,15 @@ class Lifter:
+                  "pand", "pandn", "por", "pxor", "pcmpgtd")                 or m in _SSE_CMP_NAMED:
+             return self._lift_sse(insn, m, ops)
+ 
++        # SSE control/status register. Kept as guest state, like the x87
++        # control word: MSVC's CRT saves it with stmxcsr and restores it
++        # later, so a dropped store hands back stack garbage. The host's
++        # own MXCSR is left alone (the lifted SSE arithmetic is plain C).
++        if m == "stmxcsr" and ops and ops[0].type == "mem":
++            return [f"MEM32({_fmt_mem(ops[0])}) = g_mxcsr; /* stmxcsr {insn.op_str} */"]
++        if m == "ldmxcsr" and ops and ops[0].type == "mem":
++            return [f"g_mxcsr = MEM32({_fmt_mem(ops[0])}); /* ldmxcsr {insn.op_str} */"]
++
+         # ── FPU ──
+         if m.startswith("f"):
+             return self._lift_fpu(insn, m, ops)

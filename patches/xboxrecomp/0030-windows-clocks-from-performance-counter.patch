@@ -1,0 +1,50 @@
+diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
+index b2587a7..e918a2f 100644
+--- a/src/kernel/kernel.h
++++ b/src/kernel/kernel.h
+@@ -23,6 +23,21 @@
+ #include <stdint.h>
+ #include <stdbool.h>
+ 
++/*
++ * The title's clocks on Windows. GetTickCount and GetTickCount64 move in
++ * steps of the system tick, 15.6 ms, whatever timeBeginPeriod asks: the
++ * tick count, interrupt time and timers the title reads stood still for
++ * several frames and then jumped a whole step, so whatever it animated by
++ * them moved in uneven steps that depended on where its frames fell. They
++ * are the performance counter in milliseconds instead (kernel_hal.c), as
++ * the POSIX side already counts with CLOCK_MONOTONIC.
++ */
++#ifdef _WIN32
++unsigned long long xbox_host_ms(void);
++#define GetTickCount() ((DWORD)xbox_host_ms())
++#define GetTickCount64() ((ULONGLONG)xbox_host_ms())
++#endif
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
+index 1ad4fff..0f86347 100644
+--- a/src/kernel/kernel_hal.c
++++ b/src/kernel/kernel_hal.c
+@@ -1052,3 +1052,19 @@ uint64_t xbox_ReadTimeStampCounter(void)
+              + (rem * XBOX_TSC_HZ) / (uint64_t)freq.QuadPart;
+     }
+ }
++
++#ifdef _WIN32
++/* Milliseconds since the host started, from the performance counter: what
++ * GetTickCount64 means, without its 15.6 ms steps (see kernel.h). */
++unsigned long long xbox_host_ms(void)
++{
++    static LARGE_INTEGER freq;
++    LARGE_INTEGER now;
++
++    if (!freq.QuadPart)
++        QueryPerformanceFrequency(&freq);
++    QueryPerformanceCounter(&now);
++    return (unsigned long long)(now.QuadPart / freq.QuadPart) * 1000ull +
++           (unsigned long long)(now.QuadPart % freq.QuadPart) * 1000ull / (unsigned long long)freq.QuadPart;
++}
++#endif

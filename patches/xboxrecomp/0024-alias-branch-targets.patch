@@ -1,0 +1,92 @@
+diff --git a/tools/disasm/functions.py b/tools/disasm/functions.py
+--- a/tools/disasm/functions.py
++++ b/tools/disasm/functions.py
+@@ -934,6 +934,16 @@
+         """
+         bodies = sorted((f.start, f.end) for f in self.functions.values())
+         body_starts = [b[0] for b in bodies]
++        self._close_alias_branches(bodies, body_starts)
++        while self._build_alias_functions(bodies, body_starts):
++            pass
++
++    def _build_alias_functions(self, bodies, body_starts) -> bool:
++        """Build a Function for each alias entry that has none yet. True when
++        that turned up more entries (see _close_alias_branches): a gap alias
++        has its end measured only here, and branches out of it can only be
++        followed once it has one."""
++        built = []
+         starts = sorted(set(body_starts) | set(self._alias_entries))
+         for addr, end in sorted(self._alias_entries.items()):
+             if addr in self.functions:
+@@ -968,6 +978,71 @@
+                 num_instructions=len(insns),
+                 has_prologue=False,
+             )
++            built.append((addr, end))
++        return self._close_alias_branches(bodies, body_starts, built) > 0
++
++    def _close_alias_branches(self, bodies, body_starts, work=None) -> int:
++        """
++        Give an entry to every branch out of a body that lands inside another.
++
++        An alias is lifted as its own body, from its entry to the end of the
++        function it sits in, so a branch to before that entry leaves the body
++        -- and the commonest such branch is the back-edge of the loop the
++        entry was jumped into. With no function there, the branch is lifted
++        as a call to a stub that pops a return address and returns: the loop
++        runs once, and the function returns with esp four bytes off and its
++        epilogue skipped. Panzer Dragoon Orta had 224 of these, from aliases
++        such as 0x000B7082 whose loop head 0x000B7050 lies in the enclosing
++        sub_000B6EA0 just before it.
++
++        The cure is the same alias mechanism, applied to its own output until
++        nothing new turns up: the branch target becomes an alias running to
++        the end of the body it lands in. Ordinary functions are scanned too,
++        since a conditional branch out of a body into another's interior is
++        the same stub call (the pass above it excludes jcc). Aliases do not
++        clamp anyone's end, so no boundary moves.
++
++        An alias in a gap has no end until _build_alias_functions measures
++        it, so it is scanned then (work = the aliases just built). Orta's
++        0x0015EB10 is one: a virtual function cut short by a false start
++        after its first ret, whose `jle` to its own epilogue at 0x0015EBBE
++        skipped `pop esi; pop ecx` and sent the render callback walk
++        (0x00044A20) into heap objects early in episode 4.
++        """
++        def interior(t):
++            j = bisect.bisect_right(body_starts, t) - 1
++            if j >= 0 and bodies[j][0] < t < bodies[j][1]:
++                return bodies[j][1]
++            return None
++
++        if work is None:
++            work = [(f.start, f.end) for f in self.functions.values()
++                    if f.start not in self._alias_entries]
++            for addr, end in self._alias_entries.items():
++                if interior(addr) is not None:
++                    work.append((addr, end))  # a gap alias's end is not known yet
++        added = 0
++        while work:
++            addr, end = work.pop()
++            for insn in self.engine.get_instructions_in_range(addr, end):
++                if not insn.is_branch:
++                    continue
++                t = insn.jump_target
++                if t is None or addr <= t < end:
++                    continue
++                if (t in self._alias_entries or t in self.functions
++                        or t in self._candidates
++                        or t not in self.engine.instructions):
++                    continue
++                t_end = interior(t)
++                if t_end is None:
++                    continue
++                self._alias_entries[t] = t_end
++                work.append((t, t_end))
++                added += 1
++        if added:
++            print(f"  {added} branch target(s) out of a body made alias entries")
++        return added
+ 
+     def _build_functions(self, sections: List[SectionInfo]) -> None:
+         """

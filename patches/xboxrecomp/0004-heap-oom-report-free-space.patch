@@ -1,0 +1,29 @@
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+index 72d5131..dc5a3ba 100644
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -3286,7 +3286,24 @@ static uint32_t heap_alloc_locked(uint32_t size, uint32_t alignment)
+             static struct { uint32_t size; int n; } hist[256];
+             if (!dumped) {
+                 int used = 0;
++                uint64_t live = 0, free_total = 0;
++                uint32_t free_max = 0;
+                 dumped = 1;
++                /* Live against free tells exhaustion from fragmentation: a
++                 * heap full of free blocks none of which fits the request. */
++                for (int i = 0; i < g_heap_block_count; i++) {
++                    if (g_heap_blocks[i].free) {
++                        free_total += g_heap_blocks[i].size;
++                        if (g_heap_blocks[i].size > free_max)
++                            free_max = g_heap_blocks[i].size;
++                    } else {
++                        live += g_heap_blocks[i].size;
++                    }
++                }
++                fprintf(stderr, "  [HEAP] %u KB live, %u KB free, largest free"
++                        " block %u KB, reclaim %s\n",
++                        (unsigned)(live / 1024), (unsigned)(free_total / 1024),
++                        free_max / 1024, xbox_HeapReclaimEnabled() ? "on" : "off");
+                 for (int i = 0; i < g_heap_block_count; i++) {
+                     int j = 0;
+                     if (g_heap_blocks[i].free || !g_heap_blocks[i].size) continue;
