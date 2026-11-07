@@ -93,6 +93,15 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
 
 ## Performance
 
+Pairing (match_frames) in episode 10's bosses (~600-800 draws, a group
+of 247 alike crystal spikes): 5ab1fde pairs groups over 64 x 64 through
+each draw's six nearest (near_of); the bosses now hold ~130-144 fps at
+3x with 200-500 ms a second pairing (key passes 5-8 ms a frame, the
+wrong-pair check 2-3 ms). Next if needed (weaker PCs): reuse the group's
+distances in the wrong-pair check, and Concept of Love's lazy bounds
+(its 7620dd3..f844f83). The main line logs ms pairing; a frame over 8 ms
+logs its stages. Blending holds off only after two slow seconds.
+
 Vertex programs run on the CPU (src/guest/vsh.c): compiled once per
 program and run four vertices at a time with SSE2, bit-identical to the
 reference interpreter (PDO_VSH_CHECK=1 runs both and reports any
