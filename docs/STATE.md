@@ -1,7 +1,8 @@
 # Current state
 
-Panzer Dragoon Orta plays through episodes 1 to 4 and into 5 on Windows
-(player's PC, full disc), with music, movies, saves and bosses. Bring-up notes
+Panzer Dragoon Orta plays through all ten episodes and the ending on
+Windows (player's PC, full disc), with music, movies, saves, bosses and
+Pandora's Box. Heading for a first release. Bring-up notes
 are in `docs/archive/state-bring-up.md`; facts about the game in
 `docs/orta-facts.md`.
 
@@ -94,6 +95,17 @@ are in `docs/archive/state-bring-up.md`; facts about the game in
    respawned in their vertex data) flashed and swapped with
    interpolation: quads_resorted() leaves such a frame unblended (89c6228);
    confirmed fixed.
+9. Missed functions: a scan of the data sections for vtable entries at
+   instruction starts found two methods the lifter folded into the
+   function before: 0x001EDDB0 (failed calls after Pandora's Box loads
+   dragon_tank.mtb) and 0x0028A5E0 (not called yet); both seeded. Every
+   failed call in the player's logs is now covered; a release check is a
+   full play with no `[ICALL] Failed` in run.log.
+10. Hang after the options menu (fixed d7c5558, confirmed in play): the
+   pause start was stored as GetTicks()|1, a reader in that millisecond
+   got -1 ms (49 days), the vblank clock fell before vblank 0 and Swap
+   waited for a vblank that never came. Now kept in ns under a spinlock;
+   a clock before vblank 0 counts as 0.
 
 ## Performance
 
@@ -193,7 +205,8 @@ is open; settings go to ortarecomp.ini when it closes. The launcher (a
 plain start; `--boot` skips it) adds game files, fullscreen, controls and
 "Pandora's Box: All open" (src/guest/unlocks.c; confirmed: the Box's
 episode and boss select reach any episode, the quick way to test later
-ones).
+ones). Save file 1-3 (launcher, ini save_slot): E: is saves/E, E2 or E3
+(file 1 is where saves always were); confirmed.
 
 ## Testing
 
