@@ -3372,6 +3372,67 @@ static float stray_n(const uint8_t *cur, const uint8_t *prev, uint32_t stride, u
     return dmax > 1e-3f && size > 0.0f ? dmax / size : 0.0f;  /* NaN: 0, coherent as before */
 }
 
+/* A particle system (see-through quads the game builds itself each frame,
+ * four vertices a particle) whose particles changed places in the vertex
+ * data: one quad moved by over its own size from where the rest moved
+ * (their median). Smoke is re-sorted back to front as it drifts, and fire
+ * respawns particles in freed slots; blended vertex by vertex, a particle
+ * slid toward another one's place, and flames and puffs flashed, swapped
+ * and vanished for an in-between picture (episode 8). stray() measures
+ * against the whole cloud, so a swap of neighbours passed it. */
+static bool quads_resorted(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
+                           uint32_t nprev)
+{
+    static float mv[1024];
+    uint32_t nq = nv / 4, n = 0;
+    float med;
+
+    if (nq < 2 || nq > 1024 || stride < 12 || (uint64_t)(nv - 1) * stride + 12 > ncur ||
+        (uint64_t)(nv - 1) * stride + 12 > nprev)
+        return false;
+    for (int pass = 0; pass < 2; pass++) {
+        for (uint32_t q = 0; q < nq; q++) {
+            float c1[3] = { 0, 0, 0 }, c0[3] = { 0, 0, 0 }, lo[3], hi[3], size = 0.0f, d = 0.0f;
+            for (int k = 0; k < 3; k++)
+                lo[k] = 3.4e38f, hi[k] = -3.4e38f;
+            for (uint32_t v = 4 * q; v < 4 * q + 4; v++) {
+                float a[3], b[3];
+                memcpy(a, cur + (size_t)v * stride, 12);
+                memcpy(b, prev + (size_t)v * stride, 12);
+                for (int k = 0; k < 3; k++) {
+                    c1[k] += a[k] * 0.25f;
+                    c0[k] += b[k] * 0.25f;
+                    lo[k] = SDL_min(lo[k], a[k]);
+                    hi[k] = SDL_max(hi[k], a[k]);
+                }
+            }
+            for (int k = 0; k < 3; k++) {
+                size = SDL_max(size, hi[k] - lo[k]);
+                d += (c1[k] - c0[k]) * (c1[k] - c0[k]);
+            }
+            d = SDL_sqrtf(d);
+            if (!(d == d) || !(size == size))
+                return false;   /* NaN: not positions */
+            if (pass == 0) {
+                mv[n++] = d;
+            } else if (size > 0.0f && d - med > size) {
+                return true;
+            }
+        }
+        if (pass == 0) {        /* the median move, by a partial selection */
+            for (uint32_t i = 0; i <= n / 2; i++)
+                for (uint32_t j = i + 1; j < n; j++)
+                    if (mv[j] < mv[i]) {
+                        float t = mv[i];
+                        mv[i] = mv[j];
+                        mv[j] = t;
+                    }
+            med = mv[n / 2];
+        }
+    }
+    return false;
+}
+
 static float stray(const uint8_t *cur, const uint8_t *prev, uint32_t stride, uint32_t nv, uint32_t ncur,
                      uint32_t nprev)
 {
@@ -3832,6 +3893,18 @@ static void match_frames(frame_data *prev, frame_data *cur)
                             SDL_Log("rebuilt: cmd %u nv %u tex %08x", ck[j + k].cmd, c->id_nv,
                                     (unsigned)c->draw.tex[0].data);
                         continue;       /* rebuilt in another order: not blended */
+                    }
+                    /* see-through, no depth written, quads: a particle system */
+                    if (c->draw.ps.blend_enable && !c->draw.ps.z_write && c->id_nv % 4 == 0 &&
+                        quads_resorted(cur->blob + u->layout0[0], prev->blob + pu->layout0[0],
+                                       (uint32_t)u->layout0[1], c->id_nv, cur->nblob - (uint32_t)u->layout0[0],
+                                       prev->nblob - (uint32_t)pu->layout0[0])) {
+                        st_rebuilt++;
+                        n_rebuilt++;
+                        if (dbg_groups)
+                            SDL_Log("resorted: cmd %u nv %u tex %08x", ck[j + k].cmd, c->id_nv,
+                                    (unsigned)c->draw.tex[0].data);
+                        continue;       /* particles changed places: not blended */
                     }
                     u->interp[0] = pu->layout0[0];
                     u->interp[1] = 1;
