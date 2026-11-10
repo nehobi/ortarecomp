@@ -25,7 +25,7 @@
 
 enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
        ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
-       ITEM_CONTROLS, ITEM_CLOSE,
+       ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT,
        /* the launcher's own */
        ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
        /* Picture (present.frag) */
@@ -40,7 +40,7 @@ enum { PAGE_MAIN, PAGE_DISPLAY, PAGE_PICTURE, PAGE_SOUND, PAGE_GAMEPLAY, PAGE_AD
 static const char *page_names[PAGE_COUNT] = { "OPTIONS", "DISPLAY", "PICTURE", "SOUND", "GAMEPLAY", "ADVANCED" };
 
 static const int game_main[] = { ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY,
-                                 ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE };
+                                 ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT };
 static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
                                      ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_EXIT };
 static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
@@ -128,12 +128,16 @@ void pdo_launcher_end(void)
     pdo_settings_save();
 }
 
+static bool quit_armed;
+static void ask_quit(void);
+
 static void set_open(bool on)
 {
     if (open_ == on)
         return;
     open_ = on;
     dirty = true;
+    quit_armed = false;
     if (on) {
         selected = 0;
         page = PAGE_MAIN;
@@ -253,6 +257,7 @@ static void change(int dir)
     case ITEM_LSDLL:  if (dir > 0) pick_dll(); else s->lsfg_dll[0] = 0; break;
     case ITEM_CONTROLS: if (dir > 0) { controls = true; selected = 0; } break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
+    case ITEM_QUIT:   if (dir > 0) ask_quit(); break;
     case ITEM_PIC_LOOK:     s->picture_crt = !s->picture_crt; break;
     case ITEM_PIC_BRIGHT:   s->pic_brightness = SDL_clamp(s->pic_brightness + 5 * dir, -50, 50); break;
     case ITEM_PIC_CONTRAST: s->pic_contrast = SDL_clamp(s->pic_contrast + 5 * dir, 50, 150); break;
@@ -283,9 +288,29 @@ static int index_of(int item)
     return 0;
 }
 
+/* Quit game asks twice (quit_armed): the game keeps only what it last
+ * saved. Moving off the line, or closing the menu, takes the first press
+ * back. */
+
+static void ask_quit(void)
+{
+    SDL_Event ev;
+
+    if (!quit_armed) {
+        quit_armed = true;
+        dirty = true;
+        return;
+    }
+    /* As closing the window: settings saved, then the process ends. */
+    SDL_zero(ev);
+    ev.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&ev);
+}
+
 static void move(int dir)
 {
     int n = controls ? CTL_COUNT : NITEMS;
+    quit_armed = false;
     selected = (selected + n + dir) % n;
     dirty = true;
 }
@@ -668,6 +693,7 @@ static const char *label_of(int item)
     case ITEM_SLOT:   return "Save file";
     case ITEM_EXIT:   return "Exit";
     case ITEM_CLOSE:  return "Close";
+    case ITEM_QUIT:   return quit_armed ? "Quit? Press again" : "Quit game";
     case ITEM_BACK:   return "Back";
     case ITEM_CONTROLS:    return "Controls";
     case ITEM_GO_DISPLAY:  return "Display";
@@ -723,6 +749,7 @@ static const char *help_of(int item)
     case ITEM_PICK:   return "A disc image or a folder.";
     case ITEM_EXIT:   return "Quit.";
     case ITEM_CLOSE:  return "Back to the game.";
+    case ITEM_QUIT:   return "Unsaved progress is lost.";
     case ITEM_BACK:   return "Back to the main list.";
     case ITEM_CONTROLS:    return "Keys, pad and mouse.";
     case ITEM_GO_DISPLAY:  return "Resolution, aspect, window.";
@@ -736,7 +763,8 @@ static const char *help_of(int item)
 
 static bool is_link(int item)
 {
-    return item == ITEM_START || item == ITEM_EXIT || item == ITEM_CLOSE || item == ITEM_BACK || item == ITEM_LSDLL ||
+    return item == ITEM_START || item == ITEM_EXIT || item == ITEM_CLOSE || item == ITEM_QUIT || item == ITEM_BACK ||
+           item == ITEM_LSDLL ||
            item == ITEM_PIC_RESET || item == ITEM_PICK || item == ITEM_GPU || item == ITEM_CONTROLS ||
            (item >= ITEM_GO_DISPLAY && item <= ITEM_GO_ADVANCED);
 }
