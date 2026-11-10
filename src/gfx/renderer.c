@@ -4708,6 +4708,7 @@ static void gpu_note(SDL_GPUFence *fence, Uint64 now)
 
 /* t < 0: interpolating, work t out once the window's image is in hand. */
 static uint32_t ls_generated;    /* frames frame generation made for this one */
+static uint32_t ls_extra_shown;  /* its pictures beyond one a game frame, for the main loop's log */
 
 static void draw_frame_main(frame_data *f, frame_data *prev, float t)
 {
@@ -4803,6 +4804,8 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
         int shown = lsfg_show(ls_generated);
         for (int i = 1; i < shown; i++)
             pdo_overlay_frame();
+        if (shown > 1)
+            ls_extra_shown += (uint32_t)(shown - 1);
         ls_drawn = false;
     }
     pdo_overlay_frame();
@@ -4912,7 +4915,7 @@ void pdo_gfx_main_loop(void)
 
         if (now - win_start >= 1000000000ull) {
             double secs = (double)(now - win_start) / 1e9;
-            double games = win_games / secs, shown = win_shown / secs;
+            double games = win_games / secs, shown = (win_shown + ls_extra_shown) / secs;
             uint32_t skipped = drops_total - win_drops;
             /* Skipped game frames alone do not count: in busy scenes the
              * game itself runs late, and holding blending off then made
@@ -4940,7 +4943,7 @@ void pdo_gfx_main_loop(void)
             main_record_ns = main_wait_ns = main_submit_ns = gpu_busy_ns = main_match_ns = 0;
             gpu_frames = 0;
             win_start = now;
-            win_games = win_shown = 0;
+            win_games = win_shown = ls_extra_shown = 0;
             win_drops = drops_total;
         }
 

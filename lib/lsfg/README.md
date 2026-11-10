@@ -25,6 +25,8 @@ Changes from lsfg-vk's `framegen/`:
 - It owns its input and output images instead of importing them from Linux
   file descriptors.
 - Barriers are `vkCmdPipelineBarrier`, so `synchronization2` isn't needed.
+- No `std::format` (GCC before 13 lacks it): its two messages are built as
+  plain strings.
 - `lsfg.cpp`, the instance, command pool, fence, semaphore and DDS upload
   code are gone. The contexts are `record()`, `nextInput()` and `outputs()`.
 

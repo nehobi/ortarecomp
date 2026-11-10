@@ -82,6 +82,11 @@ if(WIN32)
 endif()
 if(PDO_RELEASE)
     target_compile_definitions(OrtaRecomp PRIVATE PDO_RELEASE=1)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # The C++ runtime (frame generation) linked in, so the binary needs
+        # only the C library, as before (SteamOS and older distributions).
+        target_link_options(OrtaRecomp PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
     if(MSVC)
         # Function pointers to the bodies, not incremental-link thunks: the
         # crash report names game functions from them.
