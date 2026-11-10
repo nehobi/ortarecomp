@@ -5,6 +5,10 @@
 ### Added
 
 - Resolution scale up to 8x (was 4x), for high-end GPUs.
+- Lossless Scaling frame generation (experimental), with your own copy of
+  Lossless Scaling: Options > Advanced > Frame gen. now steps Off, Interp.
+  (our frame interpolation, as before), LS 2x, LS 3x, LS 4x, with an LS mode
+  (Quality or Performance) and a Lossless.dll line to choose the DLL.
 
 ### Fixed
 

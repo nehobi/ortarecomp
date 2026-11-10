@@ -22,6 +22,10 @@ typedef struct pdo_settings {
     bool gpu_vertex;        /* vertex programs on the GPU (shaders/vsh.vert), not the CPU */
     bool gpu_fixed;         /* fixed-function vertices on the GPU (shaders/fvf.vert) */
     bool frame_interp;      /* frames between the game's 60, blended (renderer.c) */
+    int  lsfg_multiplier;   /* Lossless Scaling frame generation: pictures per game
+                               frame, 2-4; 1 off (lsfg_present.cpp, from the next start) */
+    bool lsfg_performance;  /* its performance mode, lighter and less exact */
+    char lsfg_dll[PDO_PATH_MAX];    /* the player's Lossless.dll; "" looks in the usual places */
     bool fullscreen;        /* borderless, the whole monitor (Alt+Enter) */
     bool fxaa;              /* edge smoothing on the finished frame (shaders/screen.frag) */
     int  win_x, win_y, win_w, win_h;    /* the window when not fullscreen (w 0: not set yet) */

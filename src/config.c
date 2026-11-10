@@ -13,9 +13,11 @@
 static char data_dir[PDO_PATH_MAX];
 char pdo_log_file[PDO_PATH_MAX];
 
-static pdo_settings settings = { 1, 1, PDO_ASPECT_4_3, PDO_FIT_BARS, false, 100, false, true, true, false, false, false,
-                                  0, 0, 0, 0, false, true, 100, false, true, true,
-                                  false, 0, 100, 100, 100, false, 1 };
+static pdo_settings settings = { .render_scale = 1, .msaa = 1, .aspect = PDO_ASPECT_4_3, .fit = PDO_FIT_BARS,
+                                  .master_volume = 100, .gpu_vertex = true, .gpu_fixed = true,
+                                  .lsfg_multiplier = 1, .mouse_aim = true, .mouse_speed = 100,
+                                  .skip_logos = true, .depth_reversed = true, .pic_contrast = 100,
+                                  .pic_gamma = 100, .pic_saturation = 100, .save_slot = 1 };
 
 pdo_settings *pdo_settings_get(void)
 {
@@ -141,6 +143,12 @@ bool pdo_config_load(pdo_config *cfg)
             settings.gpu_fixed = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "frame_interp") == 0)
             settings.frame_interp = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "lsfg_multiplier") == 0)
+            settings.lsfg_multiplier = clamp_int(SDL_atoi(eq + 1), 1, 4);
+        else if (strcmp(line, "lsfg_performance") == 0)
+            settings.lsfg_performance = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "lsfg_dll") == 0)
+            SDL_strlcpy(settings.lsfg_dll, eq + 1, sizeof settings.lsfg_dll);
         else if (strcmp(line, "fullscreen") == 0)
             settings.fullscreen = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "fxaa") == 0)
@@ -182,7 +190,7 @@ bool pdo_config_load(pdo_config *cfg)
 
 bool pdo_config_save(const pdo_config *cfg)
 {
-    char path[PDO_PATH_MAX], text[PDO_PATH_MAX + 2048];
+    char path[PDO_PATH_MAX], text[2 * PDO_PATH_MAX + 2048];
     int n;
 
     config_path(path, sizeof path);
@@ -199,6 +207,9 @@ bool pdo_config_save(const pdo_config *cfg)
                  "gpu_vertex=%d\n"
                  "gpu_fixed=%d\n"
                  "frame_interp=%d\n"
+                 "lsfg_multiplier=%d\n"
+                 "lsfg_performance=%d\n"
+                 "lsfg_dll=%s\n"
                  "fullscreen=%d\n"
                  "fxaa=%d\n"
                  "window=%d,%d,%d,%d\n"
@@ -220,7 +231,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
-                 settings.gpu_fixed, settings.frame_interp, settings.fullscreen, settings.fxaa,
+                 settings.gpu_fixed, settings.frame_interp, settings.lsfg_multiplier, settings.lsfg_performance,
+                 settings.lsfg_dll, settings.fullscreen, settings.fxaa,
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,
                  settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,

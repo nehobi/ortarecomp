@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(OrtaRecomp VERSION 0.1.1 LANGUAGES C)
+project(OrtaRecomp VERSION 0.1.1 LANGUAGES C CXX)
 
 # Orta Recomp: a static recompilation of Panzer Dragoon Orta (Xbox).
 #
@@ -10,6 +10,8 @@ project(OrtaRecomp VERSION 0.1.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(PDO_RELEASE "A release build: no console window on Windows (tools/package.py)" OFF)
 
@@ -29,6 +31,29 @@ set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+# Our changes to SDL (patches/SDL/), kept here only: the Vulkan objects
+# behind SDL's GPU device, for frame generation (lsfg_present.cpp).
+# Applied once; re-running configure finds them already in place.
+find_package(Git QUIET)
+file(GLOB PDO_SDL_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/SDL/*.patch")
+list(SORT PDO_SDL_PATCHES)
+foreach(patch ${PDO_SDL_PATCHES})
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} apply --reverse --check "${patch}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/external/SDL"
+        RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
+    if(NOT already EQUAL 0)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply "${patch}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/external/SDL"
+            RESULT_VARIABLE failed)
+        if(failed)
+            message(FATAL_ERROR "Could not apply ${patch} to external/SDL. "
+                "Reset it with: git -C external/SDL checkout -- .")
+        endif()
+        message(STATUS "Orta Recomp: applied ${patch}")
+    endif()
+endforeach()
 add_subdirectory(external/SDL EXCLUDE_FROM_ALL)
 
 # ── Launcher ─────────────────────────────────────────────────────────────
@@ -147,6 +172,35 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         # relies on 32-bit wraparound, so neither assumption may be optimised on.
         target_compile_options(pdo_recomp PRIVATE
             -fno-strict-aliasing -fwrapv -w)
+    endif()
+
+    # Lossless Scaling frame generation (lib/lsfg, from BattleTanx: Global
+    # Assault Recompiled; the player's own Lossless.dll at run time). Its
+    # shader translator needs SPIR-V's headers: PDO_SPIRV_HEADERS, else the
+    # Vulkan SDK's or the system's. Without them the game builds without it.
+    set(PDO_SPIRV_HEADERS "" CACHE PATH "Folder holding spirv/unified1/spirv.hpp (SPIRV-Headers' include)")
+    set(PDO_SPIRV_FOUND "")
+    foreach(dir "${PDO_SPIRV_HEADERS}" "$ENV{VULKAN_SDK}/include" "$ENV{VULKAN_SDK}/Include" "/usr/include")
+        if(NOT PDO_SPIRV_FOUND AND dir AND EXISTS "${dir}/spirv/unified1/spirv.hpp")
+            set(PDO_SPIRV_FOUND "${dir}")
+        endif()
+    endforeach()
+    if(PDO_SPIRV_FOUND)
+        message(STATUS "Orta Recomp: Lossless Scaling frame generation built (SPIR-V headers in ${PDO_SPIRV_FOUND})")
+        # Vulkan's headers as SDL carries them, and a stand-in for volk.
+        add_library(pdo_vk STATIC src/gfx/vk/vk_load.c)
+        target_include_directories(pdo_vk PUBLIC src/gfx/vk "${CMAKE_CURRENT_SOURCE_DIR}/external/SDL/src/video/khronos")
+        target_compile_definitions(pdo_vk PUBLIC VK_NO_PROTOTYPES)
+        target_link_libraries(pdo_vk PUBLIC SDL3::SDL3-static)
+        set(LSFG_VULKAN_TARGET pdo_vk)
+        set(LSFG_SPIRV_INCLUDE_DIR "${PDO_SPIRV_FOUND}")
+        add_subdirectory(lib/lsfg ${CMAKE_BINARY_DIR}/lsfg)
+        target_sources(pdo_recomp PRIVATE src/gfx/lsfg_present.cpp)
+        target_compile_definitions(pdo_recomp PUBLIC PDO_HAVE_LSFG=1)
+        target_link_libraries(pdo_recomp PUBLIC lsfg)
+    else()
+        message(STATUS "Orta Recomp: no SPIR-V headers (install the Vulkan SDK or set PDO_SPIRV_HEADERS); "
+                       "building without Lossless Scaling frame generation")
     endif()
 
     target_sources(OrtaRecomp PRIVATE src/guest/guest.c)

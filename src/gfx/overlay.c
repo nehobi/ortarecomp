@@ -15,12 +15,16 @@
 
 #include "../config.h"
 #include "../input_map.h"
+#include "renderer.h"
+#ifdef PDO_HAVE_LSFG
+#include "lsfg_present.h"
+#endif
 
 #include <stdio.h>
 #include <string.h>
 
 enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
-       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
+       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
        ITEM_CONTROLS, ITEM_CLOSE,
        /* the launcher's own */
        ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
@@ -46,8 +50,9 @@ static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CO
                                      ITEM_PIC_RESET, ITEM_BACK };
 static const int sound_items[] = { ITEM_VOLUME, ITEM_3D, ITEM_BACK };
 static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_BACK };
-static const int advanced_game[] = { ITEM_INTERP, ITEM_VSH, ITEM_FVF, ITEM_BACK };
-static const int advanced_launcher[] = { ITEM_INTERP, ITEM_VSH, ITEM_FVF, ITEM_GPU, ITEM_BACK };
+static const int advanced_game[] = { ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_VSH, ITEM_FVF, ITEM_BACK };
+static const int advanced_launcher[] = { ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_VSH, ITEM_FVF, ITEM_GPU,
+                                         ITEM_BACK };
 
 static bool launcher;               /* pdo_launcher_begin .. end */
 static int launcher_choice;         /* PDO_LAUNCH_* picked, 0 none yet */
@@ -140,6 +145,51 @@ static void set_open(bool on)
     }
 }
 
+/* Frame generation steps: off, our blending (renderer.c), Lossless
+ * Scaling's at 2x, 3x, 4x (lsfg_present.cpp). */
+static int frame_gen_step(const pdo_settings *s)
+{
+    return s->lsfg_multiplier >= 2 ? s->lsfg_multiplier : s->frame_interp ? 1 : 0;
+}
+
+static void next_frame_gen(pdo_settings *s, int dir)
+{
+    int i = SDL_clamp(frame_gen_step(s) + dir, 0, 4);
+    s->frame_interp = i == 1;
+    s->lsfg_multiplier = i >= 2 ? i : 1;
+}
+
+/* Lossless.dll from a file dialog: its answer can come on another thread,
+ * so it waits here until the menu takes it. */
+static char picked_dll[PDO_PATH_MAX];
+static SDL_AtomicInt dll_picked;
+
+static void SDLCALL dll_dialog_cb(void *userdata, const char *const *files, int filter)
+{
+    (void)userdata;
+    (void)filter;
+    if (files && files[0]) {
+        SDL_strlcpy(picked_dll, files[0], sizeof picked_dll);
+        SDL_SetAtomicInt(&dll_picked, 1);
+    }
+}
+
+static void pick_dll(void)
+{
+    static const SDL_DialogFileFilter filters[] = { { "Lossless.dll", "dll" }, { "All files", "*" } };
+    SDL_ShowOpenFileDialog(dll_dialog_cb, NULL, NULL, filters, SDL_arraysize(filters), NULL, false);
+}
+
+static void take_picked_dll(void)
+{
+    if (SDL_GetAtomicInt(&dll_picked)) {
+        SDL_SetAtomicInt(&dll_picked, 0);
+        SDL_strlcpy(pdo_settings_get()->lsfg_dll, picked_dll, sizeof pdo_settings_get()->lsfg_dll);
+        dirty = true;
+        pdo_settings_save();
+    }
+}
+
 /* Anti-aliasing steps: off, FXAA (cheap, on the finished frame), then
  * MSAA 2x, 4x, 8x. */
 static void next_aa(pdo_settings *s, int dir)
@@ -198,7 +248,9 @@ static void change(int dir)
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
-    case ITEM_INTERP: s->frame_interp = !s->frame_interp; break;
+    case ITEM_INTERP: next_frame_gen(s, dir); break;
+    case ITEM_LSMODE: s->lsfg_performance = !s->lsfg_performance; break;
+    case ITEM_LSDLL:  if (dir > 0) pick_dll(); else s->lsfg_dll[0] = 0; break;
     case ITEM_CONTROLS: if (dir > 0) { controls = true; selected = 0; } break;
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     case ITEM_PIC_LOOK:     s->picture_crt = !s->picture_crt; break;
@@ -365,6 +417,8 @@ bool pdo_overlay_event(const SDL_Event *ev)
 void pdo_overlay_frame(void)
 {
     Uint64 now = SDL_GetTicks();
+
+    take_picked_dll();
 
     if (!count_start)
         count_start = now;
@@ -546,7 +600,28 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_3D:     snprintf(v, n, "%s", s->audio_3d ? "Headphones" : "Speakers"); break;
     case ITEM_VSH:    snprintf(v, n, "%s", s->gpu_vertex ? "GPU" : "CPU"); break;
     case ITEM_FVF:    snprintf(v, n, "%s", s->gpu_fixed ? "GPU" : "CPU"); break;
-    case ITEM_INTERP: snprintf(v, n, "%s", s->frame_interp ? "On" : "Off"); break;
+    case ITEM_INTERP: {
+        static const char *steps[] = { "Off", "Interp.", "LS 2x", "LS 3x", "LS 4x" };
+        snprintf(v, n, "%s", steps[frame_gen_step(s)]);
+        break;
+    }
+    case ITEM_LSMODE: snprintf(v, n, "%s", s->lsfg_performance ? "Performance" : "Quality"); break;
+    case ITEM_LSDLL: {
+#ifdef PDO_HAVE_LSFG
+        char found[PDO_PATH_MAX];
+        if (s->lsfg_dll[0]) {
+            const char *f = s->lsfg_dll + strlen(s->lsfg_dll);
+            while (f > s->lsfg_dll && f[-1] != '/' && f[-1] != '\\')
+                f--;
+            snprintf(v, n, "%.14s", f);
+        } else {
+            snprintf(v, n, "%s", pdo_lsfg_find_dll(pdo_data_dir(), found, sizeof found) ? "Found" : "Missing");
+        }
+#else
+        snprintf(v, n, "Not built");
+#endif
+        break;
+    }
     case ITEM_GPU:    snprintf(v, n, "Vulkan"); break;
     case ITEM_SLOT:   snprintf(v, n, "%d%s", s->save_slot, pdo_save_slot_used(s->save_slot) ? "" : " (empty)"); break;
     case ITEM_PICK: {   /* the end of the path: the file or folder's name */
@@ -584,7 +659,9 @@ static const char *label_of(int item)
     case ITEM_3D:     return "3D audio";
     case ITEM_VSH:    return "Vertex programs";
     case ITEM_FVF:    return "Fixed function";
-    case ITEM_INTERP: return "Frame interp.";
+    case ITEM_INTERP: return "Frame gen.";
+    case ITEM_LSMODE: return "LS mode";
+    case ITEM_LSDLL:  return "Lossless.dll";
     case ITEM_GPU:    return "Graphics";
     case ITEM_START:  return launcher_files_ok ? "Start game" : "Start game (no files)";
     case ITEM_PICK:   return "Game files";
@@ -626,7 +703,21 @@ static const char *help_of(int item)
     case ITEM_3D:     return "Headphones: sounds around you.";
     case ITEM_VSH:    return "GPU is faster.";
     case ITEM_FVF:    return "GPU is faster.";
-    case ITEM_INTERP: return "Smooth motion above 60 fps.";
+    case ITEM_INTERP: {
+        const pdo_settings *s = pdo_settings_get();
+        bool ls = s->lsfg_multiplier >= 2;
+        if (launcher)
+            return ls ? "LS: Lossless Scaling's frames." : "Interp.: our own blending.";
+#ifdef PDO_HAVE_LSFG
+        if (ls && !pdo_gfx_lsfg_active() && pdo_lsfg_status()[0])
+            return "Can't run here: see the log.";
+#endif
+        if (ls != pdo_gfx_lsfg_active())
+            return "Takes effect at the next start.";
+        return ls ? "60 fps x this; needs that Hz." : "Smooth motion above 60 fps.";
+    }
+    case ITEM_LSMODE: return "Performance: lighter, rougher.";
+    case ITEM_LSDLL:  return "OK: choose; Left: look for it.";
     case ITEM_GPU:    return "The graphics API.";
     case ITEM_START:  return launcher_files_ok ? "Play." : "Choose your game files first.";
     case ITEM_PICK:   return "A disc image or a folder.";
@@ -638,14 +729,14 @@ static const char *help_of(int item)
     case ITEM_GO_PICTURE:  return "CRT look, brightness, colour.";
     case ITEM_GO_SOUND:    return "Volume, 3D audio.";
     case ITEM_GO_GAMEPLAY: return "Pandora's Box, boot logos.";
-    case ITEM_GO_ADVANCED: return "Frame interpolation and more.";
+    case ITEM_GO_ADVANCED: return "Frame generation and more.";
     }
     return "";
 }
 
 static bool is_link(int item)
 {
-    return item == ITEM_START || item == ITEM_EXIT || item == ITEM_CLOSE || item == ITEM_BACK ||
+    return item == ITEM_START || item == ITEM_EXIT || item == ITEM_CLOSE || item == ITEM_BACK || item == ITEM_LSDLL ||
            item == ITEM_PIC_RESET || item == ITEM_PICK || item == ITEM_GPU || item == ITEM_CONTROLS ||
            (item >= ITEM_GO_DISPLAY && item <= ITEM_GO_ADVANCED);
 }
