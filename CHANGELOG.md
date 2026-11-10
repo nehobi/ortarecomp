@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.1 (beta)
+
+### Fixed
+
+- Linux and Steam Deck: the game could crash when starting (at the launcher's
+  Start game, or at once), depending on where the system placed memory that
+  run. The game's whole memory range is now reserved up front.
+
 ## v0.1.0 (beta)
 
 The first release. Changes are listed against the original Xbox game.
