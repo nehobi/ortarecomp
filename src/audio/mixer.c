@@ -1,8 +1,11 @@
 /*
  * Software voice mixer. See mixer.h.
  *
+ * Output: stereo (the speaker bins folded to two), or 5.1, the bins as they
+ * are: SDL's 5.1 order (FL, FR, FC, LFE, BL, BR) is the Xbox's bin order.
+ *
  * Debugging switches (environment):
- *   PDO_AUDIO_DUMP=file.wav   record exactly what is mixed (float stereo)
+ *   PDO_AUDIO_DUMP=file.wav   record exactly what is mixed (float, the output's channels)
  *   PDO_AUDIO_STATS=1         log peak level and clipped samples per second
  */
 
@@ -38,6 +41,10 @@ typedef struct voice {
     uint32_t       loop_start, loop_len;/* frames; len 0 = whole buffer */
     float          volume, headroom;    /* linear */
     float          g3d[2];              /* 3D left/right gains */
+    /* 5.1 (pdo_voice_set_3d_surround): the 3D gain of each speaker bin
+     * instead, the voice's front speakers' level spread over the corners. */
+    bool           pan6;
+    float          g6[PDO_BIN_SPEAKERS];
     /* Headphones (pdo_voice_set_3d_ears): a mono 3D voice heard through a
      * head -- each ear's delay, head-shadow filter and a cue for behind. */
     bool           ears;
@@ -64,6 +71,7 @@ typedef struct voice {
 static voice voices[MAX_VOICES];
 static SDL_Mutex *lock;
 static SDL_AudioStream *stream;
+static int out_channels = 2;        /* 2, or 6 for 5.1 */
 static SDL_Thread *pacer;
 static SDL_AtomicInt pacer_quit;
 
@@ -217,7 +225,16 @@ static void update_gains(voice *v)
     for (int i = 0; i < v->desc.bin_count; i++) {
         int ch = v->desc.channels == 1 ? 0 : i % v->desc.channels;
         uint32_t bin = v->desc.bins[i].bin;
-        if (bin < PDO_BIN_SPEAKERS)
+        if (bin < PDO_BIN_SPEAKERS && v->pan6) {
+            /* 5.1: the loudest speaker bin's level, spread over the
+             * corners by where the voice is (a stereo voice's two channels
+             * both, halved). */
+            float level = db100_to_gain(v->desc.bins[i].volume) * v->direct /
+                          (v->desc.channels == 1 ? 1.0f : (float)v->desc.channels);
+            for (int b = 0; b < PDO_BIN_SPEAKERS; b++)
+                if (level * v->g6[b] > v->gain[ch][b])
+                    v->gain[ch][b] = level * v->g6[b];
+        } else if (bin < PDO_BIN_SPEAKERS)
             v->gain[ch][bin] = db100_to_gain(v->desc.bins[i].volume) * side_gain(v, bin) * v->direct;
         else if (bin == PDO_BIN_I3DL2) {
             v->gain[ch][SEND] = db100_to_gain(v->desc.bins[i].volume) * v->room;
@@ -434,18 +451,20 @@ static void mix_voice(voice *v, float bins[][COLUMNS], int frames)
 
 static void write_dump_header(void)
 {
-    /* RIFF/WAVE, IEEE float stereo, sizes patched as the file grows. */
-    uint32_t data = (uint32_t)(dump_frames * 8);
+    /* RIFF/WAVE, IEEE float, the output's channels, sizes patched as the
+     * file grows. */
+    uint32_t fb = 4u * (uint32_t)out_channels;
+    uint32_t data = (uint32_t)(dump_frames * fb);
     uint8_t h[44];
     memcpy(h, "RIFF", 4);
     *(uint32_t *)(h + 4) = 36 + data;
     memcpy(h + 8, "WAVEfmt ", 8);
     *(uint32_t *)(h + 16) = 16;
     *(uint16_t *)(h + 20) = 3;
-    *(uint16_t *)(h + 22) = 2;
+    *(uint16_t *)(h + 22) = (uint16_t)out_channels;
     *(uint32_t *)(h + 24) = PDO_MIX_RATE;
-    *(uint32_t *)(h + 28) = PDO_MIX_RATE * 8;
-    *(uint16_t *)(h + 32) = 8;
+    *(uint32_t *)(h + 28) = PDO_MIX_RATE * fb;
+    *(uint16_t *)(h + 32) = (uint16_t)fb;
     *(uint16_t *)(h + 34) = 32;
     memcpy(h + 36, "data", 4);
     *(uint32_t *)(h + 40) = data;
@@ -454,10 +473,12 @@ static void write_dump_header(void)
     SDL_SeekIO(dump, 0, SDL_IO_SEEK_END);
 }
 
-static void mix_block(float *out, int frames)
+/* frames of chs floats (2 or 6). */
+static void mix_block(float *out, int frames, int chs)
 {
     static float bins[BLOCK_FRAMES][COLUMNS];
     static float send[BLOCK_FRAMES];
+    static float room[BLOCK_FRAMES * 2];
     const float k = 0.70710678f;
 
     memset(bins, 0, sizeof(bins[0]) * (size_t)frames);
@@ -473,31 +494,47 @@ static void mix_block(float *out, int frames)
                 mix_voice(&voices[i], bins, frames);
         }
 
-    /* Fold the speaker bins to stereo. LFE is not folded in, as a stereo
-     * receiver would drop it too. Then the reverb on the send. */
-    for (int i = 0; i < frames; i++) {
-        float *b = bins[i];
-        out[i * 2] = b[PDO_BIN_FRONT_LEFT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_LEFT];
-        out[i * 2 + 1] = b[PDO_BIN_FRONT_RIGHT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_RIGHT];
-        send[i] = b[SEND];
+    if (chs == 6) {
+        /* 5.1: the speaker bins as they are, the reverb's two channels
+         * around the room (front and back, each -3 dB). */
+        memset(room, 0, sizeof(float) * 2 * (size_t)frames);
+        for (int i = 0; i < frames; i++) {
+            memcpy(out + i * 6, bins[i], 6 * sizeof(float));
+            send[i] = bins[i][SEND];
+        }
+        pdo_reverb_process(send, room, frames, PDO_MIX_RATE);
+        for (int i = 0; i < frames; i++) {
+            out[i * 6 + PDO_BIN_FRONT_LEFT] += k * room[i * 2];
+            out[i * 6 + PDO_BIN_FRONT_RIGHT] += k * room[i * 2 + 1];
+            out[i * 6 + PDO_BIN_BACK_LEFT] += k * room[i * 2];
+            out[i * 6 + PDO_BIN_BACK_RIGHT] += k * room[i * 2 + 1];
+        }
+    } else {
+        /* Fold the speaker bins to stereo. LFE is not folded in, as a
+         * stereo receiver would drop it too. Then the reverb on the send. */
+        for (int i = 0; i < frames; i++) {
+            float *b = bins[i];
+            out[i * 2] = b[PDO_BIN_FRONT_LEFT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_LEFT];
+            out[i * 2 + 1] = b[PDO_BIN_FRONT_RIGHT] + k * b[PDO_BIN_FRONT_CENTER] + k * b[PDO_BIN_BACK_RIGHT];
+            send[i] = b[SEND];
+        }
+        pdo_reverb_process(send, out, frames, PDO_MIX_RATE);
     }
-    pdo_reverb_process(send, out, frames, PDO_MIX_RATE);
     SDL_UnlockMutex(lock);
 
-    for (int i = 0; i < frames; i++) {
-        float l = out[i * 2], r = out[i * 2 + 1];
+    for (int i = 0; i < frames * chs; i++) {
+        float x = out[i];
 
         if (stats) {
-            float m = fmaxf(fabsf(l), fabsf(r));
+            float m = fabsf(x);
             if (m > stat_peak) stat_peak = m;
             if (m > 1.0f) stat_clipped++;
         }
-        out[i * 2]     = l > 1.0f ? 1.0f : l < -1.0f ? -1.0f : l;
-        out[i * 2 + 1] = r > 1.0f ? 1.0f : r < -1.0f ? -1.0f : r;
+        out[i] = x > 1.0f ? 1.0f : x < -1.0f ? -1.0f : x;
     }
 
     if (dump) {
-        SDL_WriteIO(dump, out, (size_t)frames * 8);
+        SDL_WriteIO(dump, out, (size_t)frames * 4 * (size_t)chs);
         dump_frames += (Uint64)frames;
         if (dump_frames % PDO_MIX_RATE < (Uint64)frames)
             write_dump_header();
@@ -543,25 +580,28 @@ void pdo_mixer_set_paused(bool on)
 
 static void SDLCALL stream_cb(void *userdata, SDL_AudioStream *s, int additional, int total)
 {
-    float buf[BLOCK_FRAMES * 2];
+    float buf[BLOCK_FRAMES * 6];
     /* The overlay's master volume, squared so the slider feels even. */
     float g = (float)pdo_settings_get()->master_volume / 100.0f;
+    int chs = (int)(intptr_t)userdata, fb = 4 * chs;
 
     g *= g;
+    if (chs != out_channels)        /* a stream being replaced (pdo_mixer_apply_output) */
+        return;
     while (additional > 0) {
-        int frames = additional / 8;
+        int frames = additional / fb;
         if (frames > BLOCK_FRAMES) frames = BLOCK_FRAMES;
         if (frames <= 0) frames = 1;
         if (SDL_GetAtomicInt(&paused))
-            memset(buf, 0, sizeof(float) * 2 * (size_t)frames);
+            memset(buf, 0, sizeof(float) * (size_t)chs * (size_t)frames);
         else {
-            mix_block(buf, frames);
+            mix_block(buf, frames, chs);
             if (g != 1.0f)
-                for (int i = 0; i < frames * 2; i++)
+                for (int i = 0; i < frames * chs; i++)
                     buf[i] *= g;
         }
-        SDL_PutAudioStreamData(s, buf, frames * 8);
-        additional -= frames * 8;
+        SDL_PutAudioStreamData(s, buf, frames * fb);
+        additional -= frames * fb;
     }
 }
 
@@ -569,14 +609,14 @@ static void SDLCALL stream_cb(void *userdata, SDL_AudioStream *s, int additional
  * the real rate, or streaming code waits forever. */
 static int SDLCALL pacer_main(void *unused)
 {
-    float buf[BLOCK_FRAMES * 2];
+    float buf[BLOCK_FRAMES * 6];
     Uint64 start = SDL_GetTicksNS(), mixed = 0;
 
     while (!SDL_GetAtomicInt(&pacer_quit)) {
         Uint64 due = (SDL_GetTicksNS() - start) * PDO_MIX_RATE / SDL_NS_PER_SECOND;
         while (mixed + BLOCK_FRAMES <= due) {
             if (!SDL_GetAtomicInt(&paused))
-                mix_block(buf, BLOCK_FRAMES);
+                mix_block(buf, BLOCK_FRAMES, out_channels);
             mixed += BLOCK_FRAMES;
         }
         SDL_Delay(2);
@@ -586,9 +626,44 @@ static int SDLCALL pacer_main(void *unused)
 
 /* ── API ──────────────────────────────────────────────────────────────── */
 
-bool pdo_mixer_init(void)
+/* The device with as many channels as the setting wants: 6 for 5.1 (SDL
+ * folds them down itself if the device has fewer), else 2. */
+static SDL_AudioStream *open_output(void)
 {
     SDL_AudioSpec spec = { SDL_AUDIO_F32, 2, PDO_MIX_RATE };
+    SDL_AudioStream *s;
+
+    spec.channels = out_channels;
+    s = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, stream_cb,
+                                  (void *)(intptr_t)out_channels);
+    if (s) {
+        SDL_ResumeAudioStreamDevice(s);
+        SDL_Log("audio: %s, 48 kHz %s", SDL_GetCurrentAudioDriver(), out_channels == 6 ? "5.1" : "stereo");
+    }
+    return s;
+}
+
+void pdo_mixer_apply_output(void)
+{
+    int want = pdo_settings_get()->audio_out == PDO_AUDIO_SURROUND ? 6 : 2;
+
+    if (want == out_channels)
+        return;
+    /* The old stream's callback mixes no more once out_channels moves on;
+     * the pacer (no device) just mixes in the new layout. */
+    SDL_LockMutex(lock);
+    out_channels = want;
+    SDL_UnlockMutex(lock);
+    if (!stream)
+        return;
+    SDL_DestroyAudioStream(stream);
+    stream = open_output();
+    if (!stream)
+        SDL_Log("audio: no output after the change (%s)", SDL_GetError());
+}
+
+bool pdo_mixer_init(void)
+{
     const char *path = getenv("PDO_AUDIO_DUMP");
     const char *st = getenv("PDO_AUDIO_STATS");
 
@@ -596,6 +671,7 @@ bool pdo_mixer_init(void)
         return true;
     lock = SDL_CreateMutex();
     stats = st && *st && *st != '0';
+    out_channels = pdo_settings_get()->audio_out == PDO_AUDIO_SURROUND ? 6 : 2;
     if (path && *path) {
         dump = SDL_IOFromFile(path, "wb");
         if (dump)
@@ -603,11 +679,8 @@ bool pdo_mixer_init(void)
     }
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO))
-        stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, stream_cb, NULL);
-    if (stream) {
-        SDL_ResumeAudioStreamDevice(stream);
-        SDL_Log("audio: %s, 48 kHz stereo", SDL_GetCurrentAudioDriver());
-    } else {
+        stream = open_output();
+    if (!stream) {
         SDL_Log("audio: no output device (%s); mixing silently in real time", SDL_GetError());
         pacer = SDL_CreateThread(pacer_main, "pdo_audio", NULL);
     }
@@ -723,7 +796,7 @@ void pdo_voice_set_loop_region(int id, uint32_t start, uint32_t length)
 
 void pdo_voice_set_3d(int id, float left, float right)
 {
-    WITH_VOICE(id, v->ears = false; v->g3d[0] = left; v->g3d[1] = right; update_gains(v));
+    WITH_VOICE(id, v->ears = false; v->pan6 = false; v->g3d[0] = left; v->g3d[1] = right; update_gains(v));
 }
 
 static void set_ears(voice *v, float gain, float lateral, float front)
@@ -731,6 +804,7 @@ static void set_ears(voice *v, float gain, float lateral, float front)
     float lat = lateral < -1.0f ? -1.0f : lateral > 1.0f ? 1.0f : lateral;
     float phi = asinf(lat < 0 ? -lat : lat);
     float itd = HEAD_RADIUS / SOUND_SPEED * (phi + sinf(phi)) * PDO_MIX_RATE;   /* samples */
+    v->pan6 = false;
     if (v->desc.channels != 1) {    /* stereo 3D buffers: the pan */
         float l = sqrtf(0.5f * (1.0f - lat)), r = sqrtf(0.5f * (1.0f + lat));
         v->ears = false;
@@ -757,6 +831,36 @@ static void set_ears(voice *v, float gain, float lateral, float front)
 void pdo_voice_set_3d_ears(int id, float gain, float lateral, float front)
 {
     WITH_VOICE(id, set_ears(v, gain, lateral, front));
+}
+
+/* Pairwise constant-power panning around the four corner speakers, by the
+ * source's angle from straight ahead (positive to the right). */
+static void set_surround(voice *v, float gain, float lateral, float front)
+{
+    static const struct { int bin; float deg; } ring[] = {
+        { PDO_BIN_BACK_LEFT, -110.0f }, { PDO_BIN_FRONT_LEFT, -30.0f }, { PDO_BIN_FRONT_RIGHT, 30.0f },
+        { PDO_BIN_BACK_RIGHT, 110.0f }, { PDO_BIN_BACK_LEFT, 250.0f },
+    };
+    float az = (lateral == 0.0f && front == 0.0f) ? 0.0f : atan2f(lateral, front) * 57.29578f;
+
+    if (az < -110.0f)
+        az += 360.0f;                   /* behind on the left: between BR and BL */
+    memset(v->g6, 0, sizeof v->g6);
+    for (int i = 0; i < 4; i++)
+        if (az >= ring[i].deg && az <= ring[i + 1].deg) {
+            float p = (az - ring[i].deg) / (ring[i + 1].deg - ring[i].deg) * 1.5707963f;
+            v->g6[ring[i].bin] += gain * cosf(p);
+            v->g6[ring[i + 1].bin] += gain * sinf(p);
+            break;
+        }
+    v->ears = false;
+    v->pan6 = true;
+    update_gains(v);
+}
+
+void pdo_voice_set_3d_surround(int id, float gain, float lateral, float front)
+{
+    WITH_VOICE(id, set_surround(v, gain, lateral, front));
 }
 
 void pdo_voice_set_i3dl2(int id, int32_t direct, int32_t room)

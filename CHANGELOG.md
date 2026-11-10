@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- 5.1 surround output: Options > Sound > Output now steps Stereo,
+  Headphones, 5.1. In 5.1 the game's 3D sounds are placed around the four
+  corner speakers by where they are, as the Xbox did on a surround setup;
+  music, voices and menus stay on the front speakers; the room reverb comes
+  from all around. Movies stay stereo for now.
+
 ## v0.1.1 (beta)
 
 ### Added

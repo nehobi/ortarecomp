@@ -27,9 +27,10 @@ Android build is planned.
   of Lossless Scaling (experimental).
 - **Color correction:** brightness, contrast, gamma and saturation, a CRT
   look, and optional TV softening.
-- **Sound:** stereo 3D positional audio with a headphones mode (a modelled
-  head: each ear hears a sound at its own time and loudness), the game's
-  room reverb, and a master volume.
+- **Sound:** stereo 3D positional audio, a headphones mode (a modelled
+  head: each ear hears a sound at its own time and loudness), or 5.1
+  surround (3D sounds placed around four speakers), with the game's room
+  reverb and a master volume.
 - **Controls:** controllers, keyboard and mouse (with mouse aim), every
   button rebindable.
 - **Three save files** (the original keeps one), picked in the launcher.

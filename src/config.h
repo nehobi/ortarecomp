@@ -41,11 +41,13 @@ typedef struct pdo_settings {
     int  pic_contrast;      /* 50..150 % */
     int  pic_gamma;         /* 50..200: 100 as is, more brightens the midtones */
     int  pic_saturation;    /* 0..200 % */
-    bool audio_3d;          /* 3D sounds through a model head, for headphones (mixer.c) */
+    int  audio_out;         /* PDO_AUDIO_*: stereo; 3D sounds through a model head for
+                               headphones; or 5.1, 3D sounds around four speakers (mixer.c) */
     int  save_slot;         /* 1-3: which save file the game sees (pdo_save_dir), chosen before it starts */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };
+enum { PDO_AUDIO_STEREO, PDO_AUDIO_HEADPHONES, PDO_AUDIO_SURROUND, PDO_AUDIO_COUNT };
 /* The whole picture with bars; stretched to the window; zoomed to fill it,
  * the overflow cut off. */
 enum { PDO_FIT_BARS, PDO_FIT_STRETCH, PDO_FIT_ZOOM, PDO_FIT_COUNT };

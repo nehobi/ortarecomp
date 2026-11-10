@@ -177,8 +177,9 @@ bool pdo_config_load(pdo_config *cfg)
             settings.pic_gamma = clamp_int(SDL_atoi(eq + 1), 50, 200);
         else if (strcmp(line, "picture_saturation") == 0)
             settings.pic_saturation = clamp_int(SDL_atoi(eq + 1), 0, 200);
-        else if (strcmp(line, "audio_3d") == 0)
-            settings.audio_3d = strcmp(eq + 1, "headphones") == 0;
+        else if (strcmp(line, "audio_3d") == 0)    /* the key kept from when it was 3D only */
+            settings.audio_out = strcmp(eq + 1, "headphones") == 0 ? PDO_AUDIO_HEADPHONES
+                               : strcmp(eq + 1, "surround") == 0 ? PDO_AUDIO_SURROUND : PDO_AUDIO_STEREO;
         else if (strcmp(line, "save_slot") == 0)
             settings.save_slot = clamp_int(SDL_atoi(eq + 1), 1, 3);
         else
@@ -236,7 +237,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,
                  settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,
-                 settings.pic_saturation, settings.audio_3d ? "headphones" : "speakers",
+                 settings.pic_saturation, settings.audio_out == PDO_AUDIO_HEADPHONES ? "headphones"
+                 : settings.audio_out == PDO_AUDIO_SURROUND ? "surround" : "speakers",
                  settings.save_slot);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;

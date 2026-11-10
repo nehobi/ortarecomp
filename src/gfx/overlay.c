@@ -16,6 +16,7 @@
 #include "../config.h"
 #include "../input_map.h"
 #include "renderer.h"
+#include "../audio/mixer.h"
 #ifdef PDO_HAVE_LSFG
 #include "lsfg_present.h"
 #endif
@@ -248,7 +249,10 @@ static void change(int dir)
     case ITEM_VOLUME: s->master_volume = SDL_clamp(s->master_volume + 5 * dir, 0, 100); break;
     case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
     case ITEM_LOGOS:  s->skip_logos = !s->skip_logos; break;
-    case ITEM_3D:     s->audio_3d = !s->audio_3d; break;
+    case ITEM_3D:
+        s->audio_out = (s->audio_out + PDO_AUDIO_COUNT + dir) % PDO_AUDIO_COUNT;
+        pdo_mixer_apply_output();
+        break;
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
@@ -622,7 +626,11 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_PIC_SAT:      snprintf(v, n, "%d%%", s->pic_saturation); return s->pic_saturation / 200.0f;
     case ITEM_BOX:    snprintf(v, n, "%s", s->unlock_box ? "All open" : "Normal"); break;
     case ITEM_LOGOS:  snprintf(v, n, "%s", s->skip_logos ? "On" : "Off"); break;
-    case ITEM_3D:     snprintf(v, n, "%s", s->audio_3d ? "Headphones" : "Speakers"); break;
+    case ITEM_3D: {
+        static const char *outs[PDO_AUDIO_COUNT] = { "Stereo", "Headphones", "5.1" };
+        snprintf(v, n, "%s", outs[s->audio_out]);
+        break;
+    }
     case ITEM_VSH:    snprintf(v, n, "%s", s->gpu_vertex ? "GPU" : "CPU"); break;
     case ITEM_FVF:    snprintf(v, n, "%s", s->gpu_fixed ? "GPU" : "CPU"); break;
     case ITEM_INTERP: {
@@ -681,7 +689,7 @@ static const char *label_of(int item)
     case ITEM_PIC_RESET:    return "Reset picture";
     case ITEM_BOX:    return "Pandora's Box";
     case ITEM_LOGOS:  return "Skip logos";
-    case ITEM_3D:     return "3D audio";
+    case ITEM_3D:     return "Output";
     case ITEM_VSH:    return "Vertex programs";
     case ITEM_FVF:    return "Fixed function";
     case ITEM_INTERP: return "Frame gen.";
@@ -726,7 +734,11 @@ static const char *help_of(int item)
     case ITEM_PIC_RESET:    return "Back to the game's own picture.";
     case ITEM_BOX:    return "All open: every extra unlocked.";
     case ITEM_LOGOS:  return "A press skips the boot logos.";
-    case ITEM_3D:     return "Headphones: sounds around you.";
+    case ITEM_3D: {
+        static const char *helps[PDO_AUDIO_COUNT] = { "Two speakers or a TV.", "Headphones: sounds around you.",
+                                                      "5.1 speakers: sound all around." };
+        return helps[pdo_settings_get()->audio_out];
+    }
     case ITEM_VSH:    return "GPU is faster.";
     case ITEM_FVF:    return "GPU is faster.";
     case ITEM_INTERP: {
@@ -761,7 +773,7 @@ static const char *help_of(int item)
     case ITEM_CONTROLS:    return "Keys, pad and mouse.";
     case ITEM_GO_DISPLAY:  return "Resolution, aspect, window.";
     case ITEM_GO_PICTURE:  return "CRT look, brightness, colour.";
-    case ITEM_GO_SOUND:    return "Volume, 3D audio.";
+    case ITEM_GO_SOUND:    return "Volume, stereo or 5.1.";
     case ITEM_GO_GAMEPLAY: return "Pandora's Box, boot logos.";
     case ITEM_GO_ADVANCED: return "Frame generation and more.";
     }
