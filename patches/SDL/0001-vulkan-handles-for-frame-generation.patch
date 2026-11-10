@@ -1,0 +1,48 @@
+diff --git a/src/gpu/vulkan/SDL_gpu_vulkan.c b/src/gpu/vulkan/SDL_gpu_vulkan.c
+index 330bb1a..eae2ad2 100644
+--- a/src/gpu/vulkan/SDL_gpu_vulkan.c
++++ b/src/gpu/vulkan/SDL_gpu_vulkan.c
+@@ -13111,4 +13111,43 @@ SDL_GPUBootstrap VulkanDriver = {
+     VULKAN_CreateDevice
+ };
+ 
++/* Orta Recomp (patches/SDL, local only): the Vulkan objects behind a
++ * device, a texture and a command buffer, so frame generation can record
++ * into SDL's own command buffers on SDL's own device. Callers check that
++ * the device's driver is "vulkan" first. A command buffer may be recorded
++ * into only between passes, and every texture used must be back in the
++ * layout SDL expects (its default usage) when the commands end. */
++extern SDL_DECLSPEC bool SDLCALL PDO_GetGPUVulkanDevice(SDL_GPUDevice *device, VkInstance *instance,
++                                                        VkPhysicalDevice *physical_device, VkDevice *logical_device,
++                                                        Uint32 *queue_family_index);
++extern SDL_DECLSPEC VkImage SDLCALL PDO_GetGPUVulkanImage(SDL_GPUTexture *texture);
++extern SDL_DECLSPEC VkCommandBuffer SDLCALL PDO_GetGPUVulkanCommandBuffer(SDL_GPUCommandBuffer *command_buffer);
++
++bool PDO_GetGPUVulkanDevice(SDL_GPUDevice *device, VkInstance *instance, VkPhysicalDevice *physical_device,
++                            VkDevice *logical_device, Uint32 *queue_family_index)
++{
++    VulkanRenderer *renderer;
++
++    if (!device || !device->driverData) {
++        return false;
++    }
++    renderer = (VulkanRenderer *)device->driverData;
++    *instance = renderer->instance;
++    *physical_device = renderer->physicalDevice;
++    *logical_device = renderer->logicalDevice;
++    *queue_family_index = renderer->queueFamilyIndex;
++    return true;
++}
++
++VkImage PDO_GetGPUVulkanImage(SDL_GPUTexture *texture)
++{
++    VulkanTextureContainer *container = (VulkanTextureContainer *)texture;
++    return container && container->activeTexture ? container->activeTexture->image : VK_NULL_HANDLE;
++}
++
++VkCommandBuffer PDO_GetGPUVulkanCommandBuffer(SDL_GPUCommandBuffer *command_buffer)
++{
++    return command_buffer ? ((VulkanCommandBuffer *)command_buffer)->commandBuffer : VK_NULL_HANDLE;
++}
++
+ #endif // SDL_GPU_VULKAN

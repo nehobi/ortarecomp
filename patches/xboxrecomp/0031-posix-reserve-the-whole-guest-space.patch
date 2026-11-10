@@ -1,0 +1,79 @@
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -78,6 +78,17 @@
+  * question. */
+ static void *g_span_base = NULL;
+ static size_t g_span_size = 0;
++
++/* Hands [native, native + size) back from the guest-space reservation, so a
++ * fixed mapping can take its place. No-op outside it (Windows, or no
++ * reservation). */
++static void span_release(uintptr_t native, size_t size)
++{
++    uintptr_t lo = (uintptr_t)g_span_base;
++
++    if (g_span_base && native >= lo && native + size <= lo + g_span_size)
++        VirtualFree((LPVOID)native, size, MEM_RELEASE);
++}
+ static void *g_tiled_view = NULL;
+ 
+ /* Contiguous / physical memory window (see MemoryLayoutInit).
+@@ -1796,7 +1807,16 @@
+          * above 4 GB, which is why Half-Life 2 (768 MB) never saw it. Doing
+          * this on Windows needs placeholder reservations (VirtualAlloc2). */
+ #ifndef _WIN32
+-        g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
++        /* The whole 32-bit guest space, not just base + mirrors: the
++         * contiguous window (0x80000000), the tiled aperture, the device
++         * apertures and the kernel page all sit at fixed offsets above the
++         * base, and Linux places mappings top-down, so the range just past
++         * a base+mirrors span is where the process's earlier mappings are.
++         * On a Steam Deck the contiguous window found its host range taken
++         * by one, and the title crashed at its first contiguous allocation.
++         * Each window below hands its slice of this back (span_release)
++         * before mapping there. PROT_NONE costs address space only. */
++        g_span_size = (size_t)0x100000000ull - XBOX_MAP_START;
+         g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
+         if (g_span_base) {
+             VirtualFree(g_span_base, g_memory_size, MEM_RELEASE);
+@@ -2281,6 +2301,7 @@
+      */
+     {
+         uintptr_t contig_native = XBOX_CONTIG_BASE + g_memory_offset;
++        span_release(contig_native, XBOX_CONTIG_SIZE);
+         g_contig_mapping = CreateFileMappingW(
+             INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+             0, (DWORD)XBOX_CONTIG_SIZE, NULL);
+@@ -2326,6 +2347,7 @@
+      */
+     {
+         uintptr_t nv2a_native = XBOX_NV2A_BASE + g_memory_offset;
++        span_release(nv2a_native, XBOX_NV2A_SIZE);
+         g_nv2a_memory = VirtualAlloc(
+             (LPVOID)nv2a_native,
+             XBOX_NV2A_SIZE,
+@@ -2371,6 +2393,7 @@
+      */
+     {
+         uintptr_t mcpx_native = XBOX_MCPX_BASE + g_memory_offset;
++        span_release(mcpx_native, XBOX_MCPX_SIZE);
+         g_mcpx_memory = VirtualAlloc(
+             (LPVOID)mcpx_native,
+             XBOX_MCPX_SIZE,
+@@ -2462,6 +2485,7 @@
+     /* Flash ROM aperture -- see XBOX_FLASH_BASE for why. */
+     {
+         uintptr_t flash_native = XBOX_FLASH_BASE + g_memory_offset;
++        span_release(flash_native, XBOX_FLASH_SIZE);
+ 
+         g_flash_memory = VirtualAlloc(
+             (LPVOID)flash_native,
+@@ -2634,6 +2658,7 @@
+          */
+         if (tiled_size > XBOX_CONTIG_SIZE)
+             tiled_size = XBOX_CONTIG_SIZE;
++        span_release(tiled_native, tiled_size);
+         g_tiled_view = g_contig_mapping
+             ? MapViewOfFileEx(
+                 g_contig_mapping,

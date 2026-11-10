@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.1 (beta)
+
+### Added
+
+- Resolution scale up to 8x (was 4x), for high-end GPUs.
+- Quit game in the in-game options menu (press it twice), for fullscreen
+  play.
+- Lossless Scaling frame generation (experimental), with your own copy of
+  Lossless Scaling: Options > Advanced > Frame gen. now steps Off, Interp.
+  (our frame interpolation, as before), LS 2x, LS 3x, LS 4x, with an LS mode
+  (Quality or Performance) and a Lossless.dll line to choose the DLL.
+
+### Fixed
+
+- Linux and Steam Deck: the game could crash when starting (at the launcher's
+  Start game, or at once), depending on where the system placed memory that
+  run. The game's whole memory range is now reserved up front.
+
 ## v0.1.0 (beta)
 
 The first release. Changes are listed against the original Xbox game.

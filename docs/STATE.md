@@ -8,7 +8,7 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
 ## How it fits together
 
 - `tools/recomp.py`: the USA `default.xbe` -> `gen/` through xboxrecomp
-  v0.13.1 and patches 0001-0030 (`patches/xboxrecomp/`), with seeds for
+  v0.13.1 and patches 0001-0031 (`patches/xboxrecomp/`), with seeds for
   functions the sweep misses (`tools/pdo_seeds.json`; every failed indirect
   call seen in play is seeded). 42 lifter jumps still go to stubs, all from
   data decoded as code.
@@ -22,6 +22,11 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
   vertex programs and fixed-function vertices on the GPU. Frame
   interpolation pairs the draws of the last two frames (`match_frames`) and
   blends them; see the archive for what is and is not blended, and why.
+- Lossless Scaling frame generation (experimental): `lib/lsfg` (lsfg-vk and
+  DXVK's DXBC compiler, from the BattleTanx port), run on SDL's own device
+  through `patches/SDL/0001` (local, applied by CMake), host side in
+  `src/gfx/lsfg_present.cpp`; needs SPIR-V headers to build and the
+  player's Lossless.dll to run. F1 > Advanced > Frame gen.
 - `src/audio/`: mixer, I3DL2 reverb, 3D audio for headphones.
 - `src/gfx/overlay.c`: the launcher and the F1 menu; settings in
   `ortarecomp.ini` (`src/config.c`); save files 1-3 are `saves/E`, `E2`,

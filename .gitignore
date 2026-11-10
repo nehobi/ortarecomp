@@ -23,6 +23,11 @@ capture_*.bmp
 ps_tex_*.bmp
 *.bmp
 reference/
+# Lossless Scaling: the player's own DLL and the shaders translated from it
+Lossless.dll
+*.dll
+lossless_scaling/
+shaders.bin
 # Save data
 saves/
 UDATA/

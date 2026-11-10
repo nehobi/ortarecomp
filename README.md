@@ -17,12 +17,14 @@ Android build is planned.
 
 ## Features
 
-- **Higher resolutions:** render at 1x to 4x the original resolution.
+- **Higher resolutions:** render at 1x to 8x the original resolution (8x is
+  5120x3840).
 - **Widescreen:** the game's own 16:9 mode, or the original 4:3; bars,
   stretch or zoom to fit any window or screen.
 - **Anti-aliasing:** MSAA up to 8x, or FXAA.
 - **Smooth motion:** frame interpolation above 60 fps for high refresh rate
-  displays (beta).
+  displays (beta), or Lossless Scaling's frame generation with your own copy
+  of Lossless Scaling (experimental).
 - **Color correction:** brightness, contrast, gamma and saturation, a CRT
   look, and optional TV softening.
 - **Sound:** stereo 3D positional audio with a headphones mode (a modelled
@@ -62,6 +64,22 @@ want to save settings, saves and game files locally.
 - Needs a 64-bit PC with a Vulkan graphics driver: Windows 10/11, or
   Linux / Steam Deck.
 
+## Frame Generation
+
+Options (F1) > Advanced > Frame gen.: **Interp.** blends the game's own
+frames (ours); **LS 2x/3x/4x** uses Lossless Scaling's frame generation
+(LSFG 3.1) to show two to four pictures per game frame, 120 to 240 fps from
+the game's 60, so it wants a screen that fast. It needs your own copy of
+[Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/)'s
+`Lossless.dll`: found in Steam's default library folder, in
+`lossless_scaling` next to the settings, or chosen with the Lossless.dll
+line. **LS mode** Performance is lighter on the GPU and rougher in fast
+motion. Turning Lossless Scaling on or off takes effect at the next start;
+it adds about one game frame of delay. Lossless Scaling guesses the frames
+between from the finished pictures, so fast motion can smear, as in the
+Lossless Scaling app; Interp. redraws the scene itself. Experimental.
+Nothing from Lossless Scaling is in this repository or a release.
+
 ## Steam Deck / Linux
 
 - Extract the `linux-x86_64` download and run `OrtaRecomp`.
@@ -94,6 +112,8 @@ Known:
 - Frame interpolation can show odd frames in some scenes.
 - The first time an effect appears it can stutter once while its shaders are
   built; they are kept for next time.
+- The original Panzer Dragoon (the Saturn game unlocked in Pandora's Box)
+  is not available yet.
 - USA version only.
 
 Else:
@@ -104,6 +124,12 @@ Else:
 - [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) by sp00nz and
   contributors: the recompiler and the Xbox kernel layer this port runs on
 - [SDL](https://libsdl.org): windowing, graphics, audio and input
+- [lsfg-vk](https://github.com/PancakeTAS/lsfg-vk) (MIT) and
+  [DXVK](https://github.com/doitsujin/dxvk)'s shader compiler (zlib), through
+  `lib/lsfg` from BattleTanx: Global Assault Recompiled: Lossless Scaling
+  frame generation
+- [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) (MIT), for
+  building that
 
 ## License
 

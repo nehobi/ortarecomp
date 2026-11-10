@@ -9,6 +9,9 @@
 
 #include "gfx/shaders_spv.h"
 #include "gfx/xtex.h"
+#ifdef PDO_HAVE_LSFG
+#include "gfx/lsfg_present.h"
+#endif
 #include "guest/vsh.h"      /* pdo_parallel */
 
 #include <SDL3/SDL.h>
@@ -38,6 +41,14 @@ static SDL_GPUDevice *dev;
 static SDL_Window *window;
 static SDL_ThreadID window_thread;
 static bool have_swapchain;
+/* Lossless Scaling frame generation (lsfg_present.cpp): each game frame's
+ * window pass is drawn into ls_tex, and the frames generated between it
+ * and the last are shown before it. */
+static bool lsfg_on;
+static SDL_GPUTexture *ls_tex;
+static Uint32 ls_w, ls_h;
+static bool ls_draw;            /* present_to_window: into ls_tex, not the window */
+static bool ls_drawn;           /* ... and it drew a picture there */
 static SDL_GPUTexture *frame_color, *frame_depth, *white;
 static SDL_GPUTextureFormat depth_format;
 static int frame_w, frame_h;
@@ -1431,7 +1442,7 @@ static void choose_quality(void)
     while (want > 0 && !(SDL_GPUTextureSupportsSampleCount(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, counts[want])
                          && SDL_GPUTextureSupportsSampleCount(dev, depth_format, counts[want])))
         want--;
-    rscale = SDL_clamp(st->render_scale, 1, 4);
+    rscale = SDL_clamp(st->render_scale, 1, 8);
     nsamples = 1 << want;
     sample_count = counts[want];
 }
@@ -1734,7 +1745,14 @@ static bool init_here(int width, int height)
         SDL_Log("gfx: no video (%s)", SDL_GetError());
         return false;
     }
-    dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
+#ifdef PDO_HAVE_LSFG
+    /* Frame generation's shaders need two Vulkan features SDL does not ask
+     * for by itself; a GPU without them gets the usual device. */
+    if (pdo_settings_get()->lsfg_multiplier >= 2 && !getenv("PDO_BENCHMARK"))
+        dev = pdo_lsfg_create_device();
+#endif
+    if (!dev)
+        dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
     if (!dev) {
         SDL_Log("gfx: no GPU device (%s)", SDL_GetError());
         return false;
@@ -1769,6 +1787,26 @@ static bool init_here(int width, int height)
         have_swapchain = true;
     else
         SDL_Log("gfx: rendering without a window (%s)", SDL_GetError());
+#ifdef PDO_HAVE_LSFG
+    if (have_swapchain && pdo_settings_get()->lsfg_multiplier >= 2 && !getenv("PDO_BENCHMARK")) {
+        const pdo_settings *st = pdo_settings_get();
+        char dll[PDO_PATH_MAX], cache[PDO_PATH_MAX];
+        if (st->lsfg_dll[0])
+            SDL_strlcpy(dll, st->lsfg_dll, sizeof dll);
+        else if (!pdo_lsfg_find_dll(pdo_data_dir(), dll, sizeof dll))
+            dll[0] = 0;
+        snprintf(cache, sizeof cache, "%slossless_scaling/shaders.bin", pdo_data_dir());
+        pdo_lsfg_configure(st->lsfg_multiplier, st->lsfg_performance);
+        lsfg_on = pdo_lsfg_start(dev, dll, cache);
+        SDL_Log("gfx: Lossless Scaling frame generation %s", lsfg_on ? "on" : "off, it cannot run here");
+        /* Frame generation shows two to four pictures a game frame: with
+         * SDL's two frames in flight they queued up ahead of the screen and
+         * the mouse felt late. One is enough: each game frame already waits
+         * for its generation (lsfg_show). */
+        if (lsfg_on && !SDL_SetGPUAllowedFramesInFlight(dev, 1))
+            SDL_Log("gfx: frames in flight stay at SDL's default (%s)", SDL_GetError());
+    }
+#endif
     if (have_swapchain && getenv("PDO_BENCHMARK") && atoi(getenv("PDO_BENCHMARK"))) {
         /* Not tied to the monitor's refresh, so the frame rate is the PC's. */
         SDL_GPUPresentMode m = SDL_WindowSupportsGPUPresentMode(dev, window, SDL_GPU_PRESENTMODE_IMMEDIATE)
@@ -2813,6 +2851,21 @@ static void capture_steps(void)
 /* Escape gave the mouse back to the desktop (pdo_gfx_pump_events). */
 static bool mouse_released;
 
+/* Mouse motion only, the rest left queued: while frame generation spaces
+ * its pictures (lsfg_show) the main loop is not pumping, and the game would
+ * read the mouse up to a game frame late. */
+static void take_mouse_motion(void)
+{
+    SDL_Event ev[16];
+    int n;
+
+    SDL_PumpEvents();
+    while ((n = SDL_PeepEvents(ev, 16, SDL_GETEVENT, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION)) > 0)
+        for (int i = 0; i < n; i++)
+            if (window && SDL_GetWindowRelativeMouseMode(window))
+                pdo_mouse_add(ev[i].motion.xrel, ev[i].motion.yrel);
+}
+
 bool pdo_gfx_pump_events(void)
 {
     SDL_Event ev;
@@ -2887,6 +2940,8 @@ bool pdo_gfx_pump_events(void)
 static SDL_GPUTexture *pre_swap;
 static Uint32 pre_sw, pre_sh;
 
+static SDL_GPUTexture *lsfg_target(Uint32 *w, Uint32 *h);
+
 static void present_to_window(SDL_GPUCommandBuffer *cmd)
 {
     const pdo_settings *st = pdo_settings_get();
@@ -2930,7 +2985,9 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
     }
     {   /* Blocks while the GPU still has the frames in flight: GPU-bound time. */
         Uint64 t0 = SDL_GetTicksNS();
-        bool ok = pre_swap ? true : SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh);
+        bool ok = pre_swap || ls_draw ? true : SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &sw, &sh);
+        if (ls_draw)
+            swap = lsfg_target(&sw, &sh);
         if (pre_swap) {
             swap = pre_swap;
             sw = pre_sw;
@@ -2995,6 +3052,92 @@ static void present_to_window(SDL_GPUCommandBuffer *cmd)
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     }
     SDL_EndGPURenderPass(pass);
+    ls_drawn = ls_draw;
+}
+
+/* Frame generation's picture of the window: the window's size and format. */
+static SDL_GPUTexture *lsfg_target(Uint32 *w, Uint32 *h)
+{
+    int ww = 0, wh = 0;
+
+    SDL_GetWindowSizeInPixels(window, &ww, &wh);
+    if (ww <= 0 || wh <= 0 || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED))
+        return NULL;
+    if (!ls_tex || ls_w != (Uint32)ww || ls_h != (Uint32)wh) {
+        SDL_GPUTextureCreateInfo ti;
+        if (ls_tex) {
+            SDL_WaitForGPUIdle(dev);
+            SDL_ReleaseGPUTexture(dev, ls_tex);
+        }
+        SDL_zero(ti);
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GetGPUSwapchainTextureFormat(dev, window);
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;     /* kept as a colour target between passes */
+        ti.width = (Uint32)ww;
+        ti.height = (Uint32)wh;
+        ti.layer_count_or_depth = 1;
+        ti.num_levels = 1;
+        ls_tex = SDL_CreateGPUTexture(dev, &ti);
+        ls_w = ls_tex ? (Uint32)ww : 0;
+        ls_h = ls_tex ? (Uint32)wh : 0;
+    }
+    *w = ls_w;
+    *h = ls_h;
+    return ls_tex;
+}
+
+/* The game frame in ls_tex once the GPU has done the generating: the
+ * frames generated before it, spaced over the time between game frames,
+ * then the frame itself, each into a swap chain image of its own. A cut to
+ * another scene shows the frame alone. The number of pictures shown. */
+static int lsfg_show(uint32_t generated)
+{
+    int shown = 0;
+#ifdef PDO_HAVE_LSFG
+    Uint64 spacing, first = 0;
+
+    if (pdo_lsfg_scene_cut())
+        generated = 0;
+    spacing = pdo_lsfg_spacing(generated + 1);
+    for (uint32_t f = 0; f <= generated; f++) {
+        SDL_GPUCommandBuffer *c;
+        SDL_GPUTexture *swap = NULL;
+        Uint32 sw = 0, sh = 0;
+        Uint64 t0;
+
+        if (f > 0 && spacing) {
+            Uint64 due = first + spacing * f, now;
+            take_mouse_motion();
+            now = SDL_GetTicksNS();
+            if (due > now)
+                SDL_DelayPrecise(due - now);
+        }
+        c = SDL_AcquireGPUCommandBuffer(dev);
+        if (!c)
+            break;
+        t0 = SDL_GetTicksNS();
+        if (!SDL_WaitAndAcquireGPUSwapchainTexture(c, window, &swap, &sw, &sh))
+            swap = NULL;
+        swap_wait_ns += SDL_GetTicksNS() - t0;
+        main_wait_ns += SDL_GetTicksNS() - t0;
+        if (swap)
+            pdo_lsfg_record_output(c, f < generated ? (int)f : -1, ls_tex, ls_w, ls_h, swap, sw, sh);
+        SDL_SubmitGPUCommandBuffer(c);
+        if (!swap)
+            break;
+        if (f == 0)
+            first = SDL_GetTicksNS();
+        shown++;
+    }
+#else
+    (void)generated;
+#endif
+    return shown;
+}
+
+bool pdo_gfx_lsfg_active(void)
+{
+    return lsfg_on;
 }
 
 /* ── Frame interpolation ─────────────────────────────────────────────────
@@ -4564,6 +4707,9 @@ static void gpu_note(SDL_GPUFence *fence, Uint64 now)
 }
 
 /* t < 0: interpolating, work t out once the window's image is in hand. */
+static uint32_t ls_generated;    /* frames frame generation made for this one */
+static uint32_t ls_extra_shown;  /* its pictures beyond one a game frame, for the main loop's log */
+
 static void draw_frame_main(frame_data *f, frame_data *prev, float t)
 {
     SDL_GPUCommandBuffer *cmd;
@@ -4620,7 +4766,19 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
         present_pass(cmd);
         main_record_ns += SDL_GetTicksNS() - r0;
     }
+    /* Frame generation: the window pass into ls_tex, taken in and the
+     * frames before it generated in this command buffer. */
+    ls_draw = lsfg_on;
+    ls_drawn = false;
     present_to_window(cmd);
+    ls_draw = false;
+#ifdef PDO_HAVE_LSFG
+    if (ls_drawn) {
+        const pdo_settings *st = pdo_settings_get();
+        pdo_lsfg_configure(st->lsfg_multiplier, st->lsfg_performance);
+        ls_generated = pdo_lsfg_record(cmd, ls_tex, ls_w, ls_h);
+    }
+#endif
     if (shot)
         save_screenshot(&cmd, shot_dir, "frame");
     else if (!prev && f->frame == capture_frame) {
@@ -4636,7 +4794,19 @@ static void draw_frame_main(frame_data *f, frame_data *prev, float t)
         SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
         Uint64 s1 = SDL_GetTicksNS();
         main_submit_ns += s1 - s0;
+        /* Frame generation's scene-cut test reads what the GPU just did. */
+        if (ls_drawn && fence)
+            SDL_WaitForGPUFences(dev, true, &fence, 1);
         gpu_note(fence, s1);
+    }
+    if (ls_drawn) {
+        /* The frame counter counts what reached the screen. */
+        int shown = lsfg_show(ls_generated);
+        for (int i = 1; i < shown; i++)
+            pdo_overlay_frame();
+        if (shown > 1)
+            ls_extra_shown += (uint32_t)(shown - 1);
+        ls_drawn = false;
     }
     pdo_overlay_frame();
 }
@@ -4738,13 +4908,14 @@ void pdo_gfx_main_loop(void)
 
     for (;;) {
         frame_data *f;
-        bool want = pdo_settings_get()->frame_interp && !getenv("PDO_BENCHMARK");
+        /* Frame generation makes the frames between the game's instead. */
+        bool want = pdo_settings_get()->frame_interp && !lsfg_on && !getenv("PDO_BENCHMARK");
         bool interp = want && interp_ok;
         Uint64 now = SDL_GetTicksNS();
 
         if (now - win_start >= 1000000000ull) {
             double secs = (double)(now - win_start) / 1e9;
-            double games = win_games / secs, shown = win_shown / secs;
+            double games = win_games / secs, shown = (win_shown + ls_extra_shown) / secs;
             uint32_t skipped = drops_total - win_drops;
             /* Skipped game frames alone do not count: in busy scenes the
              * game itself runs late, and holding blending off then made
@@ -4772,7 +4943,7 @@ void pdo_gfx_main_loop(void)
             main_record_ns = main_wait_ns = main_submit_ns = gpu_busy_ns = main_match_ns = 0;
             gpu_frames = 0;
             win_start = now;
-            win_games = win_shown = 0;
+            win_games = win_shown = ls_extra_shown = 0;
             win_drops = drops_total;
         }
 

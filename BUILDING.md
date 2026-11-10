@@ -12,8 +12,9 @@ git clone --recurse-submodules https://github.com/wootbeer/ortarecomp.git
 git submodule update --init --recursive
 ```
 
-This pulls in `external/xboxrecomp` (the recompiler and kernel layer) and
-`external/SDL` (SDL 3).
+This pulls in `external/xboxrecomp` (the recompiler and kernel layer),
+`external/SDL` (SDL 3) and `external/SPIRV-Headers` (for Lossless Scaling
+frame generation).
 
 ## 2. Install dependencies
 
@@ -24,6 +25,14 @@ All platforms need **CMake 3.20+**, **Ninja** (recommended) and
 python -m pip install capstone
 ```
 
+The game can use Lossless Scaling's frame generation (LSFG 3.1) with your own
+copy of Lossless Scaling's `Lossless.dll` (`lib/lsfg`). Building it needs
+SPIR-V's headers, which come with the `external/SPIRV-Headers` submodule
+(step 1). CMake prints `Lossless Scaling frame generation built` when it
+found them; without them the game builds without it and the menu's
+Lossless.dll line reads "Not built". `-DPDO_SPIRV_HEADERS=...` points
+elsewhere if you need to.
+
 ### Windows
 
 Visual Studio 2022 with the "Desktop development with C++" workload, which
@@ -32,7 +41,7 @@ includes CMake and Ninja. Build from the "x64 Native Tools Command Prompt".
 ### Linux (Ubuntu/Debian)
 
 ```bash
-sudo apt-get install build-essential cmake ninja-build python3-pip libssl-dev \
+sudo apt-get install build-essential g++ cmake ninja-build python3-pip libssl-dev \
     libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev \
     libxtst-dev libxfixes-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
     libdbus-1-dev libudev-dev libpulse-dev libpipewire-0.3-dev libasound2-dev

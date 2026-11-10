@@ -6,3 +6,8 @@
 	path = external/SDL
 	url = https://github.com/libsdl-org/SDL.git
 	shallow = true
+	ignore = dirty
+[submodule "external/SPIRV-Headers"]
+	path = external/SPIRV-Headers
+	url = https://github.com/KhronosGroup/SPIRV-Headers.git
+	shallow = true
