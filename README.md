@@ -128,6 +128,8 @@ Else:
   [DXVK](https://github.com/doitsujin/dxvk)'s shader compiler (zlib), through
   `lib/lsfg` from BattleTanx: Global Assault Recompiled: Lossless Scaling
   frame generation
+- [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) (MIT), for
+  building that
 
 ## License
 

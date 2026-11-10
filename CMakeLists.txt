@@ -181,11 +181,13 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
 
     # Lossless Scaling frame generation (lib/lsfg, from BattleTanx: Global
     # Assault Recompiled; the player's own Lossless.dll at run time). Its
-    # shader translator needs SPIR-V's headers: PDO_SPIRV_HEADERS, else the
-    # Vulkan SDK's or the system's. Without them the game builds without it.
+    # shader translator needs SPIR-V's headers: the external/SPIRV-Headers
+    # submodule (pinned, new enough), else PDO_SPIRV_HEADERS, the Vulkan
+    # SDK's or the system's. Without any, the game builds without it.
     set(PDO_SPIRV_HEADERS "" CACHE PATH "Folder holding spirv/unified1/spirv.hpp (SPIRV-Headers' include)")
     set(PDO_SPIRV_FOUND "")
-    foreach(dir "${PDO_SPIRV_HEADERS}" "$ENV{VULKAN_SDK}/include" "$ENV{VULKAN_SDK}/Include" "/usr/include")
+    foreach(dir "${PDO_SPIRV_HEADERS}" "${CMAKE_CURRENT_SOURCE_DIR}/external/SPIRV-Headers/include"
+                "$ENV{VULKAN_SDK}/include" "$ENV{VULKAN_SDK}/Include" "/usr/include")
         if(NOT PDO_SPIRV_FOUND AND dir AND EXISTS "${dir}/spirv/unified1/spirv.hpp")
             set(PDO_SPIRV_FOUND "${dir}")
         endif()
@@ -204,7 +206,7 @@ if(EXISTS "${PDO_GEN_DIR}/recomp_dispatch.c")
         target_compile_definitions(pdo_recomp PUBLIC PDO_HAVE_LSFG=1)
         target_link_libraries(pdo_recomp PUBLIC lsfg)
     else()
-        message(STATUS "Orta Recomp: no SPIR-V headers (install the Vulkan SDK or set PDO_SPIRV_HEADERS); "
+        message(STATUS "Orta Recomp: no SPIR-V headers (run git submodule update --init, or set PDO_SPIRV_HEADERS); "
                        "building without Lossless Scaling frame generation")
     endif()
 

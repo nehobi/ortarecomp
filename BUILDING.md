@@ -12,8 +12,9 @@ git clone --recurse-submodules https://github.com/wootbeer/ortarecomp.git
 git submodule update --init --recursive
 ```
 
-This pulls in `external/xboxrecomp` (the recompiler and kernel layer) and
-`external/SDL` (SDL 3).
+This pulls in `external/xboxrecomp` (the recompiler and kernel layer),
+`external/SDL` (SDL 3) and `external/SPIRV-Headers` (for Lossless Scaling
+frame generation).
 
 ## 2. Install dependencies
 
@@ -26,14 +27,11 @@ python -m pip install capstone
 
 The game can use Lossless Scaling's frame generation (LSFG 3.1) with your own
 copy of Lossless Scaling's `Lossless.dll` (`lib/lsfg`). Building it needs
-SPIR-V's headers (`spirv/unified1/spirv.hpp`): the
-[Vulkan SDK](https://vulkan.lunarg.com/) has them (found through
-`VULKAN_SDK`), or point `-DPDO_SPIRV_HEADERS=...` at the `include` folder of
-a [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) clone. On
-Linux, `sudo apt-get install spirv-headers` puts them in `/usr/include`
-(Ubuntu 24.04's are new enough; 22.04's are too old for the shader compiler,
-so there point `PDO_SPIRV_HEADERS` at a SPIRV-Headers clone's `include`).
-Without them the game builds without it; CMake says which.
+SPIR-V's headers, which come with the `external/SPIRV-Headers` submodule
+(step 1). CMake prints `Lossless Scaling frame generation built` when it
+found them; without them the game builds without it and the menu's
+Lossless.dll line reads "Not built". `-DPDO_SPIRV_HEADERS=...` points
+elsewhere if you need to.
 
 ### Windows
 
@@ -46,8 +44,7 @@ includes CMake and Ninja. Build from the "x64 Native Tools Command Prompt".
 sudo apt-get install build-essential g++ cmake ninja-build python3-pip libssl-dev \
     libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev \
     libxtst-dev libxfixes-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
-    libdbus-1-dev libudev-dev libpulse-dev libpipewire-0.3-dev libasound2-dev \
-    spirv-headers
+    libdbus-1-dev libudev-dev libpulse-dev libpipewire-0.3-dev libasound2-dev
 ```
 
 SDL loads X11, Wayland, the sound servers and Vulkan at run time, so the

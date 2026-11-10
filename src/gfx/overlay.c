@@ -737,13 +737,20 @@ static const char *help_of(int item)
 #ifdef PDO_HAVE_LSFG
         if (ls && !pdo_gfx_lsfg_active() && pdo_lsfg_status()[0])
             return "Can't run here: see the log.";
+#else
+        if (ls)
+            return "This build has no LS: BUILDING.";
 #endif
         if (ls != pdo_gfx_lsfg_active())
             return "Takes effect at the next start.";
         return ls ? "60 fps x this; needs that Hz." : "Smooth motion above 60 fps.";
     }
     case ITEM_LSMODE: return "Performance: lighter, rougher.";
+#ifdef PDO_HAVE_LSFG
     case ITEM_LSDLL:  return "OK: choose; Left: look for it.";
+#else
+    case ITEM_LSDLL:  return "This build has no LS: BUILDING.";
+#endif
     case ITEM_GPU:    return "The graphics API.";
     case ITEM_START:  return launcher_files_ok ? "Play." : "Choose your game files first.";
     case ITEM_PICK:   return "A disc image or a folder.";
