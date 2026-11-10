@@ -117,7 +117,7 @@ bool pdo_config_load(pdo_config *cfg)
         if (strcmp(line, "game_dir") == 0)
             SDL_strlcpy(cfg->game_dir, eq + 1, sizeof cfg->game_dir);
         else if (strcmp(line, "render_scale") == 0)
-            settings.render_scale = clamp_int(SDL_atoi(eq + 1), 1, 4);
+            settings.render_scale = clamp_int(SDL_atoi(eq + 1), 1, 8);
         else if (strcmp(line, "msaa") == 0) {
             int m = SDL_atoi(eq + 1);
             settings.msaa = m >= 8 ? 8 : m >= 4 ? 4 : m >= 2 ? 2 : 1;

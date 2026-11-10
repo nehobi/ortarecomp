@@ -17,7 +17,8 @@ Android build is planned.
 
 ## Features
 
-- **Higher resolutions:** render at 1x to 4x the original resolution.
+- **Higher resolutions:** render at 1x to 8x the original resolution (8x is
+  5120x3840).
 - **Widescreen:** the game's own 16:9 mode, or the original 4:3; bars,
   stretch or zoom to fit any window or screen.
 - **Anti-aliasing:** MSAA up to 8x, or FXAA.
@@ -94,6 +95,8 @@ Known:
 - Frame interpolation can show odd frames in some scenes.
 - The first time an effect appears it can stutter once while its shaders are
   built; they are kept for next time.
+- The original Panzer Dragoon (the Saturn game unlocked in Pandora's Box)
+  is not available yet.
 - USA version only.
 
 Else:

@@ -186,7 +186,7 @@ static void change(int dir)
     case ITEM_SLOT:   s->save_slot = (s->save_slot - 1 + 3 + dir) % 3 + 1; break;
     case ITEM_FULLSCREEN: s->fullscreen = !s->fullscreen; break;
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
-    case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 4); break;
+    case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 8); break;
     case ITEM_MSAA:   next_aa(s, dir); break;
     case ITEM_ASPECT: s->aspect = (s->aspect + PDO_ASPECT_COUNT + dir) % PDO_ASPECT_COUNT; break;
     case ITEM_FIT:    s->fit = (s->fit + PDO_FIT_COUNT + dir) % PDO_FIT_COUNT; break;

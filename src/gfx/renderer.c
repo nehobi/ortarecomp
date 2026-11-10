@@ -1431,7 +1431,7 @@ static void choose_quality(void)
     while (want > 0 && !(SDL_GPUTextureSupportsSampleCount(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, counts[want])
                          && SDL_GPUTextureSupportsSampleCount(dev, depth_format, counts[want])))
         want--;
-    rscale = SDL_clamp(st->render_scale, 1, 4);
+    rscale = SDL_clamp(st->render_scale, 1, 8);
     nsamples = 1 << want;
     sample_count = counts[want];
 }

@@ -2,6 +2,10 @@
 
 ## v0.1.1 (beta)
 
+### Added
+
+- Resolution scale up to 8x (was 4x), for high-end GPUs.
+
 ### Fixed
 
 - Linux and Steam Deck: the game could crash when starting (at the launcher's
