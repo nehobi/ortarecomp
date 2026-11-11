@@ -2127,8 +2127,8 @@ static void bloom_pass(SDL_GPUCommandBuffer *cmd, int level)
     int samples_log2 = ms ? (nsamples >= 8 ? 3 : nsamples >= 4 ? 2 : nsamples >= 2 ? 1 : 0) : 0;
     /* The same glow at two strengths, around the bright lights (Orta's
      * picture is dark: half of an episode 1 frame is under 20 of 255).
-     * High is 0.9, Low half that, by the player's eye. */
-    float threshold = 0.60f, strength = level >= 2 ? 0.9f : 0.45f;
+     * High 0.4, Low 0.2, by the player's eye. */
+    float threshold = 0.60f, strength = level >= 2 ? 0.4f : 0.2f;
     int rounds = 1;
 
     if (bloom_failed || !color || !screen_vs || (cur_target && cur_target->depth_only))
