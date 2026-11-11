@@ -747,7 +747,7 @@ static const char *help_of(int item)
     case ITEM_FULLSCREEN: return "Fullscreen or a window.";
     case ITEM_VOLUME:  return "Everything the game plays.";
     case ITEM_PIC_LOOK:     return "CRT: richer, like an old TV.";
-    case ITEM_PIC_BLOOM:    return "Glow on bright lights; no HUD.";
+    case ITEM_PIC_BLOOM:    return "A glow around bright lights.";
     case ITEM_PIC_BRIGHT:   return "Lighter or darker overall.";
     case ITEM_PIC_CONTRAST: return "Darks darker, lights lighter.";
     case ITEM_PIC_GAMMA:    return "Above 1 lifts the midtones.";
