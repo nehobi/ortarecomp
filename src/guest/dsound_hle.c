@@ -782,11 +782,19 @@ void sub_002C39A9(void)
 
 /* ── Calls Orta makes that JSRF did not ───────────────────────────────── */
 
-/* IDirectSound_GetSpeakerConfig(pDS, pdwSpeakerConfig): stereo output. */
+/* IDirectSound_GetSpeakerConfig(pDS, pdwSpeakerConfig): stereo, or with
+ * the 5.1 output a surround console with Dolby Digital on. Orta reads only
+ * DSSPEAKER_ENABLE_AC3 (0x00687B0, at the movie player's setup): with it, a
+ * movie that has an .aix beside it (the opening) plays that 5.1 audio
+ * instead of the .sfd's own stereo. */
 void sub_002C242A(void)
 {
+    uint32_t cfg = pdo_settings_get()->audio_out == PDO_AUDIO_SURROUND
+                   ? 0x00010004u        /* DSSPEAKER_SURROUND | DSSPEAKER_ENABLE_AC3 */
+                   : 0x00000002u;       /* DSSPEAKER_STEREO */
+    TRACE("GetSpeakerConfig -> 0x%x", cfg);
     if (ARG(1))
-        MEM32(ARG(1)) = 0x00000002u;    /* DSSPEAKER_STEREO */
+        MEM32(ARG(1)) = cfg;
     RETURN(8, DS_OK);
 }
 
