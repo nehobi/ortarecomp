@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- Linux and Steam Deck: "There's a problem with the disc you're using" at
+  the end of an episode. The game clears old stages from its hard-disk
+  cache to make room for the next; reopening a cleared stage folder got
+  the wrong error back on Linux ("path not found" instead of "not found"),
+  which the game takes for a bad disc.
+
 ### Added
 
 - Bloom: Options > Picture > Bloom, Off (the default), Low or High. A glow

@@ -1,7 +1,7 @@
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c
-@@ -841,6 +841,24 @@
+@@ -841,6 +841,38 @@
      }
  }
  
@@ -11,10 +11,24 @@ diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 +static NTSTATUS path_errno_to_status(int e, const char *path)
 +{
 +    char parent[MAX_PATH];
-+    const char *slash = strrchr(path, '/');
++    size_t n = strlen(path);
++    const char *slash;
 +    struct stat st;
 +
-+    if (e == ENOENT && slash && slash != path && (size_t)(slash - path) < sizeof parent) {
++    /* A directory asked for with a trailing slash ("Z:\st11\") is that
++     * directory, not something inside it: its parent is above it. Taken as
++     * the directory itself, a missing one read as a missing parent, and a
++     * title that evicts and recreates its cache folders (Orta, between
++     * episodes) took the PATH_NOT_FOUND for a broken disc. */
++    while (n > 1 && path[n - 1] == '/')
++        n--;
++    slash = NULL;
++    for (size_t i = n; n < sizeof parent && i-- > 0;)
++        if (path[i] == '/') {
++            slash = path + i;
++            break;
++        }
++    if (e == ENOENT && slash && slash != path) {
 +        memcpy(parent, path, (size_t)(slash - path));
 +        parent[slash - path] = '\0';
 +        if (stat(parent, &st) != 0 || !S_ISDIR(st.st_mode))
@@ -26,7 +40,7 @@ diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
  NTSTATUS __stdcall xbox_NtCreateFile(
      PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
      PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
-@@ -871,11 +889,12 @@
+@@ -871,11 +903,12 @@
      if (fd < 0) {
          int e = errno;
          XBOX_TRACE(XBOX_LOG_FILE, "NtCreateFile FAILED: %s (errno=%d)", host_path, e);
