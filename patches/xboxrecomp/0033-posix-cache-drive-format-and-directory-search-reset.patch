@@ -1,0 +1,131 @@
+--- a/src/kernel/kernel.h
++++ b/src/kernel/kernel.h
+@@ -697,9 +697,8 @@
+     PLARGE_INTEGER ByteOffset);
+ 
+ NTSTATUS __stdcall xbox_NtClose(HANDLE Handle);
+-#ifdef _WIN32
++/* Forget a directory handle's enumeration when it is closed (both platforms). */
+ void xbox_dir_context_drop(HANDLE FileHandle);
+-#endif
+ 
+ NTSTATUS __stdcall xbox_NtDeleteFile(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes);
+ 
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -767,9 +767,7 @@
+     if (raw_handle && raw_handle != 0xDEAD0001u && raw_handle != 0xBEEF0010u) {
+         HANDLE h = bridge_take_handle(raw_handle);
+         if (h && h != INVALID_HANDLE_VALUE) {
+-#ifdef _WIN32
+-            xbox_dir_context_drop(h);
+-#endif
++            xbox_dir_context_drop(h);   /* both platforms: see kernel_file.c */
+             CloseHandle(h);
+         }
+     }
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -27,6 +27,7 @@
+ #include <sys/statvfs.h>
+ #include <dirent.h>
+ #include <fnmatch.h>
++#include <ftw.h>
+ #endif
+ 
+ /* Get the ANSI path from OBJECT_ATTRIBUTES (platform-independent). */
+@@ -1003,6 +1004,45 @@
+     return STATUS_SUCCESS;
+ }
+ 
++/* Formatting a cache partition empties the folder that stands in for it.
++ *
++ * The utility drive (Z:, \Device\Harddisk0\Partition3..5) is a FATX image to
++ * XAPI but a plain folder to the title: XAPI formats the image (writes a
++ * fresh FATX boot sector at offset 0) and every file the title then makes
++ * goes to <save>/Cache. The format never reached that folder, so whatever an
++ * earlier run cached was still there on a drive the title had just seen
++ * formatted. Panzer Dragoon Orta formats its cache at every boot, copies
++ * each stage file to <name>.tmp and renames it into place without
++ * ReplaceIfExists -- which can only fail on a stale file. From the second
++ * run on the renames failed (STATUS_OBJECT_NAME_COLLISION), and entering the
++ * tutorial or the next stage showed the "disc may be dirty" screen. */
++static int cache_clear_entry(const char *path, const struct stat *st, int type, struct FTW *ftw)
++{
++    (void)st;
++    if (ftw->level == 0)
++        return 0;   /* the folder itself stays */
++    if ((type == FTW_DP ? rmdir(path) : unlink(path)) != 0)
++        fprintf(stderr, "  [FILE] cache format: could not remove %s (errno %d)\n", path, errno);
++    return 0;
++}
++
++static void cache_partition_formatted(const char *image)
++{
++    char xbox_dir[] = "\\Device\\Harddisk0\\PartitionN\\";
++    char host_dir[MAX_PATH];
++    const char *base = image ? strrchr(image, '/') : NULL;
++
++    if (!base || strncmp(base, "/Partition", 10) != 0 || base[10] < '3' || base[10] > '5'
++            || strcmp(base + 11, ".img") != 0)
++        return;
++    xbox_dir[sizeof xbox_dir - 3] = base[10];
++    if (!xbox_translate_path(xbox_dir, host_dir, MAX_PATH))
++        return;
++    fprintf(stderr, "  [FILE] Partition%c formatted: emptying %s\n", base[10], host_dir);
++    fflush(stderr);
++    nftw(host_dir, cache_clear_entry, 16, FTW_DEPTH | FTW_PHYS);
++}
++
+ NTSTATUS __stdcall xbox_NtWriteFile(
+     HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
+     PXBOX_IO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length,
+@@ -1021,6 +1061,9 @@
+     if (ByteOffset && ByteOffset->QuadPart >= 0)
+         lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
+ 
++    if (Length >= 4 && memcmp(Buffer, "FATX", 4) == 0 && lseek(fd, 0, SEEK_CUR) == 0)
++        cache_partition_formatted(w32_handle_path(FileHandle));
++
+     ssize_t n = write(fd, Buffer, Length);
+     if (n < 0) {
+         XBOX_TRACE(XBOX_LOG_FILE, "NtWriteFile(handle=%p) errno=%d", FileHandle, errno);
+@@ -1039,6 +1082,7 @@
+ {
+     XBOX_TRACE(XBOX_LOG_FILE, "NtClose(handle=%p)", Handle);
+     if (Handle && Handle != INVALID_HANDLE_VALUE) {
++        xbox_dir_context_drop(Handle);
+         CloseHandle(Handle);
+         return STATUS_SUCCESS;
+     }
+@@ -1268,6 +1312,30 @@
+ static CRITICAL_SECTION s_dir_cs;
+ static BOOL s_dir_cs_init = FALSE;
+ 
++/* A closed directory handle takes its enumeration with it, as on Windows.
++ * Here a handle is the address of its object, and the next object allocated
++ * often gets the same address: a search abandoned at its first match then
++ * carried on under the next directory opened. Panzer Dragoon Orta looks for
++ * each cache file by name before copying it to Z:; the second lookup got the
++ * old search's NO_MORE_FILES, the file was copied again and its rename
++ * collided with the copy already there -- the "disc may be dirty" screen on
++ * entering the tutorial or the next stage. */
++void xbox_dir_context_drop(HANDLE FileHandle)
++{
++    if (!s_dir_cs_init)
++        return;
++    EnterCriticalSection(&s_dir_cs);
++    for (int i = 0; i < MAX_DIR_CONTEXTS; i++) {
++        if (s_dir_contexts[i].handle == FileHandle) {
++            if (s_dir_contexts[i].dir)
++                closedir(s_dir_contexts[i].dir);
++            s_dir_contexts[i].dir = NULL;
++            s_dir_contexts[i].handle = NULL;
++        }
++    }
++    LeaveCriticalSection(&s_dir_cs);
++}
++
+ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
+     HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
+     PXBOX_IO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length,
