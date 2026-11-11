@@ -39,6 +39,7 @@ typedef struct pdo_settings {
     int  pic_saturation;    /* 0..200 % */
     bool audio_3d;          /* 3D sounds through a model head, for headphones (mixer.c) */
     int  save_slot;         /* 1-3: which save file the game sees (pdo_save_dir), chosen before it starts */
+    bool auto_save;         /* the game's own story save when an episode is cleared (src/guest/autosave.c) */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };

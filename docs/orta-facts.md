@@ -208,6 +208,18 @@ from 0x00428994 to 0x00345D90 and Box "seen" bits from 0x004289A0 to
 shown as "EPISODE n" in the save's description) loads only with bit 1 of
 0x00034120's argument.
 
+The story save is written in one place only: SAVE & END GAME on the
+game-over menu (0x000BE080 with 0x107 calls 0x00034340(2), the only call
+with bit 1). Clearing an episode goes on without one, so CONTINUE (shown
+when 0x000340C0 finds an episode at 0x00424EA0) needs a SAVE & END GAME
+first. Scenes (current 0x0034271C, next 0x00342718, moved over in
+0x000115B0; a scene's value at 0x00341E44 + 16 * scene): episode n's stage
+is 3n + 0xF, 3n + 0x10 (play), 3n + 0x11; scene 0x5D (0x000BE080) takes
+0x102 new game, 0x104 start the stage of the episode at 0x00342758
+(0x000BDD10; after a clear that is already the next one), 0x105 game over,
+0x106 retry, 0x107 save and end. src/guest/autosave.c (auto_save) makes the
+0x107 call when 0x104 comes with the episode after the one just played.
+
 Box item n (347, table of {bit, hours index} at 0x003CE0A8) is open when its
 bit is negative, set in 0x00345D90, or when the total play time reaches its
 hours (byte table at 0x00346418): 0x000309B0. Every Box check goes through

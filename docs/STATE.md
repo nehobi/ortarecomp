@@ -15,7 +15,7 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
 - `src/guest/`: Direct3D, DirectSound, CRI (movies) and input in place of
   the Xbox's (`d3d_hle.c`, `dsound_hle.c`, `cri_hle.c`, `input_hle.c`),
   vertex programs compiled for the CPU (`vsh.c`), option hooks
-  (`widescreen.c`, `unlocks.c`, `intro_skip.c`), crash and hang reports
+  (`widescreen.c`, `unlocks.c`, `intro_skip.c`, `autosave.c`), crash and hang reports
   (`crash_report.c`, `wait_trace.c`).
 - `src/gfx/renderer.c`: the game records frames on its thread; the main
   thread owns the window and draws them on the SDL GPU API (Vulkan), with
