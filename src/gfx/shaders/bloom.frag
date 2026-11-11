@@ -1,7 +1,9 @@
 #version 450
 // Bloom (renderer.c, bloom_pass), on the scene before the HUD is drawn:
-//   mode 0: the bright parts, at a quarter of the target's size (four
-//           bilinear taps, so 16 texels each), past a soft threshold;
+//   mode 0: the bright parts, at a quarter of the target's size: the
+//           brightest of four bilinear taps (16 texels each), so a small
+//           light (a spark, a laser) is not averaged away, past a soft
+//           threshold;
 //   mode 1: a 9-tap Gaussian blur along step (one direction a pass);
 //   mode 2: the blurred light, scaled, added onto the scene (the pipeline
 //           blends ONE + ONE).
@@ -18,8 +20,8 @@ void main()
 
     if (mode == 0) {
         vec2 px = 1.0 / vec2(textureSize(img, 0));
-        vec3 c = 0.25 * (texture(img, v_uv + vec2(-px.x, -px.y)).rgb + texture(img, v_uv + vec2(px.x, -px.y)).rgb +
-                         texture(img, v_uv + vec2(-px.x, px.y)).rgb + texture(img, v_uv + vec2(px.x, px.y)).rgb);
+        vec3 c = max(max(texture(img, v_uv + vec2(-px.x, -px.y)).rgb, texture(img, v_uv + vec2(px.x, -px.y)).rgb),
+                     max(texture(img, v_uv + vec2(-px.x, px.y)).rgb, texture(img, v_uv + vec2(px.x, px.y)).rgb));
         float hi = max(c.r, max(c.g, c.b));
         // Soft knee: nothing below the threshold, rising to full over 0.1.
         float k = clamp((hi - params.y) / 0.1, 0.0, 1.0);
