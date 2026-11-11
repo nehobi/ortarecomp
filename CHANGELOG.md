@@ -1,15 +1,21 @@
 # Changelog
 
-## Unreleased
+## v0.1.3 (beta)
 
 ### Fixed
 
 - Linux and Steam Deck: "There's a problem with the disc you're using" could
-  still appear on v0.1.2: going into a tutorial a second time, loading a save,
-  or starting the next episode. Clearing an old stage from the hard-disk cache
-  opens each file through its folder, and on Linux those opens failed. Also on
-  Windows, the same opens no longer depend on Windows reporting the folder's
-  path, which fails on some drives.
+  still appear on v0.1.2, going into a tutorial (or into one again), loading
+  a save, or starting the next episode. The game keeps stage files in a
+  hard-disk cache, and three things went wrong with it on Linux: a file
+  opened through its folder was not found; looking a file up in a folder
+  could carry on an earlier, finished search; and the cache was never
+  emptied when the game formats it at every start, so new copies collided
+  with old ones. The cache is now emptied at each start, as on the Xbox;
+  the game fills it again as it goes. Thanks to nehobi for the second and
+  third.
+- Windows: opening a file through its folder no longer depends on Windows
+  reporting the folder's path, which fails on some drives.
 
 ## v0.1.2 (beta)
 
