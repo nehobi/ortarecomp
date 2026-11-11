@@ -494,6 +494,16 @@ static void mix_block(float *out, int frames, int chs)
                 mix_voice(&voices[i], bins, frames);
         }
 
+    /* The mixbins' headroom. DirectSound's start-up (0x002C3B2A fills the
+     * table, 0x002C67C6 writes it to the APU, 0x002C6304 per bin) gives
+     * mixbins 0-30 a headroom of 1, a shift right by one: every bin we mix
+     * (speakers 0-5, the I3DL2 send 10) is halved, -6.02 dB, before the
+     * reverb and the output. Orta never changes it. Missing, the whole mix
+     * was 6 dB hot and dense gunfire clipped hard. */
+    for (int i = 0; i < frames; i++)
+        for (int c = 0; c < COLUMNS; c++)
+            bins[i][c] *= 0.5f;
+
     if (chs == 6) {
         /* 5.1: the speaker bins as they are, the reverb's two channels
          * around the room (front and back, each -3 dB). */
