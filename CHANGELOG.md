@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Linux and Steam Deck: "There's a problem with the disc you're using" could
+  still appear on v0.1.2: going into a tutorial a second time, loading a save,
+  or starting the next episode. Clearing an old stage from the hard-disk cache
+  opens each file through its folder, and on Linux those opens failed. Also on
+  Windows, the same opens no longer depend on Windows reporting the folder's
+  path, which fails on some drives.
+
 ## v0.1.2 (beta)
 
 ### Fixed

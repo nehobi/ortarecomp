@@ -1,0 +1,59 @@
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -167,9 +167,15 @@
+         return FALSE;
+     if (ObjectAttributes->RootDirectory && xbox_path[0] != '\\' &&
+         !(xbox_path[0] && xbox_path[1] == ':')) {
+-        /* XDeleteSaveGame opens each child relative to its save directory. */
+-        DWORD used = GetFinalPathNameByHandleW(ObjectAttributes->RootDirectory,
+-            win_path, buf_size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
++        /* XDeleteSaveGame opens each child relative to its save directory.
++         * The path kept from the directory's open first: asking the handle
++         * fails on some volumes (see dir_path_set). */
++        DWORD used = 0;
++        if (dir_path_get(ObjectAttributes->RootDirectory, win_path, buf_size))
++            used = (DWORD)wcslen(win_path);
++        else
++            used = GetFinalPathNameByHandleW(ObjectAttributes->RootDirectory,
++                win_path, buf_size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+         if (!used || used >= buf_size || used + 1 >= buf_size) return FALSE;
+         if (win_path[used - 1] != L'\\') win_path[used++] = L'\\';
+         int count = MultiByteToWideChar(CP_ACP, 0, xbox_path, -1,
+@@ -947,7 +953,24 @@
+         return STATUS_INVALID_PARAMETER;
+ 
+     const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH)) {
++    if (xbox_path && ObjectAttributes->RootDirectory && xbox_path[0] != '\\' &&
++        !(xbox_path[0] && xbox_path[1] == ':')) {
++        /* A name relative to an open directory, as the _WIN32 version takes
++         * it. Translated as a path of its own it failed, and a title that
++         * clears a folder by opening each child through the folder's handle
++         * (Orta, evicting a stage from its cache) read the
++         * STATUS_OBJECT_PATH_NOT_FOUND as a broken disc. */
++        const char *dir = w32_handle_path(ObjectAttributes->RootDirectory);
++        size_t dlen = dir ? strlen(dir) : 0;
++        if (!dir || (size_t)snprintf(host_path, sizeof host_path, "%s/%s", dir, xbox_path)
++                >= sizeof host_path) {
++            xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE, "NtCreateFile: no path for the root directory");
++            return STATUS_OBJECT_PATH_NOT_FOUND;
++        }
++        for (char *c = host_path + dlen; *c; c++)
++            if (*c == '\\')
++                *c = '/';
++    } else if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH)) {
+         xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE, "NtCreateFile: path translation failed");
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     }
+@@ -1174,7 +1197,9 @@
+              * matches NT "delete on close" semantics exactly. */
+             if (info->DeleteFile) {
+                 const char* p = w32_handle_path(FileHandle);
+-                if (p) unlink(p);
++                /* A directory is not unlinked; NT deletes an empty one. */
++                if (p && unlink(p) != 0 && (errno == EISDIR || errno == EPERM))
++                    rmdir(p);
+             }
+             IoStatusBlock->Status = STATUS_SUCCESS;
+             return STATUS_SUCCESS;
