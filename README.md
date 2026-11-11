@@ -21,15 +21,18 @@ Android build is planned.
   5120x3840).
 - **Widescreen:** the game's own 16:9 mode, or the original 4:3; bars,
   stretch or zoom to fit any window or screen.
-- **Anti-aliasing:** MSAA up to 8x, or FXAA.
+- **Anti-aliasing:** MSAA up to 8x, or FXAA; anisotropic texture filtering
+  up to 16x.
 - **Smooth motion:** frame interpolation above 60 fps for high refresh rate
   displays (beta), or Lossless Scaling's frame generation with your own copy
   of Lossless Scaling (experimental).
 - **Color correction:** brightness, contrast, gamma and saturation, a CRT
-  look, and optional TV softening.
-- **Sound:** stereo 3D positional audio with a headphones mode (a modelled
-  head: each ear hears a sound at its own time and loudness), the game's
-  room reverb, and a master volume.
+  look, optional TV softening, and bloom (Low or High) that leaves the HUD
+  alone.
+- **Sound:** stereo 3D positional audio, a headphones mode (a modelled
+  head: each ear hears a sound at its own time and loudness), or 5.1
+  surround (3D sounds placed around four speakers), with the game's room
+  reverb and a master volume.
 - **Controls:** controllers, keyboard and mouse (with mouse aim), every
   button rebindable.
 - **Three save files** (the original keeps one), picked in the launcher.

@@ -8,7 +8,7 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
 ## How it fits together
 
 - `tools/recomp.py`: the USA `default.xbe` -> `gen/` through xboxrecomp
-  v0.13.1 and patches 0001-0031 (`patches/xboxrecomp/`), with seeds for
+  v0.13.1 and patches 0001-0033 (`patches/xboxrecomp/`), with seeds for
   functions the sweep misses (`tools/pdo_seeds.json`; every failed indirect
   call seen in play is seeded). 42 lifter jumps still go to stubs, all from
   data decoded as code.
@@ -27,7 +27,12 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
   through `patches/SDL/0001` (local, applied by CMake), host side in
   `src/gfx/lsfg_present.cpp`; needs SPIR-V headers to build and the
   player's Lossless.dll to run. F1 > Advanced > Frame gen.
-- `src/audio/`: mixer, I3DL2 reverb, 3D audio for headphones.
+- `src/audio/`: mixer, I3DL2 reverb, output Stereo / Headphones (a model
+  head) / 5.1 (the six speaker bins out as they are, 3D voices panned around
+  the corners). The opening movie's audio is 5.1 (opening_bs.aix: three
+  stereo ADX tracks), but CRI mixes it to one stereo buffer even when the
+  console reports surround (XC_AUDIO and GetSpeakerConfig both tried): to
+  have it, CRI's AIX decoding would have to be taken over.
 - `src/gfx/overlay.c`: the launcher and the F1 menu; settings in
   `ortarecomp.ini` (`src/config.c`); save files 1-3 are `saves/E`, `E2`,
   `E3`.

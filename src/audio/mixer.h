@@ -59,6 +59,9 @@ bool pdo_mixer_init(void);
 void pdo_mixer_shutdown(void);
 /* Hold every voice (silence, no cursor moves) while the options overlay is open. */
 void pdo_mixer_set_paused(bool on);
+/* The output setting changed (Stereo, Headphones, 5.1): reopens the device
+ * with two or six channels as needed. */
+void pdo_mixer_apply_output(void);
 
 int  pdo_voice_create(const pdo_voice_desc *desc);  /* returns id > 0, or 0 */
 void pdo_voice_destroy(int id);
@@ -86,6 +89,10 @@ void pdo_voice_set_3d(int id, float left, float right);
  * distance gain, then where it is: lateral -1 (left) .. 1 (right), front
  * -1 (behind) .. 1 (ahead), both as cosines from the listener's axes. */
 void pdo_voice_set_3d_ears(int id, float gain, float lateral, float front);
+/* 5.1: a 3D voice panned between the two nearest of the four corner
+ * speakers (front +-30, back +-110 degrees), as the Xbox's 3D mixing did
+ * on surround; same arguments as the ears. */
+void pdo_voice_set_3d_surround(int id, float gain, float lateral, float front);
 
 /* I3DL2 source levels, hundredths of a dB (SetI3DL2Source): the direct
  * path's and the reverb send's. A 3D voice sends to the reverb at `room`

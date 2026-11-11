@@ -16,6 +16,7 @@
 #include "../config.h"
 #include "../input_map.h"
 #include "renderer.h"
+#include "../audio/mixer.h"
 #ifdef PDO_HAVE_LSFG
 #include "lsfg_present.h"
 #endif
@@ -23,13 +24,13 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
        ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
        ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT,
        /* the launcher's own */
        ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
        /* Picture (present.frag) */
-       ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT, ITEM_PIC_RESET,
+       ITEM_PIC_LOOK, ITEM_PIC_BLOOM, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT, ITEM_PIC_RESET,
        /* links to the pages, and back */
        ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_BACK,
        ITEM_COUNT };
@@ -43,10 +44,10 @@ static const int game_main[] = { ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND
                                  ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT };
 static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
                                      ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_EXIT };
-static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
-static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
+static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
+static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
                                         ITEM_FPS, ITEM_BACK };
-static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
+static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BLOOM, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
                                      ITEM_PIC_RESET, ITEM_BACK };
 static const int sound_items[] = { ITEM_VOLUME, ITEM_3D, ITEM_BACK };
 static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_BACK };
@@ -242,13 +243,22 @@ static void change(int dir)
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 8); break;
     case ITEM_MSAA:   next_aa(s, dir); break;
+    case ITEM_ANISO: {      /* off, 2x, 4x, 8x, 16x */
+        int i = s->anisotropy >= 16 ? 4 : s->anisotropy >= 8 ? 3 : s->anisotropy >= 4 ? 2 : s->anisotropy >= 2 ? 1 : 0;
+        i = SDL_clamp(i + dir, 0, 4);
+        s->anisotropy = 1 << i;
+        break;
+    }
     case ITEM_ASPECT: s->aspect = (s->aspect + PDO_ASPECT_COUNT + dir) % PDO_ASPECT_COUNT; break;
     case ITEM_FIT:    s->fit = (s->fit + PDO_FIT_COUNT + dir) % PDO_FIT_COUNT; break;
     case ITEM_SOFT:   s->soft_filter = !s->soft_filter; break;
     case ITEM_VOLUME: s->master_volume = SDL_clamp(s->master_volume + 5 * dir, 0, 100); break;
     case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
     case ITEM_LOGOS:  s->skip_logos = !s->skip_logos; break;
-    case ITEM_3D:     s->audio_3d = !s->audio_3d; break;
+    case ITEM_3D:
+        s->audio_out = (s->audio_out + PDO_AUDIO_COUNT + dir) % PDO_AUDIO_COUNT;
+        pdo_mixer_apply_output();
+        break;
     case ITEM_FPS:    s->show_fps = !s->show_fps; break;
     case ITEM_VSH:    s->gpu_vertex = !s->gpu_vertex; break;
     case ITEM_FVF:    s->gpu_fixed = !s->gpu_fixed; break;
@@ -259,6 +269,7 @@ static void change(int dir)
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     case ITEM_QUIT:   if (dir > 0) ask_quit(); break;
     case ITEM_PIC_LOOK:     s->picture_crt = !s->picture_crt; break;
+    case ITEM_PIC_BLOOM:    s->bloom = SDL_clamp(s->bloom + dir, 0, 2); break;
     case ITEM_PIC_BRIGHT:   s->pic_brightness = SDL_clamp(s->pic_brightness + 5 * dir, -50, 50); break;
     case ITEM_PIC_CONTRAST: s->pic_contrast = SDL_clamp(s->pic_contrast + 5 * dir, 50, 150); break;
     case ITEM_PIC_GAMMA:    s->pic_gamma = SDL_clamp(s->pic_gamma + 5 * dir, 50, 200); break;
@@ -266,6 +277,7 @@ static void change(int dir)
     case ITEM_PIC_RESET:
         if (dir > 0) {
             s->picture_crt = false;
+            s->bloom = 0;
             s->pic_brightness = 0;
             s->pic_contrast = s->pic_gamma = s->pic_saturation = 100;
         }
@@ -608,6 +620,10 @@ static float value_of(int item, char *v, size_t n)
         if (s->msaa > 1) snprintf(v, n, "%dx MSAA", s->msaa);
         else snprintf(v, n, "%s", s->fxaa ? "FXAA" : "Off");
         break;
+    case ITEM_ANISO:
+        if (s->anisotropy > 1) snprintf(v, n, "%dx", s->anisotropy);
+        else snprintf(v, n, "Off");
+        break;
     case ITEM_ASPECT: snprintf(v, n, "%s", aspects[s->aspect]); break;
     case ITEM_FIT:    snprintf(v, n, "%s", fits[s->fit]); break;
     case ITEM_SOFT:   snprintf(v, n, "%s", s->soft_filter ? "On" : "Off"); break;
@@ -615,6 +631,11 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_FULLSCREEN: snprintf(v, n, "%s", s->fullscreen ? "On" : "Off"); break;
     case ITEM_VOLUME:  snprintf(v, n, "%d%%", s->master_volume); return s->master_volume / 100.0f;
     case ITEM_PIC_LOOK:     snprintf(v, n, "%s", s->picture_crt ? "CRT" : "Original"); break;
+    case ITEM_PIC_BLOOM: {
+        static const char *levels[] = { "Off", "Low", "High" };
+        snprintf(v, n, "%s", levels[SDL_clamp(s->bloom, 0, 2)]);
+        break;
+    }
     case ITEM_PIC_BRIGHT:   snprintf(v, n, "%+d", s->pic_brightness); return (s->pic_brightness + 50) / 100.0f;
     case ITEM_PIC_CONTRAST: snprintf(v, n, "%d%%", s->pic_contrast); return (s->pic_contrast - 50) / 100.0f;
     case ITEM_PIC_GAMMA:    snprintf(v, n, "%d.%02d", s->pic_gamma / 100, s->pic_gamma % 100);
@@ -622,7 +643,11 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_PIC_SAT:      snprintf(v, n, "%d%%", s->pic_saturation); return s->pic_saturation / 200.0f;
     case ITEM_BOX:    snprintf(v, n, "%s", s->unlock_box ? "All open" : "Normal"); break;
     case ITEM_LOGOS:  snprintf(v, n, "%s", s->skip_logos ? "On" : "Off"); break;
-    case ITEM_3D:     snprintf(v, n, "%s", s->audio_3d ? "Headphones" : "Speakers"); break;
+    case ITEM_3D: {
+        static const char *outs[PDO_AUDIO_COUNT] = { "Stereo", "Headphones", "5.1" };
+        snprintf(v, n, "%s", outs[s->audio_out]);
+        break;
+    }
     case ITEM_VSH:    snprintf(v, n, "%s", s->gpu_vertex ? "GPU" : "CPU"); break;
     case ITEM_FVF:    snprintf(v, n, "%s", s->gpu_fixed ? "GPU" : "CPU"); break;
     case ITEM_INTERP: {
@@ -667,6 +692,7 @@ static const char *label_of(int item)
     switch (item) {
     case ITEM_SCALE:  return "Resolution";
     case ITEM_MSAA:   return "Anti-aliasing";
+    case ITEM_ANISO:  return "Texture filter";
     case ITEM_ASPECT: return "Aspect ratio";
     case ITEM_FIT:    return "Fit to window";
     case ITEM_SOFT:   return "TV softening";
@@ -674,6 +700,7 @@ static const char *label_of(int item)
     case ITEM_FULLSCREEN: return "Fullscreen";
     case ITEM_VOLUME:  return "Master";
     case ITEM_PIC_LOOK:     return "Look";
+    case ITEM_PIC_BLOOM:    return "Bloom";
     case ITEM_PIC_BRIGHT:   return "Brightness";
     case ITEM_PIC_CONTRAST: return "Contrast";
     case ITEM_PIC_GAMMA:    return "Gamma";
@@ -681,7 +708,7 @@ static const char *label_of(int item)
     case ITEM_PIC_RESET:    return "Reset picture";
     case ITEM_BOX:    return "Pandora's Box";
     case ITEM_LOGOS:  return "Skip logos";
-    case ITEM_3D:     return "3D audio";
+    case ITEM_3D:     return "Output";
     case ITEM_VSH:    return "Vertex programs";
     case ITEM_FVF:    return "Fixed function";
     case ITEM_INTERP: return "Frame gen.";
@@ -712,6 +739,7 @@ static const char *help_of(int item)
     switch (item) {
     case ITEM_SCALE:  return "Multiples of 640x480.";
     case ITEM_MSAA:   return "Smoother edges. MSAA is best.";
+    case ITEM_ANISO:  return "Anisotropic: sharper far away.";
     case ITEM_ASPECT: return "16:9 shows more to the sides.";
     case ITEM_FIT:    return "Bars, stretched or zoomed.";
     case ITEM_SOFT:   return "A slight TV-like blur.";
@@ -719,6 +747,7 @@ static const char *help_of(int item)
     case ITEM_FULLSCREEN: return "Fullscreen or a window.";
     case ITEM_VOLUME:  return "Everything the game plays.";
     case ITEM_PIC_LOOK:     return "CRT: richer, like an old TV.";
+    case ITEM_PIC_BLOOM:    return "A glow around bright lights.";
     case ITEM_PIC_BRIGHT:   return "Lighter or darker overall.";
     case ITEM_PIC_CONTRAST: return "Darks darker, lights lighter.";
     case ITEM_PIC_GAMMA:    return "Above 1 lifts the midtones.";
@@ -726,7 +755,11 @@ static const char *help_of(int item)
     case ITEM_PIC_RESET:    return "Back to the game's own picture.";
     case ITEM_BOX:    return "All open: every extra unlocked.";
     case ITEM_LOGOS:  return "A press skips the boot logos.";
-    case ITEM_3D:     return "Headphones: sounds around you.";
+    case ITEM_3D: {
+        static const char *helps[PDO_AUDIO_COUNT] = { "Two speakers or a TV.", "Headphones: sounds around you.",
+                                                      "5.1 speakers: sound all around." };
+        return helps[pdo_settings_get()->audio_out];
+    }
     case ITEM_VSH:    return "GPU is faster.";
     case ITEM_FVF:    return "GPU is faster.";
     case ITEM_INTERP: {
@@ -761,7 +794,7 @@ static const char *help_of(int item)
     case ITEM_CONTROLS:    return "Keys, pad and mouse.";
     case ITEM_GO_DISPLAY:  return "Resolution, aspect, window.";
     case ITEM_GO_PICTURE:  return "CRT look, brightness, colour.";
-    case ITEM_GO_SOUND:    return "Volume, 3D audio.";
+    case ITEM_GO_SOUND:    return "Volume, stereo or 5.1.";
     case ITEM_GO_GAMEPLAY: return "Pandora's Box, boot logos.";
     case ITEM_GO_ADVANCED: return "Frame generation and more.";
     }

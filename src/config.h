@@ -28,6 +28,8 @@ typedef struct pdo_settings {
     char lsfg_dll[PDO_PATH_MAX];    /* the player's Lossless.dll; "" looks in the usual places */
     bool fullscreen;        /* borderless, the whole monitor (Alt+Enter) */
     bool fxaa;              /* edge smoothing on the finished frame (shaders/screen.frag) */
+    int  anisotropy;        /* 1 off, 2, 4, 8, 16: anisotropic filtering of smooth-filtered textures */
+    int  bloom;             /* 0 off, 1 low, 2 high: on the scene, before the HUD (renderer.c) */
     int  win_x, win_y, win_w, win_h;    /* the window when not fullscreen (w 0: not set yet) */
     bool win_maximized;
     bool mouse_aim;         /* the mouse steers the left stick (input_hle.c) */
@@ -41,11 +43,13 @@ typedef struct pdo_settings {
     int  pic_contrast;      /* 50..150 % */
     int  pic_gamma;         /* 50..200: 100 as is, more brightens the midtones */
     int  pic_saturation;    /* 0..200 % */
-    bool audio_3d;          /* 3D sounds through a model head, for headphones (mixer.c) */
+    int  audio_out;         /* PDO_AUDIO_*: stereo; 3D sounds through a model head for
+                               headphones; or 5.1, 3D sounds around four speakers (mixer.c) */
     int  save_slot;         /* 1-3: which save file the game sees (pdo_save_dir), chosen before it starts */
 } pdo_settings;
 
 enum { PDO_ASPECT_4_3, PDO_ASPECT_16_9, PDO_ASPECT_COUNT };
+enum { PDO_AUDIO_STEREO, PDO_AUDIO_HEADPHONES, PDO_AUDIO_SURROUND, PDO_AUDIO_COUNT };
 /* The whole picture with bars; stretched to the window; zoomed to fill it,
  * the overflow cut off. */
 enum { PDO_FIT_BARS, PDO_FIT_STRETCH, PDO_FIT_ZOOM, PDO_FIT_COUNT };

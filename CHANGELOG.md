@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.1.3 (beta)
+
+### Fixed
+
+- Linux and Steam Deck: "There's a problem with the disc you're using" could
+  still appear on v0.1.2, going into a tutorial (or into one again), loading
+  a save, or starting the next episode. The game keeps stage files in a
+  hard-disk cache, and three things went wrong with it on Linux: a file
+  opened through its folder was not found; looking a file up in a folder
+  could carry on an earlier, finished search; and the cache was never
+  emptied when the game formats it at every start, so new copies collided
+  with old ones. The cache is now emptied at each start, as on the Xbox;
+  the game fills it again as it goes. Thanks to nehobi for the second and
+  third.
+- Windows: opening a file through its folder no longer depends on Windows
+  reporting the folder's path, which fails on some drives.
+
+## v0.1.2 (beta)
+
+### Fixed
+
+- Linux and Steam Deck: "There's a problem with the disc you're using" at
+  the end of an episode. The game clears old stages from its hard-disk
+  cache to make room for the next; reopening a cleared stage folder got
+  the wrong error back on Linux ("path not found" instead of "not found"),
+  which the game takes for a bad disc.
+
+### Added
+
+- Bloom: Options > Picture > Bloom, Off (the default), Low or High. A glow
+  on the bright parts of the scene, applied before the HUD is drawn, so the
+  HUD, menus and text are untouched. Off costs nothing.
+- Anisotropic texture filtering: Options > Display > Texture filter, Off
+  (the original look, the default), 2x, 4x, 8x, 16x. Sharper textures at an
+  angle and in the distance; point-filtered ones (menus, text) unchanged.
+- 5.1 surround output: Options > Sound > Output now steps Stereo,
+  Headphones, 5.1. In 5.1 the game's 3D sounds are placed around the four
+  corner speakers by where they are, as the Xbox did on a surround setup;
+  music, voices and menus stay on the front speakers; the room reverb comes
+  from all around. Movies stay stereo for now.
+
 ## v0.1.1 (beta)
 
 ### Added

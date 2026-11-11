@@ -331,7 +331,8 @@ void sub_002C2494(void)
  * distance model (full volume up to the minimum distance, then
  * min / (min + rolloff * (d - min)), held from the maximum distance on) and
  * an equal-power left/right pan from the listener's orientation, or on
- * headphones (the 3D audio setting) a model head. No cones or Doppler. Deferred settings apply at once. Orta gives positions
+ * headphones (the output setting) a model head, or on 5.1 a pan around the
+ * four corner speakers. No cones or Doppler. Deferred settings apply at once. Orta gives positions
  * relative to the camera with the listener at the origin; enemy gunfire
  * (looping 3D buffers, stopped when the enemy stops) is near enough to
  * stay at full volume, panned. */
@@ -386,16 +387,19 @@ static void apply_3d(int id)
         if (n > 1e-6f)
             x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2]) / (d * n);
     }
-    /* Headphones (the 3D audio setting): through a model head, which needs
-     * ahead or behind too. */
-    if (pdo_settings_get()->audio_3d) {
+    /* Headphones (a model head) and 5.1 (around four speakers), the output
+     * setting: both need ahead or behind too. */
+    if (pdo_settings_get()->audio_out != PDO_AUDIO_STEREO) {
         float fz = 0.0f;
         const float fr[3] = { 0.0f, 0.0f, 1.0f };
         const float *ff = src3d[id].mode == DS3DMODE_HEADRELATIVE ? fr : f;
         float n = sqrtf(ff[0] * ff[0] + ff[1] * ff[1] + ff[2] * ff[2]);
         if (d > 1e-6f && n > 1e-6f)
             fz = (rel[0] * ff[0] + rel[1] * ff[1] + rel[2] * ff[2]) / (d * n);
-        pdo_voice_set_3d_ears(id, g, x, fz);
+        if (pdo_settings_get()->audio_out == PDO_AUDIO_SURROUND)
+            pdo_voice_set_3d_surround(id, g, x, fz);
+        else
+            pdo_voice_set_3d_ears(id, g, x, fz);
         return;
     }
     /* Equal-power pan: a source straight ahead is -3 dB in each ear. */

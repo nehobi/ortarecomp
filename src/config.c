@@ -15,7 +15,7 @@ char pdo_log_file[PDO_PATH_MAX];
 
 static pdo_settings settings = { .render_scale = 1, .msaa = 1, .aspect = PDO_ASPECT_4_3, .fit = PDO_FIT_BARS,
                                   .master_volume = 100, .gpu_vertex = true, .gpu_fixed = true,
-                                  .lsfg_multiplier = 1, .mouse_aim = true, .mouse_speed = 100,
+                                  .lsfg_multiplier = 1, .anisotropy = 1, .mouse_aim = true, .mouse_speed = 100,
                                   .skip_logos = true, .depth_reversed = true, .pic_contrast = 100,
                                   .pic_gamma = 100, .pic_saturation = 100, .save_slot = 1 };
 
@@ -143,7 +143,12 @@ bool pdo_config_load(pdo_config *cfg)
             settings.gpu_fixed = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "frame_interp") == 0)
             settings.frame_interp = SDL_atoi(eq + 1) != 0;
-        else if (strcmp(line, "lsfg_multiplier") == 0)
+        else if (strcmp(line, "bloom") == 0)
+            settings.bloom = strcmp(eq + 1, "high") == 0 ? 2 : strcmp(eq + 1, "low") == 0 ? 1 : 0;
+        else if (strcmp(line, "anisotropy") == 0) {
+            int a = clamp_int(SDL_atoi(eq + 1), 1, 16);
+            settings.anisotropy = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 1;
+        } else if (strcmp(line, "lsfg_multiplier") == 0)
             settings.lsfg_multiplier = clamp_int(SDL_atoi(eq + 1), 1, 4);
         else if (strcmp(line, "lsfg_performance") == 0)
             settings.lsfg_performance = SDL_atoi(eq + 1) != 0;
@@ -177,8 +182,9 @@ bool pdo_config_load(pdo_config *cfg)
             settings.pic_gamma = clamp_int(SDL_atoi(eq + 1), 50, 200);
         else if (strcmp(line, "picture_saturation") == 0)
             settings.pic_saturation = clamp_int(SDL_atoi(eq + 1), 0, 200);
-        else if (strcmp(line, "audio_3d") == 0)
-            settings.audio_3d = strcmp(eq + 1, "headphones") == 0;
+        else if (strcmp(line, "audio_3d") == 0)    /* the key kept from when it was 3D only */
+            settings.audio_out = strcmp(eq + 1, "headphones") == 0 ? PDO_AUDIO_HEADPHONES
+                               : strcmp(eq + 1, "surround") == 0 ? PDO_AUDIO_SURROUND : PDO_AUDIO_STEREO;
         else if (strcmp(line, "save_slot") == 0)
             settings.save_slot = clamp_int(SDL_atoi(eq + 1), 1, 3);
         else
@@ -207,6 +213,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  "gpu_vertex=%d\n"
                  "gpu_fixed=%d\n"
                  "frame_interp=%d\n"
+                 "anisotropy=%d\n"
+                 "bloom=%s\n"
                  "lsfg_multiplier=%d\n"
                  "lsfg_performance=%d\n"
                  "lsfg_dll=%s\n"
@@ -231,12 +239,14 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
-                 settings.gpu_fixed, settings.frame_interp, settings.lsfg_multiplier, settings.lsfg_performance,
+                 settings.gpu_fixed, settings.frame_interp, settings.anisotropy, settings.bloom == 2 ? "high" : settings.bloom == 1 ? "low" : "off",
+                 settings.lsfg_multiplier, settings.lsfg_performance,
                  settings.lsfg_dll, settings.fullscreen, settings.fxaa,
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,
                  settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,
-                 settings.pic_saturation, settings.audio_3d ? "headphones" : "speakers",
+                 settings.pic_saturation, settings.audio_out == PDO_AUDIO_HEADPHONES ? "headphones"
+                 : settings.audio_out == PDO_AUDIO_SURROUND ? "surround" : "speakers",
                  settings.save_slot);
     if (n < 0 || (size_t)n >= sizeof text)
         return false;
