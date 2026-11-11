@@ -2125,12 +2125,11 @@ static void bloom_pass(SDL_GPUCommandBuffer *cmd, int level)
     SDL_GPUTexture *color = cur_color(), *ms = cur_target ? cur_target->ms : frame_ms;
     Uint32 w, h, bw, bh;
     int samples_log2 = ms ? (nsamples >= 8 ? 3 : nsamples >= 4 ? 2 : nsamples >= 2 ? 1 : 0) : 0;
-    /* Low: the bright lights only; High: more of the picture, spread wider
-     * (two rounds of blur), stronger. Orta's picture is dark (half of an
-     * episode 1 frame under 20 of 255): tuned on such a frame, with the
-     * HUD left out as it is here. */
-    float threshold = level >= 2 ? 0.45f : 0.60f, strength = level >= 2 ? 2.2f : 1.2f;
-    int rounds = level >= 2 ? 2 : 1;
+    /* The same glow at two strengths, around the bright lights (Orta's
+     * picture is dark: half of an episode 1 frame is under 20 of 255).
+     * High is 0.9, Low half that, by the player's eye. */
+    float threshold = 0.60f, strength = level >= 2 ? 0.9f : 0.45f;
+    int rounds = 1;
 
     if (bloom_failed || !color || !screen_vs || (cur_target && cur_target->depth_only))
         return;
