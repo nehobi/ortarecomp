@@ -24,7 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
        ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_BOX, ITEM_LOGOS, ITEM_3D,
        ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT,
        /* the launcher's own */
@@ -44,8 +44,8 @@ static const int game_main[] = { ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND
                                  ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT };
 static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
                                      ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_EXIT };
-static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
-static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
+static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
+static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
                                         ITEM_FPS, ITEM_BACK };
 static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
                                      ITEM_PIC_RESET, ITEM_BACK };
@@ -243,6 +243,12 @@ static void change(int dir)
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
     case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 8); break;
     case ITEM_MSAA:   next_aa(s, dir); break;
+    case ITEM_ANISO: {      /* off, 2x, 4x, 8x, 16x */
+        int i = s->anisotropy >= 16 ? 4 : s->anisotropy >= 8 ? 3 : s->anisotropy >= 4 ? 2 : s->anisotropy >= 2 ? 1 : 0;
+        i = SDL_clamp(i + dir, 0, 4);
+        s->anisotropy = 1 << i;
+        break;
+    }
     case ITEM_ASPECT: s->aspect = (s->aspect + PDO_ASPECT_COUNT + dir) % PDO_ASPECT_COUNT; break;
     case ITEM_FIT:    s->fit = (s->fit + PDO_FIT_COUNT + dir) % PDO_FIT_COUNT; break;
     case ITEM_SOFT:   s->soft_filter = !s->soft_filter; break;
@@ -612,6 +618,10 @@ static float value_of(int item, char *v, size_t n)
         if (s->msaa > 1) snprintf(v, n, "%dx MSAA", s->msaa);
         else snprintf(v, n, "%s", s->fxaa ? "FXAA" : "Off");
         break;
+    case ITEM_ANISO:
+        if (s->anisotropy > 1) snprintf(v, n, "%dx", s->anisotropy);
+        else snprintf(v, n, "Off");
+        break;
     case ITEM_ASPECT: snprintf(v, n, "%s", aspects[s->aspect]); break;
     case ITEM_FIT:    snprintf(v, n, "%s", fits[s->fit]); break;
     case ITEM_SOFT:   snprintf(v, n, "%s", s->soft_filter ? "On" : "Off"); break;
@@ -675,6 +685,7 @@ static const char *label_of(int item)
     switch (item) {
     case ITEM_SCALE:  return "Resolution";
     case ITEM_MSAA:   return "Anti-aliasing";
+    case ITEM_ANISO:  return "Texture filter";
     case ITEM_ASPECT: return "Aspect ratio";
     case ITEM_FIT:    return "Fit to window";
     case ITEM_SOFT:   return "TV softening";
@@ -720,6 +731,7 @@ static const char *help_of(int item)
     switch (item) {
     case ITEM_SCALE:  return "Multiples of 640x480.";
     case ITEM_MSAA:   return "Smoother edges. MSAA is best.";
+    case ITEM_ANISO:  return "Anisotropic: sharper far away.";
     case ITEM_ASPECT: return "16:9 shows more to the sides.";
     case ITEM_FIT:    return "Bars, stretched or zoomed.";
     case ITEM_SOFT:   return "A slight TV-like blur.";

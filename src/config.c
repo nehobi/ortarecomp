@@ -15,7 +15,7 @@ char pdo_log_file[PDO_PATH_MAX];
 
 static pdo_settings settings = { .render_scale = 1, .msaa = 1, .aspect = PDO_ASPECT_4_3, .fit = PDO_FIT_BARS,
                                   .master_volume = 100, .gpu_vertex = true, .gpu_fixed = true,
-                                  .lsfg_multiplier = 1, .mouse_aim = true, .mouse_speed = 100,
+                                  .lsfg_multiplier = 1, .anisotropy = 1, .mouse_aim = true, .mouse_speed = 100,
                                   .skip_logos = true, .depth_reversed = true, .pic_contrast = 100,
                                   .pic_gamma = 100, .pic_saturation = 100, .save_slot = 1 };
 
@@ -143,7 +143,10 @@ bool pdo_config_load(pdo_config *cfg)
             settings.gpu_fixed = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "frame_interp") == 0)
             settings.frame_interp = SDL_atoi(eq + 1) != 0;
-        else if (strcmp(line, "lsfg_multiplier") == 0)
+        else if (strcmp(line, "anisotropy") == 0) {
+            int a = clamp_int(SDL_atoi(eq + 1), 1, 16);
+            settings.anisotropy = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 1;
+        } else if (strcmp(line, "lsfg_multiplier") == 0)
             settings.lsfg_multiplier = clamp_int(SDL_atoi(eq + 1), 1, 4);
         else if (strcmp(line, "lsfg_performance") == 0)
             settings.lsfg_performance = SDL_atoi(eq + 1) != 0;
@@ -208,6 +211,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  "gpu_vertex=%d\n"
                  "gpu_fixed=%d\n"
                  "frame_interp=%d\n"
+                 "anisotropy=%d\n"
                  "lsfg_multiplier=%d\n"
                  "lsfg_performance=%d\n"
                  "lsfg_dll=%s\n"
@@ -232,7 +236,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
-                 settings.gpu_fixed, settings.frame_interp, settings.lsfg_multiplier, settings.lsfg_performance,
+                 settings.gpu_fixed, settings.frame_interp, settings.anisotropy, settings.lsfg_multiplier, settings.lsfg_performance,
                  settings.lsfg_dll, settings.fullscreen, settings.fxaa,
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,

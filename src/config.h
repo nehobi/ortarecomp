@@ -28,6 +28,7 @@ typedef struct pdo_settings {
     char lsfg_dll[PDO_PATH_MAX];    /* the player's Lossless.dll; "" looks in the usual places */
     bool fullscreen;        /* borderless, the whole monitor (Alt+Enter) */
     bool fxaa;              /* edge smoothing on the finished frame (shaders/screen.frag) */
+    int  anisotropy;        /* 1 off, 2, 4, 8, 16: anisotropic filtering of smooth-filtered textures */
     int  win_x, win_y, win_w, win_h;    /* the window when not fullscreen (w 0: not set yet) */
     bool win_maximized;
     bool mouse_aim;         /* the mouse steers the left stick (input_hle.c) */

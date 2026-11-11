@@ -21,7 +21,8 @@ Android build is planned.
   5120x3840).
 - **Widescreen:** the game's own 16:9 mode, or the original 4:3; bars,
   stretch or zoom to fit any window or screen.
-- **Anti-aliasing:** MSAA up to 8x, or FXAA.
+- **Anti-aliasing:** MSAA up to 8x, or FXAA; anisotropic texture filtering
+  up to 16x.
 - **Smooth motion:** frame interpolation above 60 fps for high refresh rate
   displays (beta), or Lossless Scaling's frame generation with your own copy
   of Lossless Scaling (experimental).

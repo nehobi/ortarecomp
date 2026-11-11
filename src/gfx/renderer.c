@@ -840,8 +840,14 @@ static SDL_GPUSamplerAddressMode address_mode(uint8_t a)
 
 static SDL_GPUSampler *get_sampler(const pdo_tex_ref *t)
 {
+    /* The player's anisotropic filtering (Display > Texture filter), for
+     * textures the game filters smoothly; point-filtered ones (menus, text)
+     * stay as they are. Its level is part of the key: a change takes effect
+     * with the next sampler looked up. */
+    int aniso = t->min_filter >= 2 ? pdo_settings_get()->anisotropy : 1;
+    uint32_t alevel = aniso >= 16 ? 4 : aniso >= 8 ? 3 : aniso >= 4 ? 2 : aniso >= 2 ? 1 : 0;
     uint32_t key = (uint32_t)t->min_filter | (uint32_t)t->mag_filter << 8 |
-                   (uint32_t)t->address_u << 16 | (uint32_t)t->address_v << 24 |
+                   (uint32_t)t->address_u << 16 | (uint32_t)(t->address_v & 7) << 24 | alevel << 27 |
                    (uint32_t)(t->mip_filter & 3) << 30;
     SDL_GPUSamplerCreateInfo si;
 
@@ -860,6 +866,10 @@ static SDL_GPUSampler *get_sampler(const pdo_tex_ref *t)
     si.address_mode_u = address_mode(t->address_u);
     si.address_mode_v = address_mode(t->address_v);
     si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    if (alevel) {
+        si.enable_anisotropy = true;
+        si.max_anisotropy = (float)(1 << alevel);
+    }
     samplers[nsamplers].key = key;
     samplers[nsamplers].s = SDL_CreateGPUSampler(dev, &si);
     return samplers[nsamplers++].s;

@@ -4,6 +4,9 @@
 
 ### Added
 
+- Anisotropic texture filtering: Options > Display > Texture filter, Off
+  (the original look, the default), 2x, 4x, 8x, 16x. Sharper textures at an
+  angle and in the distance; point-filtered ones (menus, text) unchanged.
 - 5.1 surround output: Options > Sound > Output now steps Stereo,
   Headphones, 5.1. In 5.1 the game's 3D sounds are placed around the four
   corner speakers by where they are, as the Xbox did on a surround setup;
