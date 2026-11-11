@@ -27,7 +27,8 @@ Android build is planned.
   displays (beta), or Lossless Scaling's frame generation with your own copy
   of Lossless Scaling (experimental).
 - **Color correction:** brightness, contrast, gamma and saturation, a CRT
-  look, and optional TV softening.
+  look, optional TV softening, and bloom (Low or High) that leaves the HUD
+  alone.
 - **Sound:** stereo 3D positional audio, a headphones mode (a modelled
   head: each ear hears a sound at its own time and loudness), or 5.1
   surround (3D sounds placed around four speakers), with the game's room

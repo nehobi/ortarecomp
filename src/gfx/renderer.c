@@ -2056,6 +2056,140 @@ static SDL_GPURenderPass *begin_pass(SDL_GPUCommandBuffer *cmd, const command *c
 static bool is_3d(const frame_data *f, const command *c);
 static bool draw_corners(const frame_data *f, const command *c, float out[8]);
 
+/* ── Bloom ────────────────────────────────────────────────────────────────
+ * Picture > Bloom (Low, High): the bright parts of the scene, blurred and
+ * added back, run right after the frame's last 3D draw on the target it
+ * went to. Orta draws its scene into a target of its own and copies that
+ * onto the screen before the HUD, so the HUD, menus, text and our overlay
+ * come after it and stay as they are. Off, nothing here is made or run:
+ * the textures, shader and pipelines appear the first time it is used. */
+static SDL_GPUShader *bloom_fs;
+static SDL_GPUGraphicsPipeline *bloom_pipe;          /* modes 0 and 1: into a bloom texture */
+static SDL_GPUGraphicsPipeline *bloom_add[4];        /* mode 2, by log2 of the target's samples */
+static SDL_GPUTexture *bloom_tex[2];
+static Uint32 bloom_w, bloom_h;
+static bool bloom_failed;
+
+static SDL_GPUGraphicsPipeline *bloom_pipeline(int samples_log2, bool add)
+{
+    SDL_GPUGraphicsPipelineCreateInfo pi;
+    SDL_GPUColorTargetDescription ct;
+
+    SDL_zero(ct);
+    ct.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    if (add) {
+        ct.blend_state.enable_blend = true;
+        ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+        ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    }
+    SDL_zero(pi);
+    pi.vertex_shader = screen_vs;
+    pi.fragment_shader = bloom_fs;
+    pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    pi.target_info.color_target_descriptions = &ct;
+    pi.target_info.num_color_targets = 1;
+    pi.multisample_state.sample_count = (SDL_GPUSampleCount)samples_log2;
+    return SDL_CreateGPUGraphicsPipeline(dev, &pi);
+}
+
+/* One full-screen draw of the bloom shader into dst. */
+static void bloom_draw(SDL_GPUCommandBuffer *cmd, SDL_GPUGraphicsPipeline *p, SDL_GPUTexture *dst,
+                       SDL_GPUTexture *resolve, SDL_GPUTexture *src, const float params[4], bool load)
+{
+    SDL_GPUColorTargetInfo ct;
+    SDL_GPUTextureSamplerBinding tsb = { src, linear };
+    SDL_GPURenderPass *pass;
+
+    SDL_zero(ct);
+    ct.texture = dst;
+    ct.load_op = load ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_DONT_CARE;
+    ct.store_op = resolve ? SDL_GPU_STOREOP_RESOLVE_AND_STORE : SDL_GPU_STOREOP_STORE;
+    ct.resolve_texture = resolve;
+    pass = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+    if (!pass)
+        return;
+    SDL_BindGPUGraphicsPipeline(pass, p);
+    SDL_BindGPUFragmentSamplers(pass, 0, &tsb, 1);
+    SDL_PushGPUFragmentUniformData(cmd, 0, params, 4 * sizeof(float));
+    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+}
+
+/* On the current target, between passes. */
+static void bloom_pass(SDL_GPUCommandBuffer *cmd, int level)
+{
+    SDL_GPUTexture *color = cur_color(), *ms = cur_target ? cur_target->ms : frame_ms;
+    Uint32 w, h, bw, bh;
+    int samples_log2 = ms ? (nsamples >= 8 ? 3 : nsamples >= 4 ? 2 : nsamples >= 2 ? 1 : 0) : 0;
+    /* Low: only the brightest, a light touch; High: more of the picture,
+     * spread wider (two rounds of blur), stronger. */
+    float threshold = level >= 2 ? 0.62f : 0.78f, strength = level >= 2 ? 0.75f : 0.35f;
+    int rounds = level >= 2 ? 2 : 1;
+
+    if (bloom_failed || !color || !screen_vs || (cur_target && cur_target->depth_only))
+        return;
+    if (!bloom_fs) {
+        bloom_fs = make_shader(bloom_frag_spv, sizeof bloom_frag_spv, SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+        bloom_pipe = bloom_fs ? bloom_pipeline(0, false) : NULL;
+        if (!bloom_pipe) {
+            SDL_Log("gfx: no bloom (%s)", SDL_GetError());
+            bloom_failed = true;
+            return;
+        }
+    }
+    if (!bloom_add[samples_log2] && !(bloom_add[samples_log2] = bloom_pipeline(samples_log2, true))) {
+        SDL_Log("gfx: no bloom at %d samples (%s)", 1 << samples_log2, SDL_GetError());
+        bloom_failed = true;
+        return;
+    }
+    cur_size(&w, &h);
+    bw = SDL_max(w / 4, 1u);
+    bh = SDL_max(h / 4, 1u);
+    if (!bloom_tex[0] || bloom_w != bw || bloom_h != bh) {
+        SDL_GPUTextureCreateInfo ti;
+        SDL_zero(ti);
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = bw;
+        ti.height = bh;
+        ti.layer_count_or_depth = 1;
+        ti.num_levels = 1;
+        for (int i = 0; i < 2; i++) {
+            if (bloom_tex[i])
+                SDL_ReleaseGPUTexture(dev, bloom_tex[i]);
+            bloom_tex[i] = SDL_CreateGPUTexture(dev, &ti);
+        }
+        bloom_w = bw;
+        bloom_h = bh;
+        if (!bloom_tex[0] || !bloom_tex[1])
+            return;
+    }
+    {
+        float bright[4] = { 0.0f, threshold, 0.0f, 0.0f };
+        float across[4] = { 1.0f, 0.0f, 1.0f / (float)bw, 0.0f };
+        float down[4] = { 1.0f, 0.0f, 0.0f, 1.0f / (float)bh };
+        float add[4] = { 2.0f, strength, 0.0f, 0.0f };
+
+        bloom_draw(cmd, bloom_pipe, bloom_tex[0], NULL, color, bright, false);
+        for (int r = 0; r < rounds; r++) {
+            if (r) {        /* wider: the second round takes every other texel */
+                across[2] *= 2.0f;
+                down[3] *= 2.0f;
+            }
+            bloom_draw(cmd, bloom_pipe, bloom_tex[1], NULL, bloom_tex[0], across, false);
+            bloom_draw(cmd, bloom_pipe, bloom_tex[0], NULL, bloom_tex[1], down, false);
+        }
+        /* Added into what the game's next draws there continue on: the
+         * multisampled buffer (resolved again here), else the target. */
+        bloom_draw(cmd, bloom_add[samples_log2], ms ? ms : color, ms ? color : NULL, bloom_tex[0], add, true);
+    }
+}
+
 static void log_command(uint32_t i, const command *c, SDL_GPUTexture *const *tex)
 {
     const pdo_draw *d = &c->draw;
@@ -2393,10 +2527,24 @@ static void upload_frame(SDL_GPUCommandBuffer *cmd)
 static void replay(SDL_GPUCommandBuffer *cmd)
 {
     SDL_GPURenderPass *pass = NULL;
+    int bloom = pdo_settings_get()->bloom;
+    uint32_t bloom_at = UINT32_MAX;     /* the command after the frame's last 3D draw */
 
     upload_frame(cmd);
     cur_target = NULL;
+    if (bloom)
+        for (uint32_t i = F->ncmds; i-- > 0;)
+            if (F->cmds[i].kind == CMD_DRAW && is_3d(F, &F->cmds[i])) {
+                bloom_at = i + 1;
+                break;
+            }
     for (uint32_t i = 0; i < F->ncmds; i++) {
+        if (i == bloom_at && i < replay_limit) {
+            if (pass)
+                SDL_EndGPURenderPass(pass);
+            pass = NULL;
+            bloom_pass(cmd, bloom);
+        }
         command *c = &F->cmds[i];
         SDL_GPUGraphicsPipeline *p;
         SDL_GPUTextureSamplerBinding tsb[4];
@@ -2506,6 +2654,8 @@ static void replay(SDL_GPUCommandBuffer *cmd)
     }
     if (pass)
         SDL_EndGPURenderPass(pass);
+    if (bloom_at == F->ncmds && replay_limit >= F->ncmds)     /* the last 3D draw was the frame's last command */
+        bloom_pass(cmd, bloom);
 }
 
 /* Read the frame target back and write it as a BMP. Slow; debugging only. */

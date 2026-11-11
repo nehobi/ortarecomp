@@ -30,7 +30,7 @@ enum { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM
        /* the launcher's own */
        ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
        /* Picture (present.frag) */
-       ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT, ITEM_PIC_RESET,
+       ITEM_PIC_LOOK, ITEM_PIC_BLOOM, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT, ITEM_PIC_RESET,
        /* links to the pages, and back */
        ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND, ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_BACK,
        ITEM_COUNT };
@@ -47,7 +47,7 @@ static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GO_D
 static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
 static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
                                         ITEM_FPS, ITEM_BACK };
-static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
+static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BLOOM, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
                                      ITEM_PIC_RESET, ITEM_BACK };
 static const int sound_items[] = { ITEM_VOLUME, ITEM_3D, ITEM_BACK };
 static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_BACK };
@@ -269,6 +269,7 @@ static void change(int dir)
     case ITEM_CLOSE:  if (dir > 0) set_open(false); break;
     case ITEM_QUIT:   if (dir > 0) ask_quit(); break;
     case ITEM_PIC_LOOK:     s->picture_crt = !s->picture_crt; break;
+    case ITEM_PIC_BLOOM:    s->bloom = SDL_clamp(s->bloom + dir, 0, 2); break;
     case ITEM_PIC_BRIGHT:   s->pic_brightness = SDL_clamp(s->pic_brightness + 5 * dir, -50, 50); break;
     case ITEM_PIC_CONTRAST: s->pic_contrast = SDL_clamp(s->pic_contrast + 5 * dir, 50, 150); break;
     case ITEM_PIC_GAMMA:    s->pic_gamma = SDL_clamp(s->pic_gamma + 5 * dir, 50, 200); break;
@@ -276,6 +277,7 @@ static void change(int dir)
     case ITEM_PIC_RESET:
         if (dir > 0) {
             s->picture_crt = false;
+            s->bloom = 0;
             s->pic_brightness = 0;
             s->pic_contrast = s->pic_gamma = s->pic_saturation = 100;
         }
@@ -629,6 +631,11 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_FULLSCREEN: snprintf(v, n, "%s", s->fullscreen ? "On" : "Off"); break;
     case ITEM_VOLUME:  snprintf(v, n, "%d%%", s->master_volume); return s->master_volume / 100.0f;
     case ITEM_PIC_LOOK:     snprintf(v, n, "%s", s->picture_crt ? "CRT" : "Original"); break;
+    case ITEM_PIC_BLOOM: {
+        static const char *levels[] = { "Off", "Low", "High" };
+        snprintf(v, n, "%s", levels[SDL_clamp(s->bloom, 0, 2)]);
+        break;
+    }
     case ITEM_PIC_BRIGHT:   snprintf(v, n, "%+d", s->pic_brightness); return (s->pic_brightness + 50) / 100.0f;
     case ITEM_PIC_CONTRAST: snprintf(v, n, "%d%%", s->pic_contrast); return (s->pic_contrast - 50) / 100.0f;
     case ITEM_PIC_GAMMA:    snprintf(v, n, "%d.%02d", s->pic_gamma / 100, s->pic_gamma % 100);
@@ -693,6 +700,7 @@ static const char *label_of(int item)
     case ITEM_FULLSCREEN: return "Fullscreen";
     case ITEM_VOLUME:  return "Master";
     case ITEM_PIC_LOOK:     return "Look";
+    case ITEM_PIC_BLOOM:    return "Bloom";
     case ITEM_PIC_BRIGHT:   return "Brightness";
     case ITEM_PIC_CONTRAST: return "Contrast";
     case ITEM_PIC_GAMMA:    return "Gamma";
@@ -739,6 +747,7 @@ static const char *help_of(int item)
     case ITEM_FULLSCREEN: return "Fullscreen or a window.";
     case ITEM_VOLUME:  return "Everything the game plays.";
     case ITEM_PIC_LOOK:     return "CRT: richer, like an old TV.";
+    case ITEM_PIC_BLOOM:    return "Glow on bright lights; no HUD.";
     case ITEM_PIC_BRIGHT:   return "Lighter or darker overall.";
     case ITEM_PIC_CONTRAST: return "Darks darker, lights lighter.";
     case ITEM_PIC_GAMMA:    return "Above 1 lifts the midtones.";

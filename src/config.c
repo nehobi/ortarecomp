@@ -143,6 +143,8 @@ bool pdo_config_load(pdo_config *cfg)
             settings.gpu_fixed = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "frame_interp") == 0)
             settings.frame_interp = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "bloom") == 0)
+            settings.bloom = strcmp(eq + 1, "high") == 0 ? 2 : strcmp(eq + 1, "low") == 0 ? 1 : 0;
         else if (strcmp(line, "anisotropy") == 0) {
             int a = clamp_int(SDL_atoi(eq + 1), 1, 16);
             settings.anisotropy = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 1;
@@ -212,6 +214,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  "gpu_fixed=%d\n"
                  "frame_interp=%d\n"
                  "anisotropy=%d\n"
+                 "bloom=%s\n"
                  "lsfg_multiplier=%d\n"
                  "lsfg_performance=%d\n"
                  "lsfg_dll=%s\n"
@@ -236,7 +239,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
                  settings.master_volume, settings.show_fps, settings.gpu_vertex,
-                 settings.gpu_fixed, settings.frame_interp, settings.anisotropy, settings.lsfg_multiplier, settings.lsfg_performance,
+                 settings.gpu_fixed, settings.frame_interp, settings.anisotropy, settings.bloom == 2 ? "high" : settings.bloom == 1 ? "low" : "off",
+                 settings.lsfg_multiplier, settings.lsfg_performance,
                  settings.lsfg_dll, settings.fullscreen, settings.fxaa,
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
                  settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.depth_reversed,

@@ -4,6 +4,9 @@
 
 ### Added
 
+- Bloom: Options > Picture > Bloom, Off (the default), Low or High. A glow
+  on the bright parts of the scene, applied before the HUD is drawn, so the
+  HUD, menus and text are untouched. Off costs nothing.
 - Anisotropic texture filtering: Options > Display > Texture filter, Off
   (the original look, the default), 2x, 4x, 8x, 16x. Sharper textures at an
   angle and in the distance; point-filtered ones (menus, text) unchanged.
