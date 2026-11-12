@@ -171,6 +171,19 @@ virtual addresses in the USA `default.xbe`.
   1030, 0.011, 100, 60, 5000 Hz) from the boss cutscene (event
   st01_ev5b) through the fight. DownloadEffectsImage gets a 30,720-byte
   image each stage; SetEffectData is not called.
+- Headroom. A voice's default headroom is 600 mB unless it is 3D (flag
+  0x10) or has flags 0x182000 (0x002C40C0), but the game sets 0 on every
+  buffer itself. DirectSound's start-up gives mixbins 0-30 a headroom of 1
+  (a shift right, -6.02 dB; table filled at 0x002C3B2A, written at
+  0x002C67C6 through 0x002C6304 to APU method 0x200 + 4 * bin) and the HRTF
+  headroom 0 (0x002C62CD, method 0x280); the game never changes either. Our
+  DirectSoundCreate skips that start-up, so we mix without it. Not applied:
+  the GP DSP program may scale its output back up, and recordings disagree
+  with a 6 dB drop. In episode 1, xemu is as loud as we are (peaks near
+  0 dBFS), and on an Xbox 360 (phone recording, in-game volumes at max) busy
+  gunfire rises about 9.5 dB over the "A dragon?!" cutscene against about
+  6 dB in ours. Our dense moments (about 20 looping 3D voices at -249 mB)
+  do clip: up to +10 dBFS before the final clamp.
 
 ## Widescreen
 
