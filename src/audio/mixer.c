@@ -55,6 +55,7 @@ typedef struct voice {
     float          ear_line[64];                     /* the voice's last samples */
     uint32_t       ear_pos;
     float          direct, room;        /* I3DL2 source levels, linear */
+    float          dist;                /* 3D distance gain, linear */
     double         step;                /* frames per output frame */
     float          gain[2][COLUMNS];
     /* ADPCM: the last decoded block, both channels */
@@ -214,12 +215,14 @@ static float side_gain(const voice *v, uint32_t bin)
     return 0.5f * (v->g3d[0] + v->g3d[1]);
 }
 
-/* The reverb send leaves out the 3D gains: they are the direct path's
- * distance and pan, and the room path's own distance rolloff
- * (flRoomRolloffFactor) is 0 wherever Orta sets it. */
+/* The reverb send of a 3D voice takes its distance gain but not its pan:
+ * DirectSound's per-bin volumes (0x002C6E40) give the I3DL2 bin the voice's
+ * distance attenuation plus its I3DL2 room level. (The room path's own
+ * extra rolloff, flRoomRolloffFactor, is 0 wherever Orta sets it.) */
 static void update_gains(voice *v)
 {
     bool sends = false;
+    float dist = v->desc.positional ? v->dist : 1.0f;
 
     memset(v->gain, 0, sizeof v->gain);
     for (int i = 0; i < v->desc.bin_count; i++) {
@@ -237,7 +240,7 @@ static void update_gains(voice *v)
         } else if (bin < PDO_BIN_SPEAKERS)
             v->gain[ch][bin] = db100_to_gain(v->desc.bins[i].volume) * side_gain(v, bin) * v->direct;
         else if (bin == PDO_BIN_I3DL2) {
-            v->gain[ch][SEND] = db100_to_gain(v->desc.bins[i].volume) * v->room;
+            v->gain[ch][SEND] = db100_to_gain(v->desc.bins[i].volume) * v->room * dist;
             sends = true;
         } else {
             static uint32_t seen;
@@ -250,7 +253,7 @@ static void update_gains(voice *v)
     /* A 3D voice given no mixbins of its own feeds the reverb too. */
     if (v->desc.positional && !sends)
         for (int ch = 0; ch < v->desc.channels; ch++)
-            v->gain[ch][SEND] = v->room / (float)v->desc.channels;
+            v->gain[ch][SEND] = v->room * dist / (float)v->desc.channels;
 }
 
 /* ── Xbox ADPCM ───────────────────────────────────────────────────────────
@@ -730,6 +733,7 @@ int pdo_voice_create(const pdo_voice_desc *desc)
             v->headroom = 1.0f;
             v->g3d[0] = v->g3d[1] = 1.0f;
             v->direct = v->room = 1.0f;
+            v->dist = 1.0f;
             v->cached_block = -1;
             update_step(v, 0);
             update_gains(v);
@@ -802,6 +806,11 @@ uint32_t pdo_voice_position(int id)
 void pdo_voice_set_loop_region(int id, uint32_t start, uint32_t length)
 {
     WITH_VOICE(id, v->loop_start = bytes_to_frames(v, start); v->loop_len = bytes_to_frames(v, length));
+}
+
+void pdo_voice_set_3d_distance(int id, float gain)
+{
+    WITH_VOICE(id, v->dist = gain; update_gains(v));
 }
 
 void pdo_voice_set_3d(int id, float left, float right)

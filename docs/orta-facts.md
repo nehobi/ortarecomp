@@ -186,6 +186,21 @@ virtual addresses in the USA `default.xbe`.
   levels, which matched ours without the headroom, are not a reference.
   Without the headroom our dense episode 1 moments reach +10 dBFS before
   the final clamp (92 of 235 s clipping); with it +4.9 dBFS (58 of 234 s).
+- DirectSound's 3D voice volumes (0x002C6E40): the voice's mixbin volume
+  plus, for a 3D voice, the distance attenuation (0x002C4FA9: 0 inside the
+  minimum distance, else -2000 log10(1 + rolloff (d / min - 1)) mB, as
+  ours) with, per bin: 6/7 the front share, 8/9 the back share (0x002C520B
+  splits a 3D voice between front and back by where it is), 10 the I3DL2
+  room level, 2 a centre term when enabled. Left and right get the same
+  volume: the APU's per-voice HRTF filter places a 3D voice left or right
+  (0x002C7551 uploads 31 taps per ear and an ITD). Tables: 1,111 left/right
+  pairs of 32 bytes at 0x002CCFD0, picked through a 61 x 31 index of
+  uint16 at 0x002DE590 (rows: azimuth 0-180 in 3 degree steps, mirrored by
+  swapping ears; columns: elevation in 6 degree steps; 0x002C5497). The tap
+  format and the APU's HRTF scaling are not known: read as two's
+  complement / 128 (as xemu does) a frontal filter has about +9 dB of gain,
+  as sign-magnitude about +3 dB. Our 3D path pans instead (equal power, -3
+  dB each ear straight ahead).
 - Enemy machine guns (24,012 and 13,212-byte ADPCM samples, mono 44.1 kHz,
   0.97 s and 0.53 s): each sound has a template buffer; every burst moves
   the template and every copy still playing to the shooter, then starts a

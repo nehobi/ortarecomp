@@ -85,6 +85,9 @@ void pdo_voice_set_bins(int id, const pdo_voice_bin *bins, int count);
 /* Extra gains from 3D positioning (DSBCAPS_CTRL3D voices), left and right;
  * 1, 1 means none. Applied on top of the mixbin volumes. */
 void pdo_voice_set_3d(int id, float left, float right);
+/* A 3D voice's distance gain alone (1 = none): DirectSound attenuates the
+ * reverb send by distance too, not only the direct path. */
+void pdo_voice_set_3d_distance(int id, float gain);
 /* Headphones: a mono 3D voice heard through a model head instead -- the
  * distance gain, then where it is: lateral -1 (left) .. 1 (right), front
  * -1 (behind) .. 1 (ahead), both as cosines from the listener's axes. */

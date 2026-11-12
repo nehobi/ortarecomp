@@ -361,6 +361,7 @@ static void apply_3d(int id)
     if (id <= 0 || id >= MAX_3D || !src3d[id].used)
         return;
     if (src3d[id].mode == DS3DMODE_DISABLE) {
+        pdo_voice_set_3d_distance(id, 1.0f);
         pdo_voice_set_3d(id, 1.0f, 1.0f);
         return;
     }
@@ -373,6 +374,7 @@ static void apply_3d(int id)
         float dc = d < mn ? mn : d > mx ? mx : d;
         g = mn / (mn + listener.rolloff * (dc - mn));
     }
+    pdo_voice_set_3d_distance(id, g);
     /* Right = top x front (D3D is left-handed); head-relative uses the
      * listener's own axes, which are the identity there. */
     if (src3d[id].mode == DS3DMODE_HEADRELATIVE) {
