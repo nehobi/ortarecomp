@@ -758,7 +758,7 @@ static const char *help_of(int item)
     case ITEM_PIC_RESET:    return "Back to the game's own picture.";
     case ITEM_BOX:    return "All open: every extra unlocked.";
     case ITEM_LOGOS:  return "A press skips the boot logos.";
-    case ITEM_LAUNCHER: return "Start the game at once. Hold Shift while starting to see the launcher.";
+    case ITEM_LAUNCHER: return "Start at once. Shift: launcher.";
     case ITEM_3D: {
         static const char *helps[PDO_AUDIO_COUNT] = { "Two speakers or a TV.", "Headphones: sounds around you.",
                                                       "5.1 speakers: sound all around." };
