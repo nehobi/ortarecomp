@@ -83,6 +83,16 @@ static bool parse_args(int argc, char **argv, options *o)
  * a guest thread blocked there can hold the lock the others need: the
  * game froze for seconds at a time, or for good, with the sound going
  * on. */
+#ifdef _WIN32
+static void SDLCALL log_to_stderr(void *user, int category, SDL_LogPriority priority, const char *message)
+{
+    (void)user; (void)category;
+    fprintf(stderr, "%s%s\n", priority >= SDL_LOG_PRIORITY_ERROR ? "ERROR: "
+                              : priority == SDL_LOG_PRIORITY_WARN ? "WARNING: " : "", message);
+    fflush(stderr);
+}
+#endif
+
 static bool open_log(const char *path)
 {
 #ifdef _WIN32
@@ -99,12 +109,25 @@ static bool open_log(const char *path)
     fflush(stdout);
     fflush(stderr);
 #ifdef _WIN32
-    _dup2(fd, 1);
-    _dup2(fd, 2);
+    /* A release build is a GUI program: its stdout and stderr start with
+     * no file behind them (_fileno -2), and _dup2 onto descriptors 1 and 2
+     * then leaves the C streams writing nowhere. Give them one first. */
+    {
+        FILE *f;
+        if (_fileno(stdout) < 0)
+            freopen_s(&f, "NUL", "w", stdout);
+        if (_fileno(stderr) < 0)
+            freopen_s(&f, "NUL", "w", stderr);
+    }
+    _dup2(fd, _fileno(stdout));
+    _dup2(fd, _fileno(stderr));
     _close(fd);
-    /* SDL_Log writes to the Win32 handle, not the C stream. */
-    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(1));
-    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
+    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(_fileno(stdout)));
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
+    /* SDL_Log looks for a parent console and, started from Explorer or
+     * Steam, finds none and writes only to the debugger: the log came out
+     * empty. Its lines go to stderr here instead. */
+    SDL_SetLogOutputFunction(log_to_stderr, NULL);
 #else
     dup2(fd, 1);
     dup2(fd, 2);
@@ -223,6 +246,19 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
     return rc;
 }
 #endif
+
+/* Shift held while starting: the launcher even with Skip launcher on. No
+ * window exists yet, so SDL has no keyboard state to give on every
+ * platform; Windows is asked directly. */
+static bool shift_held(void)
+{
+#ifdef _WIN32
+    return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+#else
+    SDL_PumpEvents();
+    return (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
+#endif
+}
 
 /* The launcher: the options menu in its own window before the game starts,
  * with Start game, the game files and Exit (gfx/overlay.c). Settings fixed
@@ -390,6 +426,8 @@ int main(int argc, char **argv)
             SDL_Quit();
             return 0;
         }
+    } else if (pdo_settings_get()->skip_launcher && have_game && !shift_held()) {
+        SDL_Log("launcher: skipped (Skip launcher is on; hold Shift while starting to see it)");
     } else if (!run_launcher(&cfg, &check, &have_game)) {
         SDL_Quit();
         return 0;

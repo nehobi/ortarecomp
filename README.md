@@ -37,7 +37,7 @@ Android build is planned.
   button rebindable.
 - **Three save files** (the original keeps one), picked in the launcher.
 - **Extras:** open every Pandora's Box item without touching your save,
-  skip the boot logos, an FPS counter, fullscreen (Alt+Enter), portable
+  skip the boot logos or the launcher, an FPS counter, fullscreen (Alt+Enter), portable
   mode.
 - **Easy setup:** point the launcher at your disc image or game folder.
 - **Crash and freeze reports** written to a log, to attach to bug reports.

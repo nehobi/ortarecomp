@@ -361,6 +361,7 @@ static void apply_3d(int id)
     if (id <= 0 || id >= MAX_3D || !src3d[id].used)
         return;
     if (src3d[id].mode == DS3DMODE_DISABLE) {
+        pdo_voice_set_3d_distance(id, 1.0f);
         pdo_voice_set_3d(id, 1.0f, 1.0f);
         return;
     }
@@ -373,6 +374,7 @@ static void apply_3d(int id)
         float dc = d < mn ? mn : d > mx ? mx : d;
         g = mn / (mn + listener.rolloff * (dc - mn));
     }
+    pdo_voice_set_3d_distance(id, g);
     /* Right = top x front (D3D is left-handed); head-relative uses the
      * listener's own axes, which are the identity there. */
     if (src3d[id].mode == DS3DMODE_HEADRELATIVE) {
@@ -782,11 +784,23 @@ void sub_002C39A9(void)
 
 /* ── Calls Orta makes that JSRF did not ───────────────────────────────── */
 
-/* IDirectSound_GetSpeakerConfig(pDS, pdwSpeakerConfig): stereo output. */
+/* IDirectSound_GetSpeakerConfig(pDS, pdwSpeakerConfig): stereo output.
+ * PDO_TEST_AC3=1 (a test, not a setting): with Output on 5.1, report a
+ * surround console with Dolby Digital (DSSPEAKER_SURROUND |
+ * DSSPEAKER_ENABLE_AC3), which makes the movie setup (0x000687B0) keep the
+ * AC3 bit and choose a movie's 5.1 .aix soundtrack (opening_bs.aix) over
+ * the .sfd's stereo; to see in the log and a 6-channel PDO_AUDIO_DUMP what
+ * CRI then hands DirectSound. */
 void sub_002C242A(void)
 {
+    const char *t = getenv("PDO_TEST_AC3");
+    uint32_t cfg = 0x00000002u;         /* DSSPEAKER_STEREO */
+
+    if (t && *t == '1' && pdo_settings_get()->audio_out == PDO_AUDIO_SURROUND)
+        cfg = 0x00010004u;
+    TRACE("GetSpeakerConfig -> 0x%08x", cfg);
     if (ARG(1))
-        MEM32(ARG(1)) = 0x00000002u;    /* DSSPEAKER_STEREO */
+        MEM32(ARG(1)) = cfg;
     RETURN(8, DS_OK);
 }
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.4 (beta)
+
+### Added
+
+- Skip launcher: Options > Gameplay. Start the game at once with the save
+  file and settings from last time. Hold Shift while starting to see the
+  launcher once; the option is also in the in-game menu (F1).
+
+### Fixed
+
+- Windows: the log (ortarecomp.log) stayed empty when the game was started
+  normally, so crash reports and logs could not be attached.
+- Sound: the mix is 6 dB lower, as the Xbox's sound library sets it up; the
+  busiest fights no longer distort. Distant sounds feed less reverb, as on
+  the Xbox, in the stages that use it.
+
 ## v0.1.3 (beta)
 
 ### Fixed

@@ -57,6 +57,10 @@ offsets and the nearest game function (`sub_XXXXXXXX`), no symbols needed.
 3. First-time pipeline stalls (kept in `pipelines.bin` after).
 4. Android (Vulkan/Turnip): measure the recompiled code and the guest CPU
    lock on ARM; Linux's WaitForMultipleObjects polls with sleeps.
+5. Wishlist: the European (PAL) disc. Only the USA default.xbe is
+   recognised now (its hash in `src/xbe.c`, `tools/recomp.py`); PAL is a
+   different XBE, so its own recompile, addresses and hooks. Asked for by
+   a player; the owner has the ISO.
 
 ## Testing
 

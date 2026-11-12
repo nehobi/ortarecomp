@@ -171,6 +171,48 @@ virtual addresses in the USA `default.xbe`.
   1030, 0.011, 100, 60, 5000 Hz) from the boss cutscene (event
   st01_ev5b) through the fight. DownloadEffectsImage gets a 30,720-byte
   image each stage; SetEffectData is not called.
+- Headroom. A voice's default headroom is 600 mB unless it is 3D (flag
+  0x10) or has flags 0x182000 (0x002C40C0), but the game sets 0 on every
+  buffer itself. DirectSound's start-up gives mixbins 0-30 a headroom of 1
+  (a shift right, -6.02 dB; table filled at 0x002C3B2A, written at
+  0x002C67C6 through 0x002C6304 to APU method 0x200 + 4 * bin) and the HRTF
+  headroom 0 (0x002C62CD, method 0x280); the game never changes either. Our
+  DirectSoundCreate skips that start-up; src/audio/mixer.c halves the
+  bins instead. 3D buffers with no mixbins (all of Orta's) go to bins 6, 8,
+  7, 9 and 10 (default table at 0x002DF55C; 2D mono/stereo: 0, 1), so the
+  headroom covers 3D sound too. xemu applies only the HRTF headroom (0) to
+  a 3D voice's four bins ("not sure" in its source), and lists Orta's
+  gunfire as too loud in its audio issue (xemu-project/xemu#904): its
+  levels, which matched ours without the headroom, are not a reference.
+  Without the headroom our dense episode 1 moments reach +10 dBFS before
+  the final clamp (92 of 235 s clipping); with it +4.9 dBFS (58 of 234 s).
+- DirectSound's 3D voice volumes (0x002C6E40): the voice's mixbin volume
+  plus, for a 3D voice, the distance attenuation (0x002C4FA9: 0 inside the
+  minimum distance, else -2000 log10(1 + rolloff (d / min - 1)) mB, as
+  ours) with, per bin: 6/7 the front share, 8/9 the back share (0x002C520B
+  splits a 3D voice between front and back by where it is), 10 the I3DL2
+  room level, 2 a centre term when enabled. Left and right get the same
+  volume: the APU's per-voice HRTF filter places a 3D voice left or right
+  (0x002C7551 uploads 31 taps per ear and an ITD). Tables: 1,111 left/right
+  pairs of 32 bytes at 0x002CCFD0, picked through a 61 x 31 index of
+  uint16 at 0x002DE590 (rows: azimuth 0-180 in 3 degree steps, mirrored by
+  swapping ears; columns: elevation in 6 degree steps; 0x002C5497). The tap
+  format and the APU's HRTF scaling are not known: read as two's
+  complement / 128 (as xemu does) a frontal filter has about +9 dB of gain,
+  as sign-magnitude about +3 dB. Our 3D path pans instead (equal power, -3
+  dB each ear straight ahead).
+- Enemy machine guns (24,012 and 13,212-byte ADPCM samples, mono 44.1 kHz,
+  0.97 s and 0.53 s): each sound has a template buffer; every burst moves
+  the template and every copy still playing to the shooter, then starts a
+  new copy (Play, looping) there, stopped after about one pass (55 and 30
+  frames). Up to 12 copies of one sample play at once from one spot; cones
+  are 360/360 and velocities 0, so neither cones nor Doppler separate them.
+- Voices: DSOUND allocates hardware voices at Play for DSBCAPS_LOCDEFER
+  (0x40000) buffers (0x002C8CBB, allocator 0x002C5DBB) from two pools, 64
+  3D voices (slots 0-63) and 192 2D voices (slots 64-255), set at
+  0x002C5D3E; when a pool is empty Play fails with 0x88780032. A deferred
+  buffer gives its voice back on Stop. We do not cap voices; episode 1's
+  busiest second has 24 playing.
 
 ## Widescreen
 
