@@ -37,6 +37,7 @@ typedef struct voice {
     bool           used;
     pdo_voice_desc desc;
     bool           playing, looping, paused;
+    bool           test_muted;          /* PDO_TEST_NEWEST only */
     double         pos;                 /* in frames */
     uint32_t       loop_start, loop_len;/* frames; len 0 = whole buffer */
     float          volume, headroom;    /* linear */
@@ -490,7 +491,8 @@ static void mix_block(float *out, int frames, int chs)
         solo = getenv("PDO_AUDIO_SOLO") ? atol(getenv("PDO_AUDIO_SOLO")) : 0;
     SDL_LockMutex(lock);
     for (int i = 0; i < MAX_VOICES; i++)
-        if (voices[i].used && voices[i].playing && (!solo || voices[i].desc.bytes == (uint32_t)solo)) {
+        if (voices[i].used && voices[i].playing && !voices[i].test_muted &&
+            (!solo || voices[i].desc.bytes == (uint32_t)solo)) {
             if (voices[i].queued)
                 mix_queue(&voices[i], bins, frames);
             else
@@ -767,9 +769,26 @@ void pdo_voice_set_data(int id, uint32_t addr, uint32_t bytes)
     WITH_VOICE(id, v->desc.data = addr; v->desc.bytes = bytes; v->pos = 0; v->cached_block = -1);
 }
 
+/* PDO_TEST_NEWEST=1, a listening test, not a setting: a 3D voice that
+ * starts mutes the other 3D voices playing the same sample, so only the
+ * newest copy of each sound is heard. */
+static void test_newest(voice *v)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("PDO_TEST_NEWEST") && *getenv("PDO_TEST_NEWEST") == '1';
+    v->test_muted = false;
+    if (!on || !v->desc.positional)
+        return;
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (&voices[i] != v && voices[i].used && voices[i].playing && voices[i].desc.positional &&
+            voices[i].desc.data == v->desc.data && voices[i].desc.bytes == v->desc.bytes)
+            voices[i].test_muted = true;
+}
+
 void pdo_voice_play(int id, bool looping)
 {
-    WITH_VOICE(id, v->playing = true; v->looping = looping; v->paused = false);
+    WITH_VOICE(id, v->playing = true; v->looping = looping; v->paused = false; test_newest(v));
 }
 
 void pdo_voice_stop(int id)
