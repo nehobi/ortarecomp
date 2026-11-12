@@ -184,6 +184,18 @@ virtual addresses in the USA `default.xbe`.
   gunfire rises about 9.5 dB over the "A dragon?!" cutscene against about
   6 dB in ours. Our dense moments (about 20 looping 3D voices at -249 mB)
   do clip: up to +10 dBFS before the final clamp.
+- Enemy machine guns (24,012 and 13,212-byte ADPCM samples, mono 44.1 kHz,
+  0.97 s and 0.53 s): each sound has a template buffer; every burst moves
+  the template and every copy still playing to the shooter, then starts a
+  new copy (Play, looping) there, stopped after about one pass (55 and 30
+  frames). Up to 12 copies of one sample play at once from one spot; cones
+  are 360/360 and velocities 0, so neither cones nor Doppler separate them.
+- Voices: DSOUND allocates hardware voices at Play for DSBCAPS_LOCDEFER
+  (0x40000) buffers (0x002C8CBB, allocator 0x002C5DBB) from two pools, 64
+  3D voices (slots 0-63) and 192 2D voices (slots 64-255), set at
+  0x002C5D3E; when a pool is empty Play fails with 0x88780032. A deferred
+  buffer gives its voice back on Stop. We do not cap voices; episode 1's
+  busiest second has 24 playing.
 
 ## Widescreen
 
