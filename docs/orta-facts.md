@@ -177,13 +177,15 @@ virtual addresses in the USA `default.xbe`.
   (a shift right, -6.02 dB; table filled at 0x002C3B2A, written at
   0x002C67C6 through 0x002C6304 to APU method 0x200 + 4 * bin) and the HRTF
   headroom 0 (0x002C62CD, method 0x280); the game never changes either. Our
-  DirectSoundCreate skips that start-up, so we mix without it. Not applied:
-  the GP DSP program may scale its output back up, and recordings disagree
-  with a 6 dB drop. In episode 1, xemu is as loud as we are (peaks near
-  0 dBFS), and on an Xbox 360 (phone recording, in-game volumes at max) busy
-  gunfire rises about 9.5 dB over the "A dragon?!" cutscene against about
-  6 dB in ours. Our dense moments (about 20 looping 3D voices at -249 mB)
-  do clip: up to +10 dBFS before the final clamp.
+  DirectSoundCreate skips that start-up; src/audio/mixer.c halves the
+  bins instead. 3D buffers with no mixbins (all of Orta's) go to bins 6, 8,
+  7, 9 and 10 (default table at 0x002DF55C; 2D mono/stereo: 0, 1), so the
+  headroom covers 3D sound too. xemu applies only the HRTF headroom (0) to
+  a 3D voice's four bins ("not sure" in its source), and lists Orta's
+  gunfire as too loud in its audio issue (xemu-project/xemu#904): its
+  levels, which matched ours without the headroom, are not a reference.
+  Without the headroom our dense episode 1 moments reach +10 dBFS before
+  the final clamp (92 of 235 s clipping); with it +4.9 dBFS (58 of 234 s).
 - Enemy machine guns (24,012 and 13,212-byte ADPCM samples, mono 44.1 kHz,
   0.97 s and 0.53 s): each sound has a template buffer; every burst moves
   the template and every copy still playing to the shooter, then starts a
