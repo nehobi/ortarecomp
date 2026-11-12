@@ -247,6 +247,19 @@ static int start_guest(const char *game_dir, const pdo_game_check *check, bool b
 }
 #endif
 
+/* Shift held while starting: the launcher even with Skip launcher on. No
+ * window exists yet, so SDL has no keyboard state to give on every
+ * platform; Windows is asked directly. */
+static bool shift_held(void)
+{
+#ifdef _WIN32
+    return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+#else
+    SDL_PumpEvents();
+    return (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
+#endif
+}
+
 /* The launcher: the options menu in its own window before the game starts,
  * with Start game, the game files and Exit (gfx/overlay.c). Settings fixed
  * at start (widescreen, fullscreen; later the graphics driver) are chosen
@@ -413,6 +426,8 @@ int main(int argc, char **argv)
             SDL_Quit();
             return 0;
         }
+    } else if (pdo_settings_get()->skip_launcher && have_game && !shift_held()) {
+        SDL_Log("launcher: skipped (Skip launcher is on; hold Shift while starting to see it)");
     } else if (!run_launcher(&cfg, &check, &have_game)) {
         SDL_Quit();
         return 0;
