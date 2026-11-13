@@ -13,10 +13,10 @@
 static char data_dir[PDO_PATH_MAX];
 char pdo_log_file[PDO_PATH_MAX];
 
-static pdo_settings settings = { .render_scale = 1, .msaa = 1, .aspect = PDO_ASPECT_4_3, .fit = PDO_FIT_BARS,
+static pdo_settings settings = { .render_scale2 = 2, .msaa = 1, .aspect = PDO_ASPECT_4_3, .fit = PDO_FIT_BARS,
                                   .master_volume = 100, .gpu_vertex = true, .gpu_fixed = true,
                                   .lsfg_multiplier = 1, .anisotropy = 1, .mouse_aim = true, .mouse_speed = 100,
-                                  .skip_logos = true, .depth_reversed = true, .pic_contrast = 100,
+                                  .skip_logos = true, .rumble = 100, .depth_reversed = true, .pic_contrast = 100,
                                   .pic_gamma = 100, .pic_saturation = 100, .save_slot = 1 };
 
 pdo_settings *pdo_settings_get(void)
@@ -119,7 +119,7 @@ bool pdo_config_load(pdo_config *cfg)
         if (strcmp(line, "game_dir") == 0)
             SDL_strlcpy(cfg->game_dir, eq + 1, sizeof cfg->game_dir);
         else if (strcmp(line, "render_scale") == 0)
-            settings.render_scale = clamp_int(SDL_atoi(eq + 1), 1, 8);
+            settings.render_scale2 = clamp_int((int)SDL_lround(SDL_atof(eq + 1) * 2.0), 2, 16);
         else if (strcmp(line, "msaa") == 0) {
             int m = SDL_atoi(eq + 1);
             settings.msaa = m >= 8 ? 8 : m >= 4 ? 4 : m >= 2 ? 2 : 1;
@@ -158,6 +158,11 @@ bool pdo_config_load(pdo_config *cfg)
             settings.fullscreen = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "fxaa") == 0)
             settings.fxaa = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "shadows") == 0)
+            settings.shadow_original = strcmp(eq + 1, "low") == 0 || strcmp(eq + 1, "original") == 0;
+        else if (strcmp(line, "vsync") == 0)
+            settings.vsync = strcmp(eq + 1, "off") == 0 ? PDO_VSYNC_OFF
+                           : strcmp(eq + 1, "fast") == 0 ? PDO_VSYNC_FAST : PDO_VSYNC_ON;
         else if (strcmp(line, "window") == 0)        /* x,y,w,h */
             SDL_sscanf(eq + 1, "%d,%d,%d,%d", &settings.win_x, &settings.win_y, &settings.win_w, &settings.win_h);
         else if (strcmp(line, "window_maximized") == 0)
@@ -172,6 +177,8 @@ bool pdo_config_load(pdo_config *cfg)
             settings.skip_logos = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "skip_launcher") == 0)
             settings.skip_launcher = SDL_atoi(eq + 1) != 0;
+        else if (strcmp(line, "rumble") == 0)
+            settings.rumble = clamp_int(SDL_atoi(eq + 1), 0, 100);
         else if (strcmp(line, "depth_reversed") == 0)
             settings.depth_reversed = SDL_atoi(eq + 1) != 0;
         else if (strcmp(line, "picture_crt") == 0)
@@ -205,7 +212,7 @@ bool pdo_config_save(const pdo_config *cfg)
     n = snprintf(text, sizeof text,
                  "# Orta Recomp settings\n"
                  "game_dir=%s\n"
-                 "render_scale=%d\n"
+                 "render_scale=%g\n"
                  "msaa=%d\n"
                  "aspect=%s\n"
                  "fit=%s\n"
@@ -222,6 +229,8 @@ bool pdo_config_save(const pdo_config *cfg)
                  "lsfg_dll=%s\n"
                  "fullscreen=%d\n"
                  "fxaa=%d\n"
+                 "vsync=%s\n"
+                 "shadows=%s\n"
                  "window=%d,%d,%d,%d\n"
                  "window_maximized=%d\n"
                  "mouse_aim=%d\n"
@@ -229,6 +238,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  "unlock_box=%d\n"
                  "skip_logos=%d\n"
                  "skip_launcher=%d\n"
+                 "rumble=%d\n"
                  "depth_reversed=%d\n"
                  "picture_crt=%d\n"
                  "picture_brightness=%d\n"
@@ -237,7 +247,7 @@ bool pdo_config_save(const pdo_config *cfg)
                  "picture_saturation=%d\n"
                  "audio_3d=%s\n"
                  "save_slot=%d\n",
-                 cfg->game_dir, settings.render_scale, settings.msaa,
+                 cfg->game_dir, settings.render_scale2 / 2.0, settings.msaa,
                  settings.aspect == PDO_ASPECT_16_9 ? "16:9" : "4:3",
                  settings.fit == PDO_FIT_STRETCH ? "stretch" : settings.fit == PDO_FIT_ZOOM ? "zoom" : "bars",
                  settings.soft_filter,
@@ -245,8 +255,10 @@ bool pdo_config_save(const pdo_config *cfg)
                  settings.gpu_fixed, settings.frame_interp, settings.anisotropy, settings.bloom == 2 ? "high" : settings.bloom == 1 ? "low" : "off",
                  settings.lsfg_multiplier, settings.lsfg_performance,
                  settings.lsfg_dll, settings.fullscreen, settings.fxaa,
+                 settings.vsync == PDO_VSYNC_OFF ? "off" : settings.vsync == PDO_VSYNC_FAST ? "fast" : "on",
+                 settings.shadow_original ? "low" : "high",
                  settings.win_x, settings.win_y, settings.win_w, settings.win_h, settings.win_maximized,
-                 settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.skip_launcher, settings.depth_reversed,
+                 settings.mouse_aim, settings.mouse_speed, settings.unlock_box, settings.skip_logos, settings.skip_launcher, settings.rumble, settings.depth_reversed,
                  settings.picture_crt, settings.pic_brightness, settings.pic_contrast, settings.pic_gamma,
                  settings.pic_saturation, settings.audio_out == PDO_AUDIO_HEADPHONES ? "headphones"
                  : settings.audio_out == PDO_AUDIO_SURROUND ? "surround" : "speakers",
@@ -260,13 +272,18 @@ bool pdo_config_save(const pdo_config *cfg)
 bool pdo_settings_save(void)
 {
     /* The file's game folder, not this run's: --game-dir is not saved. The
-     * load would also read the file's settings over ours, so keep them. */
+     * load would also read the file's settings and its key_/pad_/mouse_
+     * bindings over ours, so keep both: a rebinding made in Controls was
+     * lost as the menu closed (shown, then gone, never working). */
     pdo_settings keep = settings;
+    pdo_binding keep_bind[PDO_IN_COUNT];
     pdo_config cfg;
     bool ok;
 
+    SDL_memcpy(keep_bind, pdo_input_bindings(), sizeof keep_bind);
     pdo_config_load(&cfg);
     settings = keep;
+    SDL_memcpy(pdo_input_bindings(), keep_bind, sizeof keep_bind);
     ok = pdo_config_save(&cfg);
     if (!ok)
         SDL_Log("settings: could not save (%s)", SDL_GetError());

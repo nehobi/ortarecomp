@@ -1,7 +1,8 @@
 # Current state
 
-v0.1.0 (beta): Panzer Dragoon Orta plays through all ten episodes and the
-ending on Windows, with music, movies, saves, bosses and Pandora's Box.
+v0.1.5 (beta, Windows and Linux/Steam Deck): Panzer Dragoon Orta plays
+through all ten episodes and the ending, with music, movies, saves, bosses
+and Pandora's Box. Changes are listed in `CHANGELOG.md`.
 History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
 `docs/archive/state-bring-up.md`; facts about the game: `docs/orta-facts.md`.
 
@@ -29,10 +30,11 @@ History and detail: `docs/archive/state-to-v0.1.md` (to the release) and
   player's Lossless.dll to run. F1 > Advanced > Frame gen.
 - `src/audio/`: mixer, I3DL2 reverb, output Stereo / Headphones (a model
   head) / 5.1 (the six speaker bins out as they are, 3D voices panned around
-  the corners). The opening movie's audio is 5.1 (opening_bs.aix: three
-  stereo ADX tracks), but CRI mixes it to one stereo buffer even when the
-  console reports surround (XC_AUDIO and GetSpeakerConfig both tried): to
-  have it, CRI's AIX decoding would have to be taken over.
+  the corners). With 5.1, GetSpeakerConfig reports a Dolby Digital console
+  and movies with an .aix (opening_bs, ins1_bs, ins2_bs: three stereo ADX
+  streams) play it: CRI routes a buffer per speaker pair, and we write our
+  own decoding (`src/audio/aix.c`) over its chunks, since CRI's fills only
+  some channels under us (`dsound_hle.c`, "5.1 movie soundtracks").
 - `src/gfx/overlay.c`: the launcher and the F1 menu; settings in
   `ortarecomp.ini` (`src/config.c`); save files 1-3 are `saves/E`, `E2`,
   `E3`.
@@ -57,10 +59,22 @@ offsets and the nearest game function (`sub_XXXXXXXX`), no symbols needed.
 3. First-time pipeline stalls (kept in `pipelines.bin` after).
 4. Android (Vulkan/Turnip): measure the recompiled code and the guest CPU
    lock on ARM; Linux's WaitForMultipleObjects polls with sleeps.
-5. Wishlist: the European (PAL) disc. Only the USA default.xbe is
+5. Gunfire sounds stacked and loud (issue 15). Fixed so far: the mixbins'
+   -6 dB headroom and the reverb send following distance. Left: up to 12
+   machine-gun copies play at once, started by the sound library at
+   0x225417 (`PDO_TEST_NEWEST=1` keeps only the newest and sounds closer to
+   the Xbox); find how often it really starts them. HRTF filters (Headphones
+   output) are not used: their tap scale is unknown (`docs/orta-facts.md`).
+6. Wishlist: the European (PAL) disc. Only the USA default.xbe is
    recognised now (its hash in `src/xbe.c`, `tools/recomp.py`); PAL is a
    different XBE, so its own recompile, addresses and hooks. Asked for by
    a player; the owner has the ISO.
+7. Wishlist (issue 13): ultrawide for movies and real-time cutscenes, both
+   letterboxed by the game. Movies: find the bars in the picture and zoom
+   on wide windows without cutting subtitles. Cutscenes: the game draws the
+   bars itself, so its cutscene state has to be found first. Gameplay
+   ultrawide is not planned. Rumble is passed through (XInputSetState); the
+   log says when the game first sends it.
 
 ## Testing
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.1.5 (beta)
+
+### Added
+
+- Vibration strength: Options > Gameplay > Vibration, Off or 10 % to
+  100 % (the default) in steps of 10.
+- Resolution scale 1.5x (Options > Display), between 1x and 2x: about
+  half of 2x's work, for laptops and integrated graphics.
+- VSync: Options > Display, On (the default), Fast or Off. Fast and Off
+  show more frames when the PC cannot keep up with the display instead of
+  dropping to half; Off may tear.
+- Shadows: Options > Display, High (scaled with the resolution, the
+  default) or Low (the game's own size, lighter on the GPU).
+- 5.1 movie soundtracks: with Sound > Output on 5.1, the opening and the
+  two story movies in Pandora's Box play their own 5.1 soundtracks, as on
+  a console with Dolby Digital. Other movies are stereo on the disc.
+
+### Fixed
+
+- Controls: rebound buttons went back to the defaults when the launcher or
+  the menu closed, or the window moved (issue 22).
+
 ## v0.1.4 (beta)
 
 ### Added

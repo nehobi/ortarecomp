@@ -24,8 +24,8 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VOLUME,
-       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_BOX, ITEM_LOGOS, ITEM_LAUNCHER, ITEM_3D,
+enum { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VSYNC, ITEM_SHADOWS, ITEM_VOLUME,
+       ITEM_FPS, ITEM_VSH, ITEM_FVF, ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_BOX, ITEM_LOGOS, ITEM_LAUNCHER, ITEM_RUMBLE, ITEM_3D,
        ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT,
        /* the launcher's own */
        ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GPU, ITEM_FULLSCREEN, ITEM_EXIT,
@@ -44,13 +44,14 @@ static const int game_main[] = { ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND
                                  ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_CLOSE, ITEM_QUIT };
 static const int launcher_main[] = { ITEM_START, ITEM_PICK, ITEM_SLOT, ITEM_GO_DISPLAY, ITEM_GO_PICTURE, ITEM_GO_SOUND,
                                      ITEM_GO_GAMEPLAY, ITEM_GO_ADVANCED, ITEM_CONTROLS, ITEM_EXIT };
-static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_FPS, ITEM_BACK };
+static const int display_game[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_SOFT, ITEM_VSYNC, ITEM_SHADOWS,
+                                    ITEM_FPS, ITEM_BACK };
 static const int display_launcher[] = { ITEM_SCALE, ITEM_MSAA, ITEM_ANISO, ITEM_ASPECT, ITEM_FIT, ITEM_FULLSCREEN, ITEM_SOFT,
-                                        ITEM_FPS, ITEM_BACK };
+                                        ITEM_VSYNC, ITEM_SHADOWS, ITEM_FPS, ITEM_BACK };
 static const int picture_items[] = { ITEM_PIC_LOOK, ITEM_PIC_BLOOM, ITEM_PIC_BRIGHT, ITEM_PIC_CONTRAST, ITEM_PIC_GAMMA, ITEM_PIC_SAT,
                                      ITEM_PIC_RESET, ITEM_BACK };
 static const int sound_items[] = { ITEM_VOLUME, ITEM_3D, ITEM_BACK };
-static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_LAUNCHER, ITEM_BACK };
+static const int gameplay_items[] = { ITEM_BOX, ITEM_LOGOS, ITEM_LAUNCHER, ITEM_RUMBLE, ITEM_BACK };
 static const int advanced_game[] = { ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_VSH, ITEM_FVF, ITEM_BACK };
 static const int advanced_launcher[] = { ITEM_INTERP, ITEM_LSMODE, ITEM_LSDLL, ITEM_VSH, ITEM_FVF, ITEM_GPU,
                                          ITEM_BACK };
@@ -241,7 +242,16 @@ static void change(int dir)
     case ITEM_SLOT:   s->save_slot = (s->save_slot - 1 + 3 + dir) % 3 + 1; break;
     case ITEM_FULLSCREEN: s->fullscreen = !s->fullscreen; break;
     case ITEM_GPU:    break;      /* Vulkan only, for now: the shaders are SPIR-V */
-    case ITEM_SCALE:  s->render_scale = SDL_clamp(s->render_scale + dir, 1, 8); break;
+    case ITEM_SCALE: {
+        /* 1x, 1.5x (for integrated graphics, between 1x and 2x's four
+         * times the pixels), then whole steps to 8x; in halves. */
+        static const int steps[] = { 2, 3, 4, 6, 8, 10, 12, 14, 16 };
+        int i = 0, n = (int)SDL_arraysize(steps);
+        while (i < n - 1 && steps[i] < s->render_scale2)
+            i++;
+        s->render_scale2 = steps[SDL_clamp(i + dir, 0, n - 1)];
+        break;
+    }
     case ITEM_MSAA:   next_aa(s, dir); break;
     case ITEM_ANISO: {      /* off, 2x, 4x, 8x, 16x */
         int i = s->anisotropy >= 16 ? 4 : s->anisotropy >= 8 ? 3 : s->anisotropy >= 4 ? 2 : s->anisotropy >= 2 ? 1 : 0;
@@ -256,6 +266,9 @@ static void change(int dir)
     case ITEM_BOX:    s->unlock_box = !s->unlock_box; break;
     case ITEM_LOGOS:  s->skip_logos = !s->skip_logos; break;
     case ITEM_LAUNCHER: s->skip_launcher = !s->skip_launcher; break;
+    case ITEM_VSYNC:  s->vsync = (s->vsync + (dir < 0 ? 2 : 1)) % 3; break;
+    case ITEM_SHADOWS: s->shadow_original = !s->shadow_original; break;
+    case ITEM_RUMBLE: s->rumble = SDL_clamp((s->rumble + 10 * dir) / 10 * 10, 0, 100); break;
     case ITEM_3D:
         s->audio_out = (s->audio_out + PDO_AUDIO_COUNT + dir) % PDO_AUDIO_COUNT;
         pdo_mixer_apply_output();
@@ -584,7 +597,7 @@ static void draw_controls(void)
             snprintf(line, sizeof line, "%-9s %-9.9s %-9.9s %.6s", pdo_input_button_name(i), k[0] ? k : "?",
                      pdo_input_pad_label(b[i].pad), pdo_input_mouse_name(b[i].mouse));
             if (i == selected && capture)
-                snprintf(line, sizeof line, "%-9s press a key, button or click", pdo_input_button_name(i));
+                snprintf(line, sizeof line, "%-9s press a key/button/click", pdo_input_button_name(i));
         } else if (i == CTL_MOUSE) {
             snprintf(line, sizeof line, "%-9s %s", "Mouse aim", pdo_settings_get()->mouse_aim ? "On" : "Off");
         } else if (i == CTL_MSPEED) {
@@ -616,7 +629,7 @@ static float value_of(int item, char *v, size_t n)
 
     v[0] = 0;
     switch (item) {
-    case ITEM_SCALE:  snprintf(v, n, "%dx", s->render_scale); break;
+    case ITEM_SCALE:  snprintf(v, n, "%gx", s->render_scale2 / 2.0); break;
     case ITEM_MSAA:
         if (s->msaa > 1) snprintf(v, n, "%dx MSAA", s->msaa);
         else snprintf(v, n, "%s", s->fxaa ? "FXAA" : "Off");
@@ -645,6 +658,14 @@ static float value_of(int item, char *v, size_t n)
     case ITEM_BOX:    snprintf(v, n, "%s", s->unlock_box ? "All open" : "Normal"); break;
     case ITEM_LOGOS:  snprintf(v, n, "%s", s->skip_logos ? "On" : "Off"); break;
     case ITEM_LAUNCHER: snprintf(v, n, "%s", s->skip_launcher ? "On" : "Off"); break;
+    case ITEM_VSYNC:  snprintf(v, n, "%s", s->vsync == PDO_VSYNC_OFF ? "Off" : s->vsync == PDO_VSYNC_FAST ? "Fast" : "On"); break;
+    case ITEM_SHADOWS: snprintf(v, n, "%s", s->shadow_original ? "Low" : "High"); break;
+    case ITEM_RUMBLE:
+        if (s->rumble)
+            snprintf(v, n, "%d%%", s->rumble);
+        else
+            snprintf(v, n, "Off");
+        return s->rumble / 100.0f;
     case ITEM_3D: {
         static const char *outs[PDO_AUDIO_COUNT] = { "Stereo", "Headphones", "5.1" };
         snprintf(v, n, "%s", outs[s->audio_out]);
@@ -711,6 +732,9 @@ static const char *label_of(int item)
     case ITEM_BOX:    return "Pandora's Box";
     case ITEM_LOGOS:  return "Skip logos";
     case ITEM_LAUNCHER: return "Skip launcher";
+    case ITEM_VSYNC:  return "VSync";
+    case ITEM_SHADOWS: return "Shadows";
+    case ITEM_RUMBLE: return "Vibration";
     case ITEM_3D:     return "Output";
     case ITEM_VSH:    return "Vertex programs";
     case ITEM_FVF:    return "Fixed function";
@@ -754,11 +778,14 @@ static const char *help_of(int item)
     case ITEM_PIC_BRIGHT:   return "Lighter or darker overall.";
     case ITEM_PIC_CONTRAST: return "Darks darker, lights lighter.";
     case ITEM_PIC_GAMMA:    return "Above 1 lifts the midtones.";
-    case ITEM_PIC_SAT:      return "How strong the colours are.";
+    case ITEM_PIC_SAT:      return "How strong the colors are.";
     case ITEM_PIC_RESET:    return "Back to the game's own picture.";
     case ITEM_BOX:    return "All open: every extra unlocked.";
     case ITEM_LOGOS:  return "A press skips the boot logos.";
     case ITEM_LAUNCHER: return "Start at once. Shift: launcher.";
+    case ITEM_VSYNC:  return "Fast/Off: more fps. Off tears.";
+    case ITEM_SHADOWS: return "Low: lighter on the GPU.";
+    case ITEM_RUMBLE: return "Controller rumble strength.";
     case ITEM_3D: {
         static const char *helps[PDO_AUDIO_COUNT] = { "Two speakers or a TV.", "Headphones: sounds around you.",
                                                       "5.1 speakers: sound all around." };
@@ -797,7 +824,7 @@ static const char *help_of(int item)
     case ITEM_BACK:   return "Back to the main list.";
     case ITEM_CONTROLS:    return "Keys, pad and mouse.";
     case ITEM_GO_DISPLAY:  return "Resolution, aspect, window.";
-    case ITEM_GO_PICTURE:  return "CRT look, brightness, colour.";
+    case ITEM_GO_PICTURE:  return "CRT look, brightness, color.";
     case ITEM_GO_SOUND:    return "Volume, stereo or 5.1.";
     case ITEM_GO_GAMEPLAY: return "Pandora's Box, boot logos.";
     case ITEM_GO_ADVANCED: return "Frame generation and more.";
